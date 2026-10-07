@@ -148,6 +148,18 @@ python3 xgregorm_gen_scenario.py --run all                  # všetkých 5 simul
   `v2i-trafficManager-LTE,10,5,120,n/a,n/a,54.425,0,15.43,3.6`
   `v2v-emergencyVehicleAlert-80211p,10,5,120,0.996886,0.31,0.191,0,14.05,13.7`
   trafficManager-80211p stále brzdí (veh3 stojí 107 s), čo je vlastnosť aplikácie, nie mapy.
+- **2026-10-07** – Opakované overenie na novej mape s ns-3 (`--diag --run all`):
+  - 10 áut: výsledky **zhodné do posledného miesta** s riadkami vyššie -> simulácie sú deterministické.
+  - 30 áut (záťažový test): všetkých 5 behov bez pádu, 0 teleportov, LTE so `--srs 320` OK
+    (~4,5 min na LTE beh, ~2 min na 802.11p). Výsledky:
+    `v2i-areaSpeedAdvisor-80211p,30,5,120,0.347288,65.27,0.193,59,12.30,12.8`
+    `v2i-areaSpeedAdvisor-lte,30,5,120,n/a,n/a,49.069,0,12.40,13.0`
+    `v2i-trafficManager-80211p,30,5,120,0.428363,57.16,0.265,0,10.91,37.6`
+    `v2i-trafficManager-LTE,30,5,120,n/a,n/a,40.833,0,14.55,6.8`
+    `v2v-emergencyVehicleAlert-80211p,30,5,120,0.997835,0.22,0.205,0,13.18,14.6`
+  - Pozorovanie: V2I 802.11p PRR s počtom áut klesá (areaSpeedAdvisor 0.66 -> 0.35), v2v nie
+    (0.997 -> 0.998). V2I aplikácie autorov teda strácajú pakety so záťažou - kandidát na zlepšenie.
+    Vo v2v je bez V2X 7 z 30 áut (penetrationRate 0.7).
 
 ## Čo robiť, keď si na pochybách
 
