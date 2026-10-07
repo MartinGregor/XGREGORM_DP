@@ -3,8 +3,9 @@
 xgregorm_gen_scenario.py - generates a VaN3Twin scenario and optionally runs the simulation
 with a final summary. The VaN3Twin source code is NOT modified, the original applications are used.
 
-Map:      3x3 city intersections (50 km/h) + circular bypass (90 km/h) connected to the middle
-          of each side of the city.
+Map:      3x3 city intersections (50 km/h, 1 lane, 200 m apart -> 400x400 m town centre)
+          + circular bypass (90 km/h, 2 lanes, 250 m from the city edge, radius 450 m)
+          connected to the middle of each side of the city by 70 km/h roads.
           - traffic lights are given ONLY to 4-arm intersections (the authors' trafficManager
             indexes exactly 4 approaches and reads out of range on a 3-arm intersection),
           - the bypass gates use "right_before_left", otherwise vehicles coming from the city
@@ -29,12 +30,17 @@ ap = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormat
 ap.add_argument("--name", default="mesto", help="scenario name -> src/automotive/examples/xgregorm_<name>/")
 # map
 ap.add_argument("--grid", type=int, default=3, help="number of intersections per row")
-ap.add_argument("--step", type=float, default=100, help="distance between intersections [m]")
-ap.add_argument("--odstup", type=float, default=150, help="distance of the bypass from the city edge [m]")
+ap.add_argument("--step", type=float, default=200,
+                help="distance between intersections [m]; 150-250 m is a typical urban block between "
+                     "signalised junctions, and with the default 802.11p channel (~200 m range at 30 dBm) "
+                     "RSUs on neighbouring junctions just overlap")
+ap.add_argument("--odstup", type=float, default=250, help="distance of the bypass from the city edge [m]")
 ap.add_argument("--v-mesto", type=float, default=13.89, help="city speed [m/s] (13.89 = 50 km/h)")
 ap.add_argument("--v-obchvat", type=float, default=25.0, help="bypass speed [m/s] (25 = 90 km/h)")
-ap.add_argument("--lanes-mesto", type=int, default=2, help="city lanes (per direction)")
-ap.add_argument("--lanes-obchvat", type=int, default=3, help="bypass lanes (per direction)")
+ap.add_argument("--v-privod", type=float, default=19.44,
+                help="speed on the roads joining the city to the bypass [m/s] (19.44 = 70 km/h)")
+ap.add_argument("--lanes-mesto", type=int, default=1, help="city lanes (per direction)")
+ap.add_argument("--lanes-obchvat", type=int, default=2, help="bypass lanes (per direction)")
 ap.add_argument("--zelena", type=float, default=30, help="green time of the fixed traffic light program [s]")
 ap.add_argument("--zlta", type=float, default=3, help="yellow time [s]")
 ap.add_argument("--kruh", type=int, default=10,
@@ -137,7 +143,7 @@ for k in range(8):
     edge(f"B{k}", f"B{(k + 1) % 8}", a.lanes_obchvat, a.v_obchvat, 5,
          oblouk(u1, u2, a.kruh), oblouk(u2, u1, a.kruh))
 for c, b in BRANY.items():
-    edge(c, b, a.lanes_mesto, a.v_obchvat, 4)
+    edge(c, b, a.lanes_mesto, a.v_privod, 4)
 
 with open(nod_f, "w") as f:
     f.write('<?xml version="1.0" encoding="UTF-8"?>\n<nodes>\n')

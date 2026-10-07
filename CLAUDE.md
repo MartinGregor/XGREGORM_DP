@@ -30,8 +30,11 @@ prepnutia medzi RSU) oproti pôvodným aplikáciám autorov.
 
 | Čo | Súbor | Hodnota |
 |---|---|---|
-| polomer zóny RSU (802.11p) | `areaSpeedAdvisorServer80211p.cc` | `geoArea.distA = 90;` |
-| polomer zóny RSU (LTE) | `areaSpeedAdvisorServerLTE.cc` | `geoArea.distA = 300;` |
+| polomer zóny RSU (802.11p) | `areaSpeedAdvisorServer80211p.cc` | `geoArea.distA = 50;` (autori: 90) |
+| polomer DENM oblasti (TM 802.11p) | `trafficManagerServer80211p.cc` | `geoArea.distA = 50;` (autori: 90) |
+| polomer DENM oblasti (LTE) | `areaSpeedAdvisorServerLTE.cc` | `geoArea.distA = 500;` (autori: 300) |
+| pomalá zóna (LTE) | `areaSpeedAdvisorServerLTE.cc` | stred mapy, 2/3 rozmeru siete (nie okolie RSU) |
+| podiel áut s V2X (v2v) | `v2v-emergencyVehicleAlert-80211p.cc` | `penetrationRate = 0.7` (CLI `--penetrationRate`) |
 | limit v zóne | `areaSpeedAdvisorServer80211p.cc` (2x) | `roadworks.speedLimit.setData (25);` |
 | rýchlosť mimo zóny | `areaSpeedAdvisorClient80211p.cc` | `75/3.6` |
 | timeout bez DENM | `areaSpeedAdvisorClient80211p.cc` | `Seconds(1.5)` |
@@ -39,19 +42,38 @@ prepnutia medzi RSU) oproti pôvodným aplikáciám autorov.
 | `print_summary` v LTE | `v2i-areaSpeedAdvisor-lte.cc` | natvrdo `false`, nemá CLI prepínač |
 
 Zmena ktorejkoľvek z nich je zásah do kódu autorov: najprv záloha do `xgregorm_kod_zaloha/`,
-potom `./ns3 build`, a v práci to treba popísať.
+potom `./ns3 build`, a v práci to treba popísať. Hodnoty označené „autori: X“ sú už zmenené oproti
+VaN3Twin `0e70bb36` (zmena je v prvom commite repozitára, priečinok zálohy zatiaľ neexistuje).
 
 ## Interpretácia metrík
 
 - **PRR a packet loss majú zmysel len pre 802.11p.** Metric Supervisor počíta, koľko staníc do
   baseline vzdialenosti správu prijalo. LTE doručuje adresne cez eNodeB, takže PRR tam vyjde ~0
   bez ohľadu na kvalitu siete. Pre LTE porovnávaj latenciu a počty doručených DENM/CAM.
-- Typické hodnoty: 802.11p pri 10 vozidlách PRR ~0.997 a latencia ~0.2 ms; LTE latencia ~65 ms.
+- Typické hodnoty: v2v 802.11p pri 10 vozidlách PRR ~0.997 a latencia ~0.2 ms; LTE latencia 50-65 ms.
+- **V2I 802.11p aplikácie (areaSpeedAdvisor, trafficManager) majú PRR nízke už u autorov**: na ich
+  vlastnej mape pri 120 s vyšlo 0.34 a 0.60, na `xgregorm_mesto` 0.66 a 0.59 (pôvodná malá mapa 0.38 a 0.46). Nie je to zahltenie
+  ani chyba scenára; príčina zatiaľ neidentifikovaná. Porovnávať len V2I s V2I, nie s v2v.
 - PRR sa počíta v 3-sekundovom okne, takže `--sim-time` pod 60 s dáva nepoužiteľnú vzorku.
-- Nízke PRR pri 802.11p = zahltenie kanála (veľa vozidiel a RSU na malej ploche), nie chyba konfigurácie.
+- Nízke PRR pri v2v 802.11p = zahltenie kanála (veľa vozidiel a RSU na malej ploche), nie chyba konfigurácie.
 - `stop tot[s]` je súčet všetkých státí vozidla, `stop max[s]` najdlhšie jedno neprerušené státie.
 - Typy správ: CAM je pravidelný tlkot srdca (1-10 Hz), DENM je udalostná správa do geografickej
   oblasti, CPM hlási objekty zo senzorov. PRR ovplyvňujú hlavne CAM, funkčnosť aplikácie hlavne DENM.
+
+## Správanie aplikácií autorov (dôležité pre porovnávanie)
+
+- **areaSpeedAdvisor 802.11p**: každá RSU má vlastnú zónu (kruh `distA` okolo seba) a posiela DENM
+  periodicky. Autá na obchvate (veh1, veh2) žiadnu zónu nemajú, DENM 0 je správne.
+- **areaSpeedAdvisor LTE**: úplne iná logika. Jeden server, jedna zóna = stred mapy (2/3 rozmeru),
+  DENM sa pošle len pri prechode hranice zóny. V `xgregorm_mesto` je mesto celé vnútri a obchvat
+  celý mimo, takže DENM dostávajú len autá jazdiace mesto <-> obchvat (veh7-10), ~2 za 120 s.
+  RSU zo `stations.xml` sa v LTE nepoužívajú, preto „RSU switches“ = 0.
+- **trafficManager 802.11p**: server beží na **každej** RSU a **každý riadi všetky semafory**
+  (`getIDList()`), pričom vidí len CAM áut vo svojom dosahu. Viac RSU sa tak pretláča o tie isté
+  semafory, mestské autá potom stoja aj 90-110 s (čistý SUMO max ~30 s). Rovnaký návrh je aj
+  v mape autorov (5 RSU, 2 semafory). Pri LTE je server jeden a premávka ide plynulo (~50 km/h).
+- **v2v emergencyVehicleAlert**: `penetrationRate = 0.7`, takže ~30 % áut nemá V2X jednotku.
+  Pri pevnom seede sú to v `xgregorm_mesto` vždy veh7 a veh8 (TX 0 / RX 0, chýba INFO riadok).
 
 ## Časté pády a ich príčiny
 
@@ -82,6 +104,50 @@ python3 xgregorm_gen_scenario.py --run all                  # všetkých 5 simul
   vozidiel, RSU aj seed) a meň len algoritmus. Minimálne 5 behov na konfiguráciu.
 - Riadok `CSV:` na konci súhrnu je určený na kopírovanie do tabuľky s výsledkami.
 - Výpisy skriptu sú po anglicky, komentáre v kóde môžu byť po slovensky.
+
+## Git
+
+- Repozitár práce: `https://github.com/MartinGregor/XGREGORM_DP` (remote `dp`, vetva `main`).
+  História začína čistým snapshotom VaN3Twin `0e70bb36` bez histórie autorov; README autorov je
+  v `README_VaN3Twin.md`. Lokálna vetva `master` + remote `origin` = pôvodný VaN3Twin, do `dp` nepushovať.
+- Novinky od autorov preberať len ako zmeny súborov, nikdy merge z `origin` (natiahol by ich históriu).
+- **Pred každým commitom/pushom sa opýtaj.** Zmeny v projekte zapisuj do tohto súboru (Denník nižšie).
+- `*:Zone.Identifier` (metadáta Windows) sú v `.gitignore`.
+
+## Denník zmien a overení
+
+- **2026-10-07** – Prvý push do `XGREGORM_DP`. Overenie scenára `xgregorm_mesto` (10 áut, 5 RSU,
+  120 s, `--run all --diag`): všetkých 5 simulácií dobehlo bez pádu, 0 teleportov, generátor je
+  deterministický (líši sa len časová pečiatka v `net.xml`). Výsledky (CSV riadky):
+  `v2i-areaSpeedAdvisor-80211p,10,5,120,0.380626,61.94,0.197,34,10.12,19.5`
+  `v2i-areaSpeedAdvisor-lte,10,5,120,n/a,n/a,53.000,0,10.19,26.2`
+  `v2i-trafficManager-80211p,10,5,120,0.459649,54.04,0.265,0,9.28,46.6`
+  `v2i-trafficManager-LTE,10,5,120,n/a,n/a,65.405,0,13.88,6.1`
+  `v2v-emergencyVehicleAlert-80211p,10,5,120,0.996706,0.33,0.185,0,11.42,26.5`
+  Referencia na mapách autorov (120 s): areaSpeedAdvisor-80211p PRR 0.339, trafficManager-80211p
+  PRR 0.597, areaSpeedAdvisor-lte latencia 38.6 ms. Vysvetlenie odchýlok v časti „Správanie aplikácií“.
+- **2026-10-07** – Realistické rozmery mapy `xgregorm_mesto` (zmenené len predvolené hodnoty generátora,
+  mapy a kód autorov nedotknuté):
+
+  | parameter | predtým | teraz | prečo |
+  |---|---|---|---|
+  | `--step` (vzdialenosť križovatiek) | 100 m | 200 m | typický mestský blok medzi semaformi 150-250 m; mesto 400x400 m |
+  | `--odstup` (obchvat od okraja mesta) | 150 m | 250 m | polomer obchvatu 450 m, obvod ~2,8 km |
+  | `--lanes-mesto` | 2 | 1 | mestská ulica 50 km/h má 1 pruh v smere |
+  | `--lanes-obchvat` | 3 | 2 | 3 pruhy v smere sú diaľnica, nie obchvat 90 km/h |
+  | `--v-privod` (nový, cesty mesto-obchvat) | 90 km/h | 70 km/h | prípojné cesty nie sú rýchlostné |
+  | `--tx-power` | 30 dBm | 30 dBm (bez zmeny) | v norme ETSI (max 33 dBm); s kanálom autorov (LogDistance, exp. 3) dosah ~200 m |
+
+  RSU sú na 5 semaforizovaných križovatkách 200 m od seba, takže pri dosahu ~200 m sa susedné
+  tesne prekrývajú (bežné rozmiestnenie RSU). Obchvat (r = 450 m) leží celý mimo pomalej zóny LTE
+  aj vnútri jej DENM oblasti (500 m), prechody sú len na prípojných cestách.
+  `--diag`: 10 áut 51 km/h, 30 áut 45 km/h, 0 teleportov, max státie 34 s. Výsledky `--run all`:
+  `v2i-areaSpeedAdvisor-80211p,10,5,120,0.660271,33.97,0.187,24,13.15,8.2`
+  `v2i-areaSpeedAdvisor-lte,10,5,120,n/a,n/a,45.838,0,13.51,8.5`
+  `v2i-trafficManager-80211p,10,5,120,0.585244,41.48,0.265,0,11.97,33.9`
+  `v2i-trafficManager-LTE,10,5,120,n/a,n/a,54.425,0,15.43,3.6`
+  `v2v-emergencyVehicleAlert-80211p,10,5,120,0.996886,0.31,0.191,0,14.05,13.7`
+  trafficManager-80211p stále brzdí (veh3 stojí 107 s), čo je vlastnosť aplikácie, nie mapy.
 
 ## Čo robiť, keď si na pochybách
 

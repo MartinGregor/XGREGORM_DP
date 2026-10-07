@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <additional>
-    <!-- V2X:STATION --><poi id="poi_0" color="orange" layer="202.00" x="100.00" y="100.00"/>
-    <!-- V2X:STATION --><poi id="poi_1" color="orange" layer="202.00" x="0.00" y="100.00"/>
-    <!-- V2X:STATION --><poi id="poi_2" color="orange" layer="202.00" x="100.00" y="0.00"/>
-    <!-- V2X:STATION --><poi id="poi_3" color="orange" layer="202.00" x="100.00" y="200.00"/>
-    <!-- V2X:STATION --><poi id="poi_4" color="orange" layer="202.00" x="200.00" y="100.00"/>
+    <!-- V2X:STATION --><poi id="poi_0" color="orange" layer="202.00" x="200.00" y="200.00"/>
+    <!-- V2X:STATION --><poi id="poi_1" color="orange" layer="202.00" x="0.00" y="200.00"/>
+    <!-- V2X:STATION --><poi id="poi_2" color="orange" layer="202.00" x="200.00" y="0.00"/>
+    <!-- V2X:STATION --><poi id="poi_3" color="orange" layer="202.00" x="200.00" y="400.00"/>
+    <!-- V2X:STATION --><poi id="poi_4" color="orange" layer="202.00" x="400.00" y="200.00"/>
 </additional>
