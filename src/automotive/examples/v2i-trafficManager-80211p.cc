@@ -73,6 +73,8 @@ main (int argc, char *argv[])
   int phase_time = 20;
   //Traffic Manager preemption ratio threshold
   double threshold = 70;
+  // xgregorm: 0 = every RSU controls all traffic lights (original), > 0 = only its own within this radius [m]
+  double tls_radius = 0;
 
 
   int numberOfNodes;
@@ -101,6 +103,7 @@ main (int argc, char *argv[])
 
   cmd.AddValue ("phase-time", "Duration of traffic lights phases", phase_time);
   cmd.AddValue ("threshold","Threshold multiplier for traffic light phase preemption",threshold);
+  cmd.AddValue ("tls-radius","Each RSU controls only traffic lights within this radius [m]; 0 = all (original)",tls_radius);
 
   /* Cmd Line option for 802.11p */
   cmd.AddValue ("tx-power", "OBUs transmission power [dBm]", txPower);
@@ -267,6 +270,7 @@ main (int argc, char *argv[])
   TrafficManagerServer80211pHelper.SetAttribute ("RealTime", BooleanValue(realtime));
   TrafficManagerServer80211pHelper.SetAttribute ("PhaseTime", UintegerValue(phase_time));
   TrafficManagerServer80211pHelper.SetAttribute ("Threshold", DoubleValue(threshold));
+  TrafficManagerServer80211pHelper.SetAttribute ("TlsRadius", DoubleValue(tls_radius));
   TrafficManagerServer80211pHelper.SetAttribute ("MetricSupervisor", PointerValue (metSup));
 
   int i = 0;

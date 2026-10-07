@@ -65,6 +65,7 @@ class trafficManagerServer80211p : public Application
     void phase1Timeout(void);
     void phase2Timeout(void);
     void phaseTimeout(std::string intersection);
+    double tlsDistance(std::string tlsid, libsumo::TraCIPosition rsuPos); // xgregorm
 
     uint8_t edgeCheck(double,double,double);
 
@@ -83,6 +84,7 @@ class trafficManagerServer80211p : public Application
 
     uint16_t m_phase_time;
     double m_threshold;
+    double m_tls_radius; //!< xgregorm: 0 = all traffic lights, > 0 = only those within this radius [m]
     std::map <unsigned long, std::string> m_veh_position;
     std::map <std::string, unsigned long> m_veh_number;
     std::map <std::string,std::pair<double,double>> m_load;

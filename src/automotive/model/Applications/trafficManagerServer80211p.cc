@@ -61,7 +61,13 @@ namespace ns3
             "To enable/disable the transmission of CAM messages",
             BooleanValue(true),
             MakeBooleanAccessor (&trafficManagerServer80211p::m_send_cam),
-            MakeBooleanChecker ());
+            MakeBooleanChecker ())
+        // xgregorm: lokalne riadenie krizovatiek
+        .AddAttribute ("TlsRadius",
+            "Control only the traffic lights closer than this distance [m] to the RSU; 0 = control all traffic lights (original behaviour)",
+            DoubleValue (0),
+            MakeDoubleAccessor (&trafficManagerServer80211p::m_tls_radius),
+            MakeDoubleChecker<double> (0));
         return tid;
   }
 
@@ -73,6 +79,7 @@ namespace ns3
     m_threshold = 70;
     m_phase_time = 60;
     m_tls_lanes_number =0;
+    m_tls_radius = 0;
   }
 
   trafficManagerServer80211p::~trafficManagerServer80211p ()
@@ -198,6 +205,11 @@ namespace ns3
     std::vector<std::string> tls_id_vec = m_client->TraCIAPI::trafficlights.getIDList ();
     for (std::string tlsid : tls_id_vec)
       {
+        // xgregorm: with TlsRadius > 0 every RSU controls only its own intersection(s),
+        // otherwise all RSU servers would fight over the same traffic lights
+        if (m_tls_radius > 0 && tlsDistance (tlsid, rsuPosXY) > m_tls_radius)
+          continue;
+        NS_LOG_INFO ("RSU " << m_id << " controls traffic light " << tlsid);
         for (std::string lanes : m_client->TraCIAPI::trafficlights.getControlledLanes (tlsid))
         {
             if(std::find(m_tls_lane_map[tlsid].begin (),m_tls_lane_map[tlsid].end (),lanes.substr(0,lanes.find_last_of("_")))==m_tls_lane_map[tlsid].end ())
@@ -208,6 +220,26 @@ namespace ns3
         }
         m_timeout_map[tlsid] = Simulator::Schedule(Seconds(m_phase_time),&trafficManagerServer80211p::phaseTimeout,this,tlsid);
       }
+  }
+
+  double
+  trafficManagerServer80211p::tlsDistance (std::string tlsid, libsumo::TraCIPosition rsuPos)
+  {
+    // xgregorm: netconvert names a traffic light after its junction; if not, use the end
+    // of the first controlled lane (the stop line), which lies at the junction as well
+    libsumo::TraCIPosition p;
+    try
+      {
+        p = m_client->TraCIAPI::junction.getPosition (tlsid);
+      }
+    catch (const libsumo::TraCIException &)
+      {
+        std::vector<std::string> lanes = m_client->TraCIAPI::trafficlights.getControlledLanes (tlsid);
+        if (lanes.empty ())
+          return std::numeric_limits<double>::max ();
+        p = m_client->TraCIAPI::lane.getShape (lanes[0]).back ();
+      }
+    return std::hypot (p.x - rsuPos.x, p.y - rsuPos.y);
   }
 
   void

@@ -65,8 +65,11 @@ ap.add_argument("--sumo-updates", type=float, default=0.1,
 # trafficManager (the authors' application)
 ap.add_argument("--phase-time", type=int, default=30,
                 help="base phase duration for trafficManager [s]; green = phase-time * load ratio")
-ap.add_argument("--threshold", type=float, default=40,
+ap.add_argument("--threshold", type=float, default=70,
                 help="load threshold in %% at which trafficManager switches the lights immediately")
+ap.add_argument("--tls-radius", type=float, default=50,
+                help="trafficManager 802.11p: every RSU controls only the traffic lights within this "
+                     "radius [m] (its own intersection); 0 = every RSU controls all of them (authors' original)")
 ap.add_argument("--run", default="nic",
                 choices=["nic", "v2i-speed-80211p", "v2i-speed-lte", "v2i-traffic-80211p", "v2i-traffic-lte",
                          "v2v-80211p", "all"],
@@ -343,6 +346,7 @@ ZAKLAD = (f"--sumo-folder={S} --mob-trace={P}cars.rou.xml --sumo-config={cfg_f} 
           f"--sumo-updates={a.sumo_updates} "
           f"--sumo-gui={'true' if a.gui else 'false'}")
 TM = f"--phase-time={a.phase_time} --threshold={a.threshold}"
+TM_80211P = f"{TM} --tls-radius={a.tls_radius}"   # local intersection control (xgregorm change in the authors' app)
 LTE = f"--ns3::LteEnbRrc::SrsPeriodicity={a.srs}"     # otherwise ns-3 aborts with too many UEs
 TMP = f"{P}tmp"
 
@@ -353,7 +357,7 @@ PRIKAZY = {
                          f"{ZAKLAD} --tx-power={a.tx_power} --summary=true", True),
     "v2i-speed-lte": ("v2i-areaSpeedAdvisor-lte", f"{ZAKLAD} {LTE}", True),
     "v2i-traffic-80211p": ("v2i-trafficManager-80211p",
-                           f"{ZAKLAD} {TM} --tx-power={a.tx_power} --summary=true", False),
+                           f"{ZAKLAD} {TM_80211P} --tx-power={a.tx_power} --summary=true", False),
     "v2i-traffic-lte": ("v2i-trafficManager-LTE", f"{ZAKLAD} {TM} {LTE} --summary=true", False),
     "v2v-80211p": ("v2v-emergencyVehicleAlert-80211p", f"{ZAKLAD} --tx-power={a.tx_power}", False),
 }
@@ -557,6 +561,10 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
         print(f"    teleports (deadlocks)      : {teleporty}")
     print(f"  Wall clock: {trvanie:.0f} s | vehicles {a.vehicles} | RSU {a.rsu} | "
           f"sim-time {int(a.sim_time)} s | scenario {out}/")
+    if program == "v2i-trafficManager-80211p":
+        rezim = "all traffic lights (authors' original)" if a.tls_radius <= 0 else \
+            f"own intersection only (radius {a.tls_radius:.0f} m)"
+        print(f"  traffic light control per RSU: {rezim}")
     # one line to copy into a spreadsheet when comparing your own solution with the baseline
     print("  CSV: program,vehicles,rsu,sim_time,PRR,loss_%,latency_ms,rsu_switches,speed_ms,stopped_%")
     prr_txt = "n/a" if je_lte else f"{prr_v:.6f}"

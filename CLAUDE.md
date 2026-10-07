@@ -26,6 +26,18 @@ prepnutia medzi RSU) oproti pôvodným aplikáciám autorov.
 6. **Opravená chyba vo `vdpTraci.cc`**: výpočet jazdného pruhu pre CAM nerozlišoval vozidlo a RSU,
    takže V2I príklady padali na `Vehicle 'poi_X' is not known`. Riešené vetvou `if (m_isStatic)`.
 
+## Moje zmeny v kóde autorov (treba popísať v práci)
+
+| Súbor | Zmena | Záloha |
+|---|---|---|
+| `vdpTraci.cc` | vetva `if (m_isStatic)` pre RSU (bod 6) | – (pred vznikom zálohy) |
+| `areaSpeedAdvisorServer80211p.cc`, `areaSpeedAdvisorServerLTE.cc`, `trafficManagerServer80211p.cc` | `distA` 90->50, 300->500 | – (pred vznikom zálohy) |
+| `trafficManagerServer80211p.cc/.h` | atribút `TlsRadius` + metóda `tlsDistance()`: RSU riadi len semafory do daného polomeru (svoju križovatku); 0 = pôvodné správanie (všetky semafory) | `xgregorm_kod_zaloha/` |
+| `v2i-trafficManager-80211p.cc` | CLI `--tls-radius` (predvolene 0 = pôvodné) -> atribút `TlsRadius` | `xgregorm_kod_zaloha/` |
+
+Všetky moje miesta v C++ sú označené komentárom `xgregorm`. Skript posiela `--tls-radius 50`
+(lokálne riadenie); `--tls-radius 0` = referencia autorov.
+
 ## Natvrdo zadané hodnoty v aplikáciách autorov
 
 | Čo | Súbor | Hodnota |
@@ -68,8 +80,8 @@ VaN3Twin `0e70bb36` (zmena je v prvom commite repozitára, priečinok zálohy za
   DENM sa pošle len pri prechode hranice zóny. V `xgregorm_mesto` je mesto celé vnútri a obchvat
   celý mimo, takže DENM dostávajú len autá jazdiace mesto <-> obchvat (veh7-10), ~2 za 120 s.
   RSU zo `stations.xml` sa v LTE nepoužívajú, preto „RSU switches“ = 0.
-- **trafficManager 802.11p**: server beží na **každej** RSU a **každý riadi všetky semafory**
-  (`getIDList()`), pričom vidí len CAM áut vo svojom dosahu. Viac RSU sa tak pretláča o tie isté
+- **trafficManager 802.11p (pôvodne, `--tls-radius 0`)**: server beží na **každej** RSU a **každý riadi všetky semafory**
+  (`getIDList()`), pričom vidí len CAM áut vo svojom dosahu. Opravené lokálnym riadením (viď Denník). Viac RSU sa tak pretláča o tie isté
   semafory, mestské autá potom stoja aj 90-110 s (čistý SUMO max ~30 s). Rovnaký návrh je aj
   v mape autorov (5 RSU, 2 semafory). Pri LTE je server jeden a premávka ide plynulo (~50 km/h).
 - **v2v emergencyVehicleAlert**: `penetrationRate = 0.7`, takže ~30 % áut nemá V2X jednotku.
@@ -86,6 +98,8 @@ VaN3Twin `0e70bb36` (zmena je v prvom commite repozitára, priečinok zálohy za
   pri `priority` čakajú na zaradenie aj 38 s.
 - Semafory "preblikávajú" v trafficManager → jeho interval je `phase-time * podiel zaťaženia`,
   pri prázdnej križovatke vyjde len dĺžka žltej. Pomáha vyšší `--phase-time`.
+- Autá v trafficManager stoja 60+ s → nízky `--threshold` (napr. 40) spôsobuje neustále okamžité
+  prepínanie; držať 70. Pri `--tls-radius 0` je príčinou boj viacerých RSU o semafory.
 
 ## Ako sa pracuje
 
@@ -185,6 +199,31 @@ python3 xgregorm_gen_scenario.py --run all                  # všetkých 5 simul
      danej križovatky nevidí, má záťaž (0,0) -> interval len 0*phase + 3 s žltá.
   Dôsledok pre porovnania: referenčné V2I PRR je zaťažené touto chybou; ak ju vlastný algoritmus
   opraví, treba to v práci uviesť oddelene od prínosu samotného algoritmu.
+- **2026-10-07** – **Lokálne riadenie križovatiek v trafficManager 802.11p** (zásah do kódu autorov,
+  zálohy v `xgregorm_kod_zaloha/`, `./ns3 build` hotový). Každá z 5 RSU riadi len semafor do 50 m od
+  seba (RSU stoja priamo na križovatkách 200 m od seba, takže každá má presne jednu). Pozícia
+  semaforu = `junction.getPosition(tlsid)`, záloha: koniec prvého riadeného pruhu.
+  Zároveň **predvolený `--threshold` v skripte 40 -> 70** (= predvolená hodnota autorov): pri 40 server
+  pri každej CAM okamžite prepínal, keď opačný smer mal > 40 % áut, a menej vyťažený smer zelenú
+  takmer nedostal (30 áut: max státie 61 s, pri 70: 20 s, pri 100: 33 s). Pôvodný režim
+  (`--tls-radius 0`) dáva pri 40 aj 70 identické výsledky, referencia ostáva platná.
+
+  | 120 s, 5 RSU | max státie | čas v státí | rýchlosť | PRR |
+  |---|---|---|---|---|
+  | 10 áut, pôvodne (`--tls-radius 0`) | 107.0 s | 33.9 % | 43.1 km/h | 0.585 |
+  | 10 áut, lokálne (`--tls-radius 50`) | **20.0 s** | **2.8 %** | **57.0 km/h** | 0.593 |
+  | 30 áut, pôvodne | 107.0 s | 37.6 % | 39.3 km/h | 0.428 |
+  | 30 áut, lokálne | **20.0 s** | **7.7 %** | **51.5 km/h** | 0.313 |
+  | čistý SUMO, pevné semafory 30 s (`--diag`, 30 áut) | 34.4 s | – | 45 km/h | – |
+
+  Lokálne riadenie je lepšie ako pevné semafory. PRR sa nezmenilo (desynchronizácia CAM je
+  samostatný problém). Ostatné 4 simulácie po prekompilovaní identické s predchádzajúcimi.
+  Nová referencia: `v2i-trafficManager-80211p,10,5,120,0.592778,40.72,0.265,0,15.83,2.8`
+- **Plán (zatiaľ neimplementované):** koordinácia susedných križovatiek – RSU si posielajú info
+  o autách, ktoré smerujú k susednej križovatke (čas príchodu), aby sa semafor pripravil vopred.
+  Rozhodnutie: **RSU medzi sebou komunikujú káblom** (pevná sieť, v ns-3 napr. CSMA/P2P), nie cez
+  802.11p. Zlepšuje parametre dopravy (státie, rýchlosť), nie sieťové. Sieťový algoritmus sa zatiaľ
+  nerieši, aktuálny cieľ = mať otestovateľné scenáre.
 
 ## Čo robiť, keď si na pochybách
 
