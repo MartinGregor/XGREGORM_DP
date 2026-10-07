@@ -52,8 +52,8 @@ VaN3Twin `0e70bb36` (zmena je v prvom commite repozitára, priečinok zálohy za
   bez ohľadu na kvalitu siete. Pre LTE porovnávaj latenciu a počty doručených DENM/CAM.
 - Typické hodnoty: v2v 802.11p pri 10 vozidlách PRR ~0.997 a latencia ~0.2 ms; LTE latencia 50-65 ms.
 - **V2I 802.11p aplikácie (areaSpeedAdvisor, trafficManager) majú PRR nízke už u autorov**: na ich
-  vlastnej mape pri 120 s vyšlo 0.34 a 0.60, na `xgregorm_mesto` 0.66 a 0.59 (pôvodná malá mapa 0.38 a 0.46). Nie je to zahltenie
-  ani chyba scenára; príčina zatiaľ neidentifikovaná. Porovnávať len V2I s V2I, nie s v2v.
+  vlastnej mape pri 120 s vyšlo 0.34 a 0.60, na `xgregorm_mesto` 0.66 a 0.59 (pôvodná malá mapa 0.38 a 0.46).
+  **Príčina nájdená (2026-10-07):** synchronizované CAM, viď Denník. Nie je to zahltenie ani chyba scenára.
 - PRR sa počíta v 3-sekundovom okne, takže `--sim-time` pod 60 s dáva nepoužiteľnú vzorku.
 - Nízke PRR pri v2v 802.11p = zahltenie kanála (veľa vozidiel a RSU na malej ploche), nie chyba konfigurácie.
 - `stop tot[s]` je súčet všetkých státí vozidla, `stop max[s]` najdlhšie jedno neprerušené státie.
@@ -160,6 +160,31 @@ python3 xgregorm_gen_scenario.py --run all                  # všetkých 5 simul
   - Pozorovanie: V2I 802.11p PRR s počtom áut klesá (areaSpeedAdvisor 0.66 -> 0.35), v2v nie
     (0.997 -> 0.998). V2I aplikácie autorov teda strácajú pakety so záťažou - kandidát na zlepšenie.
     Vo v2v je bez V2X 7 z 30 áut (penetrationRate 0.7).
+- **2026-10-07** – Analýza príčin dvoch slabín (bez zmeny kódu autorov; diagnostická kópia príkladu
+  `scratch/xgregorm_diag_asa80211p.cc` vypisuje PRR po typoch správ `XDIAG-*`, scratch je v `.gitignore`):
+  1. **Nízke V2I PRR = synchronizované CAM.** V2I aplikácie (`areaSpeedAdvisor*`, `trafficManager*`,
+     `emergencyVehicleWarning*`, klient aj server) robia `std::srand(Simulator::Now().GetNanoSeconds());
+     desync = rand()/RAND_MAX`. Autá vzniknuté v rovnakom kroku dostanú rovnaký seed -> rovnaký posun
+     -> vysielajú CAM v tých istých okamihoch a kolidujú. Autori to vo `emergencyVehicleAlert.cc`
+     opravili (`UniformRandomVariable`, komentár „nodes not being desynchronized properly“), vo V2I nie.
+     Test (30 dBm, baseline 100 m, rovnaký scenár, len odchody posunuté o 0.1 s na auto):
+
+     | | PRR CAM | PRR DENM | PRR spolu |
+     |---|---|---|---|
+     | 10 áut, všetky t=0 | 0.619 | 0.997 | 0.660 |
+     | 10 áut, posunuté | 0.978 | 1.000 | 0.981 |
+     | 30 áut, všetky t=0 | 0.311 | 0.999 | 0.347 |
+     | 30 áut, posunuté | 0.991 | 0.998 | 0.991 |
+     | 10 áut, posunuté, bez RSU | 1.000 | - | 1.000 |
+  2. **trafficManager 802.11p brzdí kvôli viacerým RSU, nie kvôli CAM.** (10 áut, rýchlosť / státie / max státie)
+     5 RSU sync: 43.1 km/h / 33.9 % / 107 s; 5 RSU posunuté: rovnako (106.8 s);
+     1 RSU sync: 55.5 km/h / 3.6 % / 20 s; 1 RSU posunuté: 55.8 / 3.5 % / 19.8 s (= ako LTE s 1 serverom).
+     Mechanizmus (z kódu `trafficManagerServer80211p.cc`): každý server plánuje `phaseTimeout` pre
+     všetky semafory -> prepínajú sa ~5x častejšie; vetva `else` nastaví `EW_YELLOW` z akejkoľvek
+     fázy okrem NS_GREEN (aj zo žltej) -> smer sa preskočí/žltá sa reštartuje; server, ktorý autá
+     danej križovatky nevidí, má záťaž (0,0) -> interval len 0*phase + 3 s žltá.
+  Dôsledok pre porovnania: referenčné V2I PRR je zaťažené touto chybou; ak ju vlastný algoritmus
+  opraví, treba to v práci uviesť oddelene od prínosu samotného algoritmu.
 
 ## Čo robiť, keď si na pochybách
 
