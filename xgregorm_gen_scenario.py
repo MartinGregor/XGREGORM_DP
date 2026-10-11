@@ -70,6 +70,15 @@ ap.add_argument("--threshold", type=float, default=70,
 ap.add_argument("--tls-radius", type=float, default=50,
                 help="trafficManager 802.11p: every RSU controls only the traffic lights within this "
                      "radius [m] (its own intersection); 0 = every RSU controls all of them (authors' original)")
+ap.add_argument("--tls-coord", type=int, default=0, choices=[0, 1],
+                help="trafficManager 802.11p: 1 = RSUs share vehicle positions over a wired backhaul "
+                     "(coordination of neighbouring intersections)")
+ap.add_argument("--coord-lookahead", type=float, default=0,
+                help="with --tls-coord 1: a vehicle announced by a neighbouring RSU is counted only this many "
+                     "seconds before its estimated arrival; 0 = immediately")
+ap.add_argument("--seed", type=int, default=None,
+                help="random seed: ns-3 --RngRun for all programs, SUMO seed only for v2i-traffic-80211p "
+                     "(--sumo-seed); not set = defaults (SUMO seed 10), identical to the reference results")
 ap.add_argument("--run", default="nic",
                 choices=["nic", "v2i-speed-80211p", "v2i-speed-lte", "v2i-traffic-80211p", "v2i-traffic-lte",
                          "v2v-80211p", "all"],
@@ -256,6 +265,7 @@ if a.rsu > 0:
     additional.append("stations.xml")
 
 add_line = f'\n        <additional-files value="{",".join(additional)}"/>' if additional else ""
+
 with open(cfg_f, "w") as f:
     f.write(f"""<configuration>
     <input>
@@ -344,9 +354,15 @@ S = out + "/"
 ZAKLAD = (f"--sumo-folder={S} --mob-trace={P}cars.rou.xml --sumo-config={cfg_f} "
           f"--sim-time={int(a.sim_time)} --met-sup=true --baseline={a.baseline} "
           f"--sumo-updates={a.sumo_updates} "
-          f"--sumo-gui={'true' if a.gui else 'false'}")
+          f"--sumo-gui={'true' if a.gui else 'false'}"
+          + (f" --RngRun={a.seed}" if a.seed is not None else ""))
 TM = f"--phase-time={a.phase_time} --threshold={a.threshold}"
-TM_80211P = f"{TM} --tls-radius={a.tls_radius}"   # local intersection control (xgregorm change in the authors' app)
+TM_80211P = (f"{TM} --tls-radius={a.tls_radius} --tls-coord={'true' if a.tls_coord else 'false'}"
+             f" --coord-lookahead={a.coord_lookahead}")
+# SUMO gets its seed from the example on the command line (hardcoded 10 in the authors' examples, so
+# a seed in .sumo.cfg is ignored); only v2i-trafficManager-80211p has the --sumo-seed option so far
+if a.seed is not None:
+    TM_80211P += f" --sumo-seed={a.seed}"   # local intersection control (xgregorm change in the authors' app)
 LTE = f"--ns3::LteEnbRrc::SrsPeriodicity={a.srs}"     # otherwise ns-3 aborts with too many UEs
 TMP = f"{P}tmp"
 
@@ -561,9 +577,16 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
         print(f"    teleports (deadlocks)      : {teleporty}")
     print(f"  Wall clock: {trvanie:.0f} s | vehicles {a.vehicles} | RSU {a.rsu} | "
           f"sim-time {int(a.sim_time)} s | scenario {out}/")
+    coord = re.findall(r"XGREGORM-COORD,(\S+?),TX:(\d+),RX:(\d+)", vystup)
+    if coord:
+        tx = sum(int(c[1]) for c in coord)
+        rx = sum(int(c[2]) for c in coord)
+        print(f"  wired RSU coordination: {tx} messages sent, {rx} received "
+              f"({tx / max(a.sim_time, 1):.1f} msg/s over the whole network)")
     if program == "v2i-trafficManager-80211p":
         rezim = "all traffic lights (authors' original)" if a.tls_radius <= 0 else \
-            f"own intersection only (radius {a.tls_radius:.0f} m)"
+            f"own intersection only (radius {a.tls_radius:.0f} m)" + \
+            (" + wired coordination with neighbours" if a.tls_coord else "")
         print(f"  traffic light control per RSU: {rezim}")
     # one line to copy into a spreadsheet when comparing your own solution with the baseline
     print("  CSV: program,vehicles,rsu,sim_time,PRR,loss_%,latency_ms,rsu_switches,speed_ms,stopped_%")

@@ -33,6 +33,7 @@ build_lib_example(
     NAME v2i-trafficManager-80211p
     SOURCE_FILES v2i-trafficManager-80211p.cc
     LIBRARIES_TO_LINK
+    ${libcsma}
     ${libcarla}
     ${libautomotive}
     ${libwave}

@@ -13,6 +13,7 @@
 #include <mutex>
 #include <unordered_map>
 #include "ns3/traci-client.h"
+#include "ns3/ipv4-address.h" // xgregorm
 namespace ns3 {
 
 class trafficManagerServer80211p : public Application
@@ -66,6 +67,11 @@ class trafficManagerServer80211p : public Application
     void phase2Timeout(void);
     void phaseTimeout(std::string intersection);
     double tlsDistance(std::string tlsid, libsumo::TraCIPosition rsuPos); // xgregorm
+    // xgregorm: koordinacia krizovatiek po kabli
+    void applyVehiclePosition(unsigned long stationId, std::string edgeID);
+    void sendCoord(unsigned long stationId, std::string edgeID);
+    void receiveCoord(Ptr<Socket> socket);
+    void applyCoordDelayed(unsigned long stationId, std::string edgeID, Time reported);
 
     uint8_t edgeCheck(double,double,double);
 
@@ -85,6 +91,14 @@ class trafficManagerServer80211p : public Application
     uint16_t m_phase_time;
     double m_threshold;
     double m_tls_radius; //!< xgregorm: 0 = all traffic lights, > 0 = only those within this radius [m]
+    bool m_coord; //!< xgregorm: share vehicle positions with other RSUs over the wired backhaul
+    Ipv4Address m_backhaul_bcast; //!< xgregorm
+    Ptr<Socket> m_coord_socket; //!< xgregorm
+    std::map <unsigned long, std::string> m_last_edge_seen; //!< xgregorm: last edge announced/known per vehicle
+    std::map <unsigned long, Time> m_veh_last_update; //!< xgregorm: time of the newest position per vehicle
+    uint64_t m_coord_tx; //!< xgregorm
+    double m_coord_lookahead; //!< xgregorm: count announced vehicles this many s before arrival (0 = at once)
+    uint64_t m_coord_rx; //!< xgregorm
     std::map <unsigned long, std::string> m_veh_position;
     std::map <std::string, unsigned long> m_veh_number;
     std::map <std::string,std::pair<double,double>> m_load;

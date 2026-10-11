@@ -6,6 +6,9 @@
 #include "ns3/btpdatarequest.h"
 #include "ns3/network-module.h"
 #include "ns3/gn-utils.h"
+#include "ns3/udp-socket-factory.h" // xgregorm
+#include "ns3/inet-socket-address.h" // xgregorm
+#include <sstream>
 
 #define YELLOW_DURATION 4
 #define NS_GREEN_PHASE 0
@@ -13,6 +16,7 @@
 #define EW_GREEN_PHASE 2
 #define EW_YELLOW_PHASE 3
 #define PERCENTAGE 100
+#define COORD_PORT 7000 // xgregorm
 
 #define NORTH 0
 #define EAST 1
@@ -67,6 +71,23 @@ namespace ns3
             "Control only the traffic lights closer than this distance [m] to the RSU; 0 = control all traffic lights (original behaviour)",
             DoubleValue (0),
             MakeDoubleAccessor (&trafficManagerServer80211p::m_tls_radius),
+            MakeDoubleChecker<double> (0))
+        // xgregorm: koordinacia krizovatiek po kabli
+        .AddAttribute ("Coordination",
+            "Share vehicle positions with the other RSUs over the wired backhaul (needs an IPv4 interface)",
+            BooleanValue (false),
+            MakeBooleanAccessor (&trafficManagerServer80211p::m_coord),
+            MakeBooleanChecker ())
+        .AddAttribute ("BackhaulBroadcast",
+            "Broadcast address of the wired network between RSUs",
+            Ipv4AddressValue ("10.10.0.255"),
+            MakeIpv4AddressAccessor (&trafficManagerServer80211p::m_backhaul_bcast),
+            MakeIpv4AddressChecker ())
+        .AddAttribute ("CoordLookahead",
+            "A vehicle announced by a neighbour on one of my approaches is counted only this many seconds "
+            "before its estimated arrival (lane length / speed limit); 0 = count it immediately",
+            DoubleValue (0),
+            MakeDoubleAccessor (&trafficManagerServer80211p::m_coord_lookahead),
             MakeDoubleChecker<double> (0));
         return tid;
   }
@@ -80,6 +101,10 @@ namespace ns3
     m_phase_time = 60;
     m_tls_lanes_number =0;
     m_tls_radius = 0;
+    m_coord = false;
+    m_coord_lookahead = 0;
+    m_coord_tx = 0;
+    m_coord_rx = 0;
   }
 
   trafficManagerServer80211p::~trafficManagerServer80211p ()
@@ -220,6 +245,16 @@ namespace ns3
         }
         m_timeout_map[tlsid] = Simulator::Schedule(Seconds(m_phase_time),&trafficManagerServer80211p::phaseTimeout,this,tlsid);
       }
+
+    // xgregorm: UDP socket na kablovej sieti medzi RSU
+    if (m_coord)
+      {
+        m_coord_socket = Socket::CreateSocket (GetNode (), UdpSocketFactory::GetTypeId ());
+        if (m_coord_socket->Bind (InetSocketAddress (Ipv4Address::GetAny (), COORD_PORT)) == -1)
+          NS_FATAL_ERROR ("Coordination needs an IPv4 interface on the RSU (wired backhaul)");
+        m_coord_socket->SetAllowBroadcast (true);
+        m_coord_socket->SetRecvCallback (MakeCallback (&trafficManagerServer80211p::receiveCoord, this));
+      }
   }
 
   double
@@ -247,6 +282,11 @@ namespace ns3
   {
     NS_LOG_FUNCTION(this);
     m_denService.cleanup();
+    if (m_coord)
+      {
+        std::cout << "XGREGORM-COORD," << m_id << ",TX:" << m_coord_tx << ",RX:" << m_coord_rx << std::endl;
+        m_coord = false; // vypis len raz (StopApplication sa moze volat dvakrat)
+      }
   }
 
   void
@@ -262,9 +302,6 @@ namespace ns3
     (void) address;
 
     m_cam_received++;
-    bool isInside = false;
-    std::map<std::string,unsigned long> current_load_map = {};
-    std::map<std::string,std::pair<double,double>> current_load_ratio_map = {};
 
 
     double lat = asn1cpp::getField(cam->cam.camParameters.basicContainer.referencePosition.latitude,double)/DOT_ONE_MICRO;
@@ -273,26 +310,50 @@ namespace ns3
     /* Based on the Lon,Lat exctracted by the map, get the edgeId using TraCI */
     libsumo::TraCIRoadPosition roadMap = m_client->TraCIAPI::simulation.convertLonLattoRoadmap (lon,lat);
 
+    unsigned long stationId = asn1cpp::getField (cam->header.stationId, unsigned long);
+
+    // xgregorm: koordinacia krizovatiek - zmenu cesty auta oznamime ostatnym RSU po kabli
+    if (m_coord && !roadMap.edgeID.empty () && roadMap.edgeID[0] != ':')
+      {
+        m_veh_last_update[stationId] = Simulator::Now ();
+        if (m_last_edge_seen[stationId] != roadMap.edgeID)
+          {
+            m_last_edge_seen[stationId] = roadMap.edgeID;
+            sendCoord (stationId, roadMap.edgeID);
+          }
+      }
+
+    applyVehiclePosition (stationId, roadMap.edgeID);
+  }
+
+  void
+  trafficManagerServer80211p::applyVehiclePosition (unsigned long stationId, std::string edgeID)
+  {
+    // xgregorm: povodna logika z receiveCAM (autori), len vyclenena, aby ju mohli volat
+    // aj spravy od susednych RSU; spravanie pri vypnutej koordinacii je identicke
+    bool isInside = false;
+    std::map<std::string,unsigned long> current_load_map = {};
+
     for (auto tls_it = m_tls_lane_map.begin (); tls_it != m_tls_lane_map.end (); tls_it++)
     {
-        if(std::find(tls_it->second.begin (),tls_it->second.end (),roadMap.edgeID)!=tls_it->second.end ())
+        if(std::find(tls_it->second.begin (),tls_it->second.end (),edgeID)!=tls_it->second.end ())
         {
           isInside=true;
         }
     }
 
     /* If is the first time the this veh sends a CAM, just check if it is inside and edge of interest(1-8) or outside(0), then return */
-    if (m_veh_position.find (cam->header.stationId) == m_veh_position.end ())
+    if (m_veh_position.find (stationId) == m_veh_position.end ())
     {
         if(isInside)
         {
-          m_veh_position[cam->header.stationId] = roadMap.edgeID;
-          m_veh_number[roadMap.edgeID]++;
+          m_veh_position[stationId] = edgeID;
+          m_veh_number[edgeID]++;
         }
         else
         {
           // Empty string -> we are not interested in an edge which is outside the ones we are interested in
-          m_veh_position[cam->header.stationId] = "";
+          m_veh_position[stationId] = "";
           m_veh_number[""]++;
         }
         return;
@@ -303,22 +364,22 @@ namespace ns3
     {
       /* The vehice is now in an edge of interest
        * If it was registered in other edge, update traffic lights state */
-      if (m_veh_position[cam->header.stationId] != roadMap.edgeID)
+      if (m_veh_position[stationId] != edgeID)
       {
-          m_veh_number[m_veh_position[cam->header.stationId]]--;
-          m_veh_number[roadMap.edgeID]++;
-          m_veh_position[cam->header.stationId] = roadMap.edgeID;
+          m_veh_number[m_veh_position[stationId]]--;
+          m_veh_number[edgeID]++;
+          m_veh_position[stationId] = edgeID;
       }
     }
     else
     {
       /* The vehicle is now outside of any edge of interest
        * If it was registered inside one, then update traffic lights state */
-      if (!m_veh_position[cam->header.stationId].empty ())
+      if (!m_veh_position[stationId].empty ())
       {
-          m_veh_number[m_veh_position[cam->header.stationId]]--;
+          m_veh_number[m_veh_position[stationId]]--;
           m_veh_number[""]++;
-          m_veh_position[cam->header.stationId] = "";
+          m_veh_position[stationId] = "";
       }
     }
 
@@ -344,6 +405,11 @@ namespace ns3
              * This application will work with any direction as long as the tls lanes are introduced consecutively
              * in this case NORTH-EAST-SOUTH-WEST
              */
+            // xgregorm: pri prazdnej krizovatke by vyslo 0/0 = NaN a phaseTimeout by z (uint16_t)NaN
+            // naplanoval prepnutie o 0 s -> nekonecna slucka v tom istom case (chyba aj v povodnom kode);
+            // ponechame posledny platny pomer
+            if (current_load_map[intersection->first] == 0)
+              continue;
             std::pair<double,double> ratio;
             /*Compute North-South direction load ratio*/
             ratio.first = (double)(m_veh_number[intersection->second[NORTH]]+m_veh_number[intersection->second[SOUTH]])/current_load_map[intersection->first];
@@ -366,6 +432,70 @@ namespace ns3
               }
           }
       }
+  }
+
+  void
+  trafficManagerServer80211p::sendCoord (unsigned long stationId, std::string edgeID)
+  {
+    // xgregorm: sprava po kabli "stationId,edgeID,cas_ns" (UDP broadcast v sieti RSU)
+    std::ostringstream msg;
+    msg << stationId << "," << edgeID << "," << Simulator::Now ().GetNanoSeconds ();
+    std::string txt = msg.str ();
+    Ptr<Packet> p = Create<Packet> ((const uint8_t *) txt.c_str (), txt.size ());
+    m_coord_socket->SendTo (p, 0, InetSocketAddress (m_backhaul_bcast, COORD_PORT));
+    m_coord_tx++;
+  }
+
+  void
+  trafficManagerServer80211p::receiveCoord (Ptr<Socket> socket)
+  {
+    // xgregorm: sused hlasi, ze auto preslo na inu cestu (napr. na prijazd k mojej krizovatke)
+    Ptr<Packet> p;
+    while ((p = socket->Recv ()))
+      {
+        std::vector<uint8_t> buf (p->GetSize ());
+        p->CopyData (buf.data (), buf.size ());
+        std::string txt (buf.begin (), buf.end ());
+        size_t c1 = txt.find (','), c2 = txt.rfind (',');
+        if (c1 == std::string::npos || c1 == c2)
+          continue;
+        unsigned long stationId = std::stoul (txt.substr (0, c1));
+        std::string edgeID = txt.substr (c1 + 1, c2 - c1 - 1);
+        Time t = NanoSeconds (std::stoll (txt.substr (c2 + 1)));
+        m_coord_rx++;
+
+        // starsia informacia, nez akou uz disponujem (vlastna CAM alebo iny sused), sa ignoruje
+        if (m_veh_last_update.count (stationId) && t <= m_veh_last_update[stationId])
+          continue;
+        m_veh_last_update[stationId] = t;
+        m_last_edge_seen[stationId] = edgeID;
+
+        // xgregorm: auto na mojom prijazde zapocitame az kratko pred odhadovanym prichodom ku krizovatke,
+        // inak by sa zelena davala smeru, kde auto este len ide, a cakajuce auta by stali
+        bool mine = false;
+        for (auto &tls : m_tls_lane_map)
+          if (std::find (tls.second.begin (), tls.second.end (), edgeID) != tls.second.end ())
+            mine = true;
+        if (m_coord_lookahead > 0 && mine)
+          {
+            double len = m_client->TraCIAPI::lane.getLength (edgeID + "_0");
+            double vmax = m_client->TraCIAPI::lane.getMaxSpeed (edgeID + "_0");
+            double eta = vmax > 0 ? len / vmax : 0;
+            Time delay = Seconds (std::max (0.0, eta - m_coord_lookahead));
+            Simulator::Schedule (delay, &trafficManagerServer80211p::applyCoordDelayed, this, stationId, edgeID, t);
+          }
+        else
+          applyVehiclePosition (stationId, edgeID);
+      }
+  }
+
+  void
+  trafficManagerServer80211p::applyCoordDelayed (unsigned long stationId, std::string edgeID, Time reported)
+  {
+    // xgregorm: medzicasom prisla novsia informacia (vlastna CAM alebo iny sused) -> ta plati
+    if (m_veh_last_update[stationId] > reported)
+      return;
+    applyVehiclePosition (stationId, edgeID);
   }
 
   void

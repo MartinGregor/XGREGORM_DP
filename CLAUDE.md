@@ -34,9 +34,17 @@ prepnutia medzi RSU) oproti pôvodným aplikáciám autorov.
 | `areaSpeedAdvisorServer80211p.cc`, `areaSpeedAdvisorServerLTE.cc`, `trafficManagerServer80211p.cc` | `distA` 90->50, 300->500 | – (pred vznikom zálohy) |
 | `trafficManagerServer80211p.cc/.h` | atribút `TlsRadius` + metóda `tlsDistance()`: RSU riadi len semafory do daného polomeru (svoju križovatku); 0 = pôvodné správanie (všetky semafory) | `xgregorm_kod_zaloha/` |
 | `v2i-trafficManager-80211p.cc` | CLI `--tls-radius` (predvolene 0 = pôvodné) -> atribút `TlsRadius` | `xgregorm_kod_zaloha/` |
+| `trafficManagerServer80211p.cc/.h` | **koordinácia po kábli**: atribúty `Coordination`, `BackhaulBroadcast`; logika počítania áut z `receiveCAM` vyčlenená do `applyVehiclePosition()` (bez zmeny správania); `sendCoord()`/`receiveCoord()` (UDP port 7000); výpis `XGREGORM-COORD,<rsu>,TX:,RX:` | `xgregorm_kod_zaloha/` |
+| `trafficManagerServer80211p.cc` | **oprava chyby autorov**: pri prázdnej križovatke 0/0 = NaN -> `phaseTimeout` naplánoval prepnutie o 0 s -> nekonečná slučka (simulácia „zamrzne“, SUMO aj ns-3 na 100 % CPU). Pomer sa pri nulovej záťaži neprepočíta. | `xgregorm_kod_zaloha/` |
+| `v2i-trafficManager-80211p.cc` | CLI `--tls-coord` (kábel CSMA 100 Mb/s, 1 ms, 10.10.0.0/24 medzi RSU; pri ňom sa `PacketSocketHelper` na RSU neinštaluje, `InternetStackHelper` ho pridá sám); CLI `--sumo-seed` (pôvodne natvrdo 10) | `xgregorm_kod_zaloha/` |
+| `trafficManagerServer80211p.cc/.h`, `v2i-trafficManager-80211p.cc` | atribút `CoordLookahead` / CLI `--coord-lookahead`: auto ohlásené susedom na mojom príjazde sa započíta až X s pred odhadovaným príchodom (dĺžka pruhu / limit); `applyCoordDelayed()` ho zahodí, ak medzitým prišla novšia informácia | `xgregorm_kod_zaloha/` |
+| `src/automotive/examples/CMakeLists.txt` | `v2i-trafficManager-80211p` linkuje `${libcsma}` | `xgregorm_kod_zaloha/examples_CMakeLists.txt` |
 
 Všetky moje miesta v C++ sú označené komentárom `xgregorm`. Skript posiela `--tls-radius 50`
-(lokálne riadenie); `--tls-radius 0` = referencia autorov.
+(lokálne riadenie); `--tls-radius 0` = referencia autorov; `--tls-coord 1` = koordinácia po kábli.
+`--seed N` v skripte: ns-3 `--RngRun` pre všetky programy, seed SUMO zatiaľ len pre
+`v2i-traffic-80211p` (ostatné príklady autorov majú `SumoSeed` natvrdo 10, seed v `.sumo.cfg` sa
+ignoruje, lebo TraciClient posiela `--seed` na príkazovom riadku). Bez `--seed` = referenčné výsledky.
 
 ## Natvrdo zadané hodnoty v aplikáciách autorov
 
@@ -98,6 +106,10 @@ VaN3Twin `0e70bb36` (zmena je v prvom commite repozitára, priečinok zálohy za
   pri `priority` čakajú na zaradenie aj 38 s.
 - Semafory "preblikávajú" v trafficManager → jeho interval je `phase-time * podiel zaťaženia`,
   pri prázdnej križovatke vyjde len dĺžka žltej. Pomáha vyšší `--phase-time`.
+- Simulácia trafficManager „zamrzne“ (ns-3 aj SUMO 100 % CPU, čas nebeží) → NaN pri prázdnej
+  križovatke, opravené (viď Moje zmeny). Experimenty spúšťať s `timeout`.
+- `Multiple aggregation of objects of type ns3::PacketSocketFactory` → na uzol sa inštaluje
+  `PacketSocketHelper` aj `InternetStackHelper`; ten druhý ho už obsahuje.
 - Autá v trafficManager stoja 60+ s → nízky `--threshold` (napr. 40) spôsobuje neustále okamžité
   prepínanie; držať 70. Pri `--tls-radius 0` je príčinou boj viacerých RSU o semafory.
 
@@ -219,11 +231,45 @@ python3 xgregorm_gen_scenario.py --run all                  # všetkých 5 simul
   Lokálne riadenie je lepšie ako pevné semafory. PRR sa nezmenilo (desynchronizácia CAM je
   samostatný problém). Ostatné 4 simulácie po prekompilovaní identické s predchádzajúcimi.
   Nová referencia: `v2i-trafficManager-80211p,10,5,120,0.592778,40.72,0.265,0,15.83,2.8`
-- **Plán (zatiaľ neimplementované):** koordinácia susedných križovatiek – RSU si posielajú info
+- **Plán (implementované 2026-10-11, viď nižšie):** koordinácia susedných križovatiek – RSU si posielajú info
   o autách, ktoré smerujú k susednej križovatke (čas príchodu), aby sa semafor pripravil vopred.
   Rozhodnutie: **RSU medzi sebou komunikujú káblom** (pevná sieť, v ns-3 napr. CSMA/P2P), nie cez
   802.11p. Zlepšuje parametre dopravy (státie, rýchlosť), nie sieťové. Sieťový algoritmus sa zatiaľ
   nerieši, aktuálny cieľ = mať otestovateľné scenáre.
+- **2026-10-11** – **Koordinácia križovatiek po kábli: implementácia a test.**
+  Návrh: RSU pri každej CAM zistí cestu auta (`convertLonLattoRoadmap`); keď auto prejde na inú
+  (neinternú) cestu, pošle UDP broadcast `stationId,edge,čas` všetkým RSU po kábli (CSMA 100 Mb/s,
+  1 ms). Prijímateľ si podľa toho aktualizuje počty áut na svojich príjazdoch (rovnaká funkcia ako
+  pri vlastnej CAM, staršie správy ignoruje). Réžia: ~0.4 msg/s pri 10 autách, ~1 msg/s pri 30,
+  ~1.5 msg/s pri 50 (celá sieť), každá správa < 30 B.
+  Pri teste odhalená a opravená chyba autorov (NaN -> nekonečná slučka, viď Moje zmeny) a natvrdo
+  zadaný seed SUMO (pridané `--sumo-seed`, v skripte `--seed`).
+  Výsledky, 5 seedov (`--seed 1..5`), 120 s, 5 RSU, priemer ± smerodajná odchýlka:
+
+  | autá | režim | max státie [s] | priem. najdlhšie státie [s] | čas v státí [%] | rýchlosť [km/h] |
+  |---|---|---|---|---|---|
+  | 10 | pôvodne (`--tls-radius 0`) | 104.1 ± 2.3 | 40.1 ± 1.7 | 34.1 ± 1.5 | 41.5 |
+  | 10 | lokálne | **17.1 ± 2.3** | **3.1 ± 0.4** | **3.3 ± 0.4** | **55.0** |
+  | 10 | lokálne + koordinácia | 18.1 ± 3.4 | 3.9 ± 1.4 | 4.0 ± 1.4 | 54.6 |
+  | 30 | pôvodne | 105.8 ± 0.5 | 44.3 ± 0.7 | 37.5 ± 0.7 | 38.9 |
+  | 30 | lokálne | **18.8 ± 0.5** | **5.7 ± 0.3** | **7.0 ± 0.4** | **50.5** |
+  | 30 | lokálne + koordinácia | 22.4 ± 3.5 | 7.4 ± 1.1 | 9.3 ± 1.6 | 49.7 |
+  | 30 | lokálne + koord., predstih 5 s | 23.6 ± 4.4 | 6.8 ± 1.0 | 7.9 ± 1.0 | 50.5 |
+  | 30 | lokálne + koord., predstih 10 s | 22.7 ± 3.3 | 7.1 ± 0.9 | 8.4 ± 1.0 | 50.2 |
+  | 50 | lokálne | **27.7 ± 7.6** | **7.6 ± 1.1** | **9.5 ± 1.3** | **47.9** |
+  | 50 | lokálne + koordinácia | 28.0 ± 6.2 | 9.5 ± 1.5 | 12.1 ± 1.9 | 46.4 |
+
+  **Záver: koordinácia v tejto podobe nepomáha, mierne škodí.** Hlavný prínos ostáva lokálne
+  riadenie (max státie ~104 s -> ~18 s). Prečo (hypotézy, nie všetky overené):
+  1. RSU sa o aute dozvie aj bez suseda: auto vysiela niekoľko CAM za sekundu, takže aj pri 70 %
+     strate ho vlastná RSU zachytí do ~1 s. Pri predstihu 5 s sa pri 10 autách správa od suseda
+     neuplatnila ani raz (výsledok identický s lokálnym režimom) -> nová informácia je malá.
+  2. Algoritmus autorov počíta všetky autá na celom príjazde (200 m) rovnako a pri každej
+     aktualizácii môže okamžite prepnúť (`threshold`). Viac aktualizácií = viac prepnutí, každé
+     stojí 3-4 s žltej. Neoverené: počet prepnutí sa zatiaľ nemeria.
+  Čo by mohlo pomôcť (ak sa k tomu vrátime): rozhodovať podľa áut čakajúcich pri stopčiare / ETA,
+  nie podľa počtu na celom príjazde; minimálna dĺžka zelenej; koordinácia až po oprave
+  desynchronizácie CAM. `--tls-coord` ostáva v skripte predvolene 0.
 
 ## Čo robiť, keď si na pochybách
 

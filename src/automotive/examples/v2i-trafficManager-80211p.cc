@@ -27,6 +27,7 @@
 #include "ns3/trafficManagerServer80211p.h"
 #include "ns3/traci-module.h"
 #include "ns3/internet-module.h"
+#include "ns3/csma-module.h" // xgregorm: kablova siet medzi RSU
 #include "ns3/wave-module.h"
 #include "ns3/mobility-module.h"
 #include "ns3/sumo_xml_parser.h"
@@ -75,6 +76,11 @@ main (int argc, char *argv[])
   double threshold = 70;
   // xgregorm: 0 = every RSU controls all traffic lights (original), > 0 = only its own within this radius [m]
   double tls_radius = 0;
+  // xgregorm: RSU si po kabli posielaju polohy aut (koordinacia susednych krizovatiek)
+  bool tls_coord = false;
+  // xgregorm: seed SUMO bol natvrdo 10, kvoli viacerym behom na konfiguraciu je nastavitelny
+  int sumo_seed = 10;
+  double coord_lookahead = 0;
 
 
   int numberOfNodes;
@@ -104,6 +110,9 @@ main (int argc, char *argv[])
   cmd.AddValue ("phase-time", "Duration of traffic lights phases", phase_time);
   cmd.AddValue ("threshold","Threshold multiplier for traffic light phase preemption",threshold);
   cmd.AddValue ("tls-radius","Each RSU controls only traffic lights within this radius [m]; 0 = all (original)",tls_radius);
+  cmd.AddValue ("coord-lookahead","With --tls-coord: count a vehicle announced by a neighbour only this many s before its arrival (0 = at once)",coord_lookahead);
+  cmd.AddValue ("sumo-seed","Random seed for SUMO (default 10 as in the original example)",sumo_seed);
+  cmd.AddValue ("tls-coord","RSUs share vehicle positions over a wired backhaul (CSMA 100 Mbit/s, 1 ms)",tls_coord);
 
   /* Cmd Line option for 802.11p */
   cmd.AddValue ("tx-power", "OBUs transmission power [dBm]", txPower);
@@ -213,7 +222,24 @@ main (int argc, char *argv[])
   /* Give packet socket powers to nodes (otherwise, if the app tries to create a PacketSocket, CreateSocket will end up with a segmentation fault */
   PacketSocketHelper packetSocket;
   packetSocket.Install (obuNodes);
-  packetSocket.Install (rsuNodes);
+  // xgregorm: InternetStackHelper (backhaul below) already aggregates the PacketSocketFactory
+  if (!tls_coord)
+    packetSocket.Install (rsuNodes);
+
+  /* xgregorm: wired backhaul between RSUs (one Ethernet segment, like a city traffic-control network).
+     Installed after 802.11p, so the 802.11p device stays device 0 used by the applications. */
+  if (tls_coord)
+    {
+      CsmaHelper csma;
+      csma.SetChannelAttribute ("DataRate", StringValue ("100Mbps"));
+      csma.SetChannelAttribute ("Delay", TimeValue (MilliSeconds (1)));
+      NetDeviceContainer backhaulDevs = csma.Install (rsuNodes);
+      InternetStackHelper backhaulStack;
+      backhaulStack.Install (rsuNodes);
+      Ipv4AddressHelper backhaulIp;
+      backhaulIp.SetBase ("10.10.0.0", "255.255.255.0");
+      backhaulIp.Assign (backhaulDevs);
+    }
 
   /*** 6. Setup Mobility and position node pool ***/
   MobilityHelper mobility;
@@ -232,7 +258,7 @@ main (int argc, char *argv[])
   sumoClient->SetAttribute ("PenetrationRate", DoubleValue (1.0));
   sumoClient->SetAttribute ("SumoLogFile", BooleanValue (false));
   sumoClient->SetAttribute ("SumoStepLog", BooleanValue (false));
-  sumoClient->SetAttribute ("SumoSeed", IntegerValue (10));
+  sumoClient->SetAttribute ("SumoSeed", IntegerValue (sumo_seed)); // xgregorm: povodne natvrdo 10
 
   std::string sumo_additional_options = "--verbose true";
 
@@ -271,6 +297,9 @@ main (int argc, char *argv[])
   TrafficManagerServer80211pHelper.SetAttribute ("PhaseTime", UintegerValue(phase_time));
   TrafficManagerServer80211pHelper.SetAttribute ("Threshold", DoubleValue(threshold));
   TrafficManagerServer80211pHelper.SetAttribute ("TlsRadius", DoubleValue(tls_radius));
+  TrafficManagerServer80211pHelper.SetAttribute ("Coordination", BooleanValue(tls_coord));
+  TrafficManagerServer80211pHelper.SetAttribute ("BackhaulBroadcast", Ipv4AddressValue("10.10.0.255"));
+  TrafficManagerServer80211pHelper.SetAttribute ("CoordLookahead", DoubleValue(coord_lookahead));
   TrafficManagerServer80211pHelper.SetAttribute ("MetricSupervisor", PointerValue (metSup));
 
   int i = 0;
