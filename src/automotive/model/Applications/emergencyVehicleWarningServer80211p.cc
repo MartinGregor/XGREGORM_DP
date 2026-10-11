@@ -19,6 +19,7 @@
  *  Carlos Mateo Risma Carletti, Politecnico di Torino (carlosrisma@gmail.com)
 */
 
+#include "ns3/random-variable-stream.h" // xgregorm
 #include "emergencyVehicleWarningServer80211p.h"
 #include "emergencyVehicleWarningClient80211p.h"
 
@@ -204,8 +205,12 @@ namespace ns3
 
     if(m_send_cam)
       {
-        std::srand(Simulator::Now().GetNanoSeconds ());
-        double desync = ((double)std::rand()/RAND_MAX);
+        // xgregorm: srand(Now) dal autam vzniknutym v rovnakom kroku rovnaky posun -> CAM sa vysielali
+        // naraz a kolidovali; oprava rovnaka ako autori urobili v emergencyVehicleAlert.cc
+        Ptr<UniformRandomVariable> desync_rvar = CreateObject<UniformRandomVariable> ();
+        desync_rvar->SetAttribute ("Min", DoubleValue (0.0));
+        desync_rvar->SetAttribute ("Max", DoubleValue (1.0));
+        double desync = desync_rvar->GetValue ();
         m_caService.startCamDissemination(desync);
       }
 

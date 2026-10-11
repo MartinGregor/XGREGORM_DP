@@ -39,6 +39,7 @@ prepnutia medzi RSU) oproti pôvodným aplikáciám autorov.
 | `v2i-trafficManager-80211p.cc` | CLI `--tls-coord` (kábel CSMA 100 Mb/s, 1 ms, 10.10.0.0/24 medzi RSU; pri ňom sa `PacketSocketHelper` na RSU neinštaluje, `InternetStackHelper` ho pridá sám); CLI `--sumo-seed` (pôvodne natvrdo 10) | `xgregorm_kod_zaloha/` |
 | `trafficManagerServer80211p.cc/.h`, `v2i-trafficManager-80211p.cc` | atribút `CoordLookahead` / CLI `--coord-lookahead`: auto ohlásené susedom na mojom príjazde sa započíta až X s pred odhadovaným príchodom (dĺžka pruhu / limit); `applyCoordDelayed()` ho zahodí, ak medzitým prišla novšia informácia | `xgregorm_kod_zaloha/` |
 | `src/automotive/examples/CMakeLists.txt` | `v2i-trafficManager-80211p` linkuje `${libcsma}` | `xgregorm_kod_zaloha/examples_CMakeLists.txt` |
+| `areaSpeedAdvisorClient80211p.cc`, `areaSpeedAdvisorServer80211p.cc`, `trafficManagerClient80211p.cc`, `trafficManagerServer80211p.cc`, `emergencyVehicleWarningClient80211p.cc`, `emergencyVehicleWarningServer80211p.cc`, `areaSpeedAdvisorClientLTE.cc`, `trafficManagerClientLTE.cc` | **oprava A – desynchronizácia CAM**: `std::srand(Now)` + `rand()` nahradené `UniformRandomVariable` (rovnako ako autori v `emergencyVehicleAlert.cc`). Neprepínateľné – stará referencia „s chybou“ je len v Denníku (alebo zo záloh). `simpleCAMSender-gps-tc`, `simpleVAMSender-gps-tc`, `v2xEmulator` nechané (nepoužívame). | `xgregorm_kod_zaloha/` |
 
 Všetky moje miesta v C++ sú označené komentárom `xgregorm`. Skript posiela `--tls-radius 50`
 (lokálne riadenie); `--tls-radius 0` = referencia autorov; `--tls-coord 1` = koordinácia po kábli.
@@ -74,6 +75,8 @@ VaN3Twin `0e70bb36` (zmena je v prvom commite repozitára, priečinok zálohy za
 - **V2I 802.11p aplikácie (areaSpeedAdvisor, trafficManager) majú PRR nízke už u autorov**: na ich
   vlastnej mape pri 120 s vyšlo 0.34 a 0.60, na `xgregorm_mesto` 0.66 a 0.59 (pôvodná malá mapa 0.38 a 0.46).
   **Príčina nájdená (2026-10-07):** synchronizované CAM, viď Denník. Nie je to zahltenie ani chyba scenára.
+  **Opravené 2026-10-11 (oprava A):** V2I 802.11p PRR je teraz ~0.996 aj pri 30 autách. Výsledky
+  V2I spred tohto dátumu sú „autori s chybou“ a s novými sa priamo porovnávať nedajú.
 - PRR sa počíta v 3-sekundovom okne, takže `--sim-time` pod 60 s dáva nepoužiteľnú vzorku.
 - Nízke PRR pri v2v 802.11p = zahltenie kanála (veľa vozidiel a RSU na malej ploche), nie chyba konfigurácie.
 - `stop tot[s]` je súčet všetkých státí vozidla, `stop max[s]` najdlhšie jedno neprerušené státie.
@@ -270,6 +273,29 @@ python3 xgregorm_gen_scenario.py --run all                  # všetkých 5 simul
   Čo by mohlo pomôcť (ak sa k tomu vrátime): rozhodovať podľa áut čakajúcich pri stopčiare / ETA,
   nie podľa počtu na celom príjazde; minimálna dĺžka zelenej; koordinácia až po oprave
   desynchronizácie CAM. `--tls-coord` ostáva v skripte predvolene 0.
+- **2026-10-11** – **Oprava A: desynchronizácia CAM** v 8 V2I aplikáciách (viď Moje zmeny),
+  `./ns3 build` celý. Krátky test (bez `--seed`, 120 s, 5 RSU, lokálne riadenie TM):
+
+  | simulácia | autá | PRR pred | PRR po | iné |
+  |---|---|---|---|---|
+  | areaSpeedAdvisor-80211p | 10 | 0.660 | **0.996** | rýchlosť/státie ~bez zmeny |
+  | trafficManager-80211p | 10 | 0.593 | **0.995** | doprava identická (15.83 m/s, 2.8 %) |
+  | areaSpeedAdvisor-80211p | 30 | 0.347 | **0.997** | 62 prepnutí RSU (pred 59) |
+  | trafficManager-80211p | 30 | 0.313 | **0.997** | max státie 20.0 -> **25.4 s**, státie 7.7 -> **10.4 %** |
+  | v2v-emergencyVehicleAlert | 10 | 0.997 | 0.997 | bez zmeny (oprava sa ho netýka) |
+  | LTE areaSpeedAdvisor / trafficManager | 10 | – | – | latencia 45.8 -> 43.2 ms, 54.4 -> 53.2 ms |
+
+  Všetkých 5 simulácií bez pádu, 0 teleportov. Pozorovanie: pri trafficManager 30 áut sa doprava
+  s lepšími dátami (viac doručených CAM) mierne zhoršila – podporuje hypotézu, že algoritmus autorov
+  pri každej aktualizácii zbytočne prepína (viď záver koordinácie). Overené len 1 behom.
+  **Nové referencie (po oprave A, bez `--seed`):**
+  `v2i-areaSpeedAdvisor-80211p,10,5,120,0.995733,0.43,0.183,24,13.13,8.0`
+  `v2i-areaSpeedAdvisor-lte,10,5,120,n/a,n/a,43.175,0,13.51,8.5`
+  `v2i-trafficManager-80211p,10,5,120,0.995281,0.47,0.265,0,15.83,2.8`
+  `v2i-trafficManager-LTE,10,5,120,n/a,n/a,53.222,0,15.43,3.6`
+  `v2v-emergencyVehicleAlert-80211p,10,5,120,0.996886,0.31,0.191,0,14.05,13.7`
+  `v2i-areaSpeedAdvisor-80211p,30,5,120,0.997075,0.29,0.184,62,12.23,12.3`
+  `v2i-trafficManager-80211p,30,5,120,0.997178,0.28,0.266,0,13.60,10.4`
 
 ## Čo robiť, keď si na pochybách
 
