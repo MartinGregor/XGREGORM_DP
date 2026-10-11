@@ -33,13 +33,18 @@ prepnutia medzi RSU) oproti pôvodným aplikáciám autorov.
 | `vdpTraci.cc` | vetva `if (m_isStatic)` pre RSU (bod 6) | – (pred vznikom zálohy) |
 | `areaSpeedAdvisorServer80211p.cc`, `areaSpeedAdvisorServerLTE.cc`, `trafficManagerServer80211p.cc` | `distA` 90->50, 300->500 | – (pred vznikom zálohy) |
 | `trafficManagerServer80211p.cc/.h` | atribút `TlsRadius` + metóda `tlsDistance()`: RSU riadi len semafory do daného polomeru (svoju križovatku); 0 = pôvodné správanie (všetky semafory) | `xgregorm_kod_zaloha/` |
-| `v2i-trafficManager-80211p.cc` | CLI `--tls-radius` (predvolene 0 = pôvodné) -> atribút `TlsRadius` | `xgregorm_kod_zaloha/` |
+| `v2i-trafficManager-80211p.cc` | CLI `--tls-radius` -> atribút `TlsRadius`; **od 2026-10-11 predvolene 50** (každá RSU len svoj semafor, aj bez skriptu); 0 = pôvodné | `xgregorm_kod_zaloha/` |
 | `trafficManagerServer80211p.cc/.h` | **koordinácia po kábli**: atribúty `Coordination`, `BackhaulBroadcast`; logika počítania áut z `receiveCAM` vyčlenená do `applyVehiclePosition()` (bez zmeny správania); `sendCoord()`/`receiveCoord()` (UDP port 7000); výpis `XGREGORM-COORD,<rsu>,TX:,RX:` | `xgregorm_kod_zaloha/` |
 | `trafficManagerServer80211p.cc` | **oprava chyby autorov**: pri prázdnej križovatke 0/0 = NaN -> `phaseTimeout` naplánoval prepnutie o 0 s -> nekonečná slučka (simulácia „zamrzne“, SUMO aj ns-3 na 100 % CPU). Pomer sa pri nulovej záťaži neprepočíta. | `xgregorm_kod_zaloha/` |
 | `v2i-trafficManager-80211p.cc` | CLI `--tls-coord` (kábel CSMA 100 Mb/s, 1 ms, 10.10.0.0/24 medzi RSU; pri ňom sa `PacketSocketHelper` na RSU neinštaluje, `InternetStackHelper` ho pridá sám); CLI `--sumo-seed` (pôvodne natvrdo 10) | `xgregorm_kod_zaloha/` |
 | `trafficManagerServer80211p.cc/.h`, `v2i-trafficManager-80211p.cc` | atribút `CoordLookahead` / CLI `--coord-lookahead`: auto ohlásené susedom na mojom príjazde sa započíta až X s pred odhadovaným príchodom (dĺžka pruhu / limit); `applyCoordDelayed()` ho zahodí, ak medzitým prišla novšia informácia | `xgregorm_kod_zaloha/` |
 | `src/automotive/examples/CMakeLists.txt` | `v2i-trafficManager-80211p` linkuje `${libcsma}` | `xgregorm_kod_zaloha/examples_CMakeLists.txt` |
 | `areaSpeedAdvisorClient80211p.cc`, `areaSpeedAdvisorServer80211p.cc`, `trafficManagerClient80211p.cc`, `trafficManagerServer80211p.cc`, `emergencyVehicleWarningClient80211p.cc`, `emergencyVehicleWarningServer80211p.cc`, `areaSpeedAdvisorClientLTE.cc`, `trafficManagerClientLTE.cc` | **oprava A – desynchronizácia CAM**: `std::srand(Now)` + `rand()` nahradené `UniformRandomVariable` (rovnako ako autori v `emergencyVehicleAlert.cc`). Neprepínateľné – stará referencia „s chybou“ je len v Denníku (alebo zo záloh). `simpleCAMSender-gps-tc`, `simpleVAMSender-gps-tc`, `v2xEmulator` nechané (nepoužívame). | `xgregorm_kod_zaloha/` |
+
+**Pravidlo riadenia semaforov:** 802.11p = každá RSU riadi len semafor svojej križovatky (ako
+v realite: radič + RSU na každej križovatke), predvolené v kóde aj v skripte. LTE = jeden server
+riadi všetky semafory (pôvodný kód autorov, nemenené). Semafor bez RSU do 50 m nikto neriadi
+(ide podľa pevného programu SUMO) – nastane len pri `--rsu` menšom než počet semaforov.
 
 Všetky moje miesta v C++ sú označené komentárom `xgregorm`. Skript posiela `--tls-radius 50`
 (lokálne riadenie); `--tls-radius 0` = referencia autorov; `--tls-coord 1` = koordinácia po kábli.
@@ -97,6 +102,19 @@ VaN3Twin `0e70bb36` (zmena je v prvom commite repozitára, priečinok zálohy za
   v mape autorov (5 RSU, 2 semafory). Pri LTE je server jeden a premávka ide plynulo (~50 km/h).
 - **v2v emergencyVehicleAlert**: `penetrationRate = 0.7`, takže ~30 % áut nemá V2X jednotku.
   Pri pevnom seede sú to v `xgregorm_mesto` vždy veh7 a veh8 (TX 0 / RX 0, chýba INFO riadok).
+
+## Tok komunikácie v trafficManager 802.11p (čo ide cez ns-3 a čo nie)
+
+| Spoj | Cez čo | Simulované v ns-3? |
+|---|---|---|
+| auto -> RSU: CAM (poloha, rýchlosť) | 802.11p, BTP/GeoNet, `YansWifiChannel` | **áno** – útlm, kolízie, strata, latencia (meria MetricSupervisor) |
+| RSU -> autá: CAM RSU | 802.11p | áno (len „tlkot srdca“, autá ho nevyužívajú) |
+| RSU -> autá: DENM | – | **neposiela sa** (`receiveDENM` je prázdny, DENM rx = 0) |
+| RSU -> semafor: `getPhase`/`setPhase` | TraCI priamo do SUMO | **nie** – okamžité, bez straty (ideálny kábel k radiču v skrinke) |
+| poloha z CAM -> cesta (`convertLonLattoRoadmap`), dĺžka pruhu, pozícia križovatky | TraCI | nie – „digitálna mapa“ RSU, statické dáta |
+| semafor -> auto | SUMO (auto „vidí“ farbu) | nie – žiadne V2X (SPaT/MAPEM sa neposiela) |
+| RSU <-> RSU, pôvodne | – | **neexistuje**; „boj“ RSU o semafory išiel len cez TraCI |
+| RSU <-> RSU, `--tls-coord 1` (moje) | CSMA 100 Mb/s, 1 ms, IPv4/UDP broadcast 10.10.0.255:7000 | **áno** – reálne pakety v ns-3; MetricSupervisor ich nemeria (len GeoNet), počty vypisuje `XGREGORM-COORD` |
 
 ## Časté pády a ich príčiny
 
@@ -296,6 +314,15 @@ python3 xgregorm_gen_scenario.py --run all                  # všetkých 5 simul
   `v2v-emergencyVehicleAlert-80211p,10,5,120,0.996886,0.31,0.191,0,14.05,13.7`
   `v2i-areaSpeedAdvisor-80211p,30,5,120,0.997075,0.29,0.184,62,12.23,12.3`
   `v2i-trafficManager-80211p,30,5,120,0.997178,0.28,0.266,0,13.60,10.4`
+- **2026-10-11** – **Lokálne riadenie je predvolené priamo v kóde** (`TlsRadius` atribút aj
+  `--tls-radius` v príklade = 50, predtým 0). Dôvod: v realite má každá križovatka vlastný radič
+  s RSU; LTE ostáva s jedným serverom pre všetky semafory. Test (10 áut, bez `--seed`):
+  príklad spustený priamo bez `--tls-radius` -> PRR 0.995281 = presne lokálna referencia;
+  skript `v2i-traffic-80211p` identický s referenciou; `v2i-traffic-lte` identický (53.222 ms).
+  Nová referencia pôvodného režimu po oprave A (`--tls-radius 0`):
+  `v2i-trafficManager-80211p,10,5,120,0.993968,0.60,0.265,0,11.97,33.9` (max státie stále 107 s).
+- Pozn.: v sekcii „Tok komunikácie“ je prehľad, čo ide cez ns-3 (CAM, kábel RSU-RSU) a čo cez
+  TraCI (RSU -> semafor, mapa).
 
 ## Čo robiť, keď si na pochybách
 

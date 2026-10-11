@@ -69,7 +69,8 @@ ap.add_argument("--threshold", type=float, default=70,
                 help="load threshold in %% at which trafficManager switches the lights immediately")
 ap.add_argument("--tls-radius", type=float, default=50,
                 help="trafficManager 802.11p: every RSU controls only the traffic lights within this "
-                     "radius [m] (its own intersection); 0 = every RSU controls all of them (authors' original)")
+                     "radius [m] (its own intersection, as in reality; also the default of the example); "
+                     "0 = every RSU controls all of them (authors' original). LTE always has 1 server for all")
 ap.add_argument("--tls-coord", type=int, default=0, choices=[0, 1],
                 help="trafficManager 802.11p: 1 = RSUs share vehicle positions over a wired backhaul "
                      "(coordination of neighbouring intersections)")

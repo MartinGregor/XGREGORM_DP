@@ -74,8 +74,9 @@ main (int argc, char *argv[])
   int phase_time = 20;
   //Traffic Manager preemption ratio threshold
   double threshold = 70;
-  // xgregorm: 0 = every RSU controls all traffic lights (original), > 0 = only its own within this radius [m]
-  double tls_radius = 0;
+  // xgregorm: kazda RSU riadi len semafor svojej krizovatky (ako v realite: radic + RSU na kazdej
+  // krizovatke); 0 = povodne spravanie autorov (kazda RSU riadi vsetky semafory)
+  double tls_radius = 50;
   // xgregorm: RSU si po kabli posielaju polohy aut (koordinacia susednych krizovatiek)
   bool tls_coord = false;
   // xgregorm: seed SUMO bol natvrdo 10, kvoli viacerym behom na konfiguraciu je nastavitelny
@@ -109,7 +110,7 @@ main (int argc, char *argv[])
 
   cmd.AddValue ("phase-time", "Duration of traffic lights phases", phase_time);
   cmd.AddValue ("threshold","Threshold multiplier for traffic light phase preemption",threshold);
-  cmd.AddValue ("tls-radius","Each RSU controls only traffic lights within this radius [m]; 0 = all (original)",tls_radius);
+  cmd.AddValue ("tls-radius","Each RSU controls only traffic lights within this radius [m] (default: its own intersection); 0 = all (authors' original)",tls_radius);
   cmd.AddValue ("coord-lookahead","With --tls-coord: count a vehicle announced by a neighbour only this many s before its arrival (0 = at once)",coord_lookahead);
   cmd.AddValue ("sumo-seed","Random seed for SUMO (default 10 as in the original example)",sumo_seed);
   cmd.AddValue ("tls-coord","RSUs share vehicle positions over a wired backhaul (CSMA 100 Mbit/s, 1 ms)",tls_coord);

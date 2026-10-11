@@ -69,8 +69,8 @@ namespace ns3
             MakeBooleanChecker ())
         // xgregorm: lokalne riadenie krizovatiek
         .AddAttribute ("TlsRadius",
-            "Control only the traffic lights closer than this distance [m] to the RSU; 0 = control all traffic lights (original behaviour)",
-            DoubleValue (0),
+            "Control only the traffic lights closer than this distance [m] to the RSU (default: its own intersection); 0 = control all traffic lights (authors' original behaviour)",
+            DoubleValue (50),
             MakeDoubleAccessor (&trafficManagerServer80211p::m_tls_radius),
             MakeDoubleChecker<double> (0))
         // xgregorm: koordinacia krizovatiek po kabli
@@ -101,7 +101,7 @@ namespace ns3
     m_threshold = 70;
     m_phase_time = 60;
     m_tls_lanes_number =0;
-    m_tls_radius = 0;
+    m_tls_radius = 50;
     m_coord = false;
     m_coord_lookahead = 0;
     m_coord_tx = 0;
