@@ -84,6 +84,31 @@ VaN3Twin `0e70bb36` (zmena je v prvom commite repozitára, priečinok zálohy za
   V2I spred tohto dátumu sú „autori s chybou“ a s novými sa priamo porovnávať nedajú.
 - PRR sa počíta v 3-sekundovom okne, takže `--sim-time` pod 60 s dáva nepoužiteľnú vzorku.
 - Nízke PRR pri v2v 802.11p = zahltenie kanála (veľa vozidiel a RSU na malej ploche), nie chyba konfigurácie.
+- **Počty CAM/DENM/CPM v súhrne sú z riadkov `INFO-vehX`, ktoré tlačia aplikácie** – každá iné:
+  trafficManager klient len `CAM-SENT`, `DENM-RECEIVED`; areaSpeedAdvisor klient `CAM-SENT`,
+  `DENM-RECEIVED`; v2v `CAM-SENT/RECEIVED`, `CPM-SENT/RECEIVED` (DENM nie). Čo aplikácia nehlási,
+  skript od 2026-10-11 ukazuje ako `n/a` (predtým chybne 0). Skutočné doručenie = PRR.
+  DENM 0 pri trafficManager je správne – server DENM neposiela; CPM posiela len v2v aplikácia.
+- **Čo má ktorý scenár v súhrne ukazovať (overené 2026-10-11, kód aplikácií):**
+
+  | hodnota | speed-80211p | speed-lte | traffic-80211p | traffic-lte | v2v-80211p |
+  |---|---|---|---|---|---|
+  | PRR / strata | áno | n/a (unicast) | áno | n/a | áno |
+  | latencia | áno | áno | áno | áno | áno |
+  | CAM sent | áno | n/a* | áno | áno | áno |
+  | CAM received (auto) | n/a – klient nepočíta | n/a | n/a – klient nepočíta | n/a | áno |
+  | DENM received | áno (z RSU zón) | áno (z CSV, len prechody zóny) | 0 – server DENM neposiela | 0 – rovnako | n/a – app DENM neposiela ani nepočíta |
+  | CPM sent / received | n/a | n/a | n/a | n/a | áno |
+  | RSU switches | áno (z CSV DENM) | n/a – 1 server | n/a – autá z RSU nič nedostávajú | n/a | n/a – bez RSU |
+  | doprava (SUMO netstate) | áno | áno | áno | áno | áno |
+
+  \* `print_summary` je v `v2i-areaSpeedAdvisor-lte.cc` natvrdo `false` (bez CLI) -> žiadne INFO riadky.
+  Klienti trafficManager (802.11p aj LTE) tlačia `DENM-RECEIVED`, ale počítadlo nikdy nezvyšujú – 0 je
+  pravdivé len preto, že server DENM neposiela. Servery počítajú prijaté CAM (`m_cam_received`), ale
+  nevypisujú ich (areaSpeedAdvisor 802.11p má `--server-aggregate-output`, trafficManager nič).
+  Opravy v skripte 2026-10-11: chýbajúce počítadlo = `n/a` (nie 0); `CPM sent` pridané; RSU switches
+  pre LTE a pre programy bez CSV = `n/a` aj v riadku `CSV:` (predtým 0 – staršie CSV riadky v Denníku
+  majú pri traffic/v2v/LTE v stĺpci rsu_switches 0, správne je n/a).
 - `stop tot[s]` je súčet všetkých státí vozidla, `stop max[s]` najdlhšie jedno neprerušené státie.
 - Typy správ: CAM je pravidelný tlkot srdca (1-10 Hz), DENM je udalostná správa do geografickej
   oblasti, CPM hlási objekty zo senzorov. PRR ovplyvňujú hlavne CAM, funkčnosť aplikácie hlavne DENM.
@@ -144,6 +169,12 @@ python3 xgregorm_gen_scenario.py --run all                  # všetkých 5 simul
 ./ns3 build                                                 # len po zmene C++ kódu
 ```
 
+- **Grafika:** `--gui` otvorí `sumo-gui` (WSLg, `DISPLAY=:0` funguje). Simulácia sa spustí sama
+  (TraciClient posiela `--start --quit-on-end`) a beží najrýchlejšie, ako vie – na sledovanie
+  nastav v okne **Delay** (napr. 100 ms). Po konci sa okno samo zavrie. RSU = oranžové body (POI).
+  Mapa bez ns-3: `sumo-gui -c src/automotive/examples/xgregorm_mesto/xgregorm_map.sumo.cfg`.
+- Každé spustenie skriptu nanovo vygeneruje scenár; `net.xml` sa potom líši len časovou pečiatkou
+  (`git checkout -- src/automotive/examples/xgregorm_mesto/` ho vráti).
 - Zmena Python skriptu alebo SUMO súborov **nevyžaduje** `./ns3 build`.
 - Priečinok `build/` nikdy nemazať, znamenalo by to hodinovú rekompiláciu.
 - Dočasné súbory (`xgregorm_tmp/`) si skript maže sám, žiadne CSV nenechávať na disku.

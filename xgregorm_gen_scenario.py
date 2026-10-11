@@ -514,7 +514,8 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
             print("           Use a higher --srs (40/80/160/320) or fewer --vehicles.")
         if "died with" in vystup or "Segmentation" in vystup:
             print("           The numbers below come only from the part that ran before the crash.")
-    cam_tx = cam_rx = denm_rx = cpm_rx = prepn_spolu = 0
+    cam_tx = cam_rx = denm_rx = cpm_rx = cpm_tx = prepn_spolu = 0
+    je_lte = "lte" in program.lower()
     if vozidla:
         print(f"  {'vehicle':<8}{'CAM tx':>8}{'CAM rx':>8}{'DENM rx':>9}{'CPM rx':>8}{'RSU sw.':>9}"
               f"{'v [m/s]':>9}{'stop %':>8}{'stop tot[s]':>12}{'stop max[s]':>12}")
@@ -531,7 +532,7 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
             else:
                 dop = f"{'-':>9}{'-':>8}{'-':>12}{'-':>12}"
             print(f"  {v:<8}{str(c_tx):>8}{str(c_rx):>8}{str(d_rx):>9}{str(p_rx):>8}"
-                  f"{str(prepnutia.get(v, '-')):>9}{dop}")
+                  f"{str('-' if je_lte else prepnutia.get(v, '-')):>9}{dop}")
 
         def sucet(kluc):
             return sum(u.get(kluc, 0) for u in info.values())
@@ -539,13 +540,13 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
         cam_tx = sucet("CAM-SENT")
         cam_rx = sucet("CAM-RECEIVED")
         cpm_rx = sucet("CPM-RECEIVED")
+        cpm_tx = sucet("CPM-SENT")
         denm_rx = sucet("DENM-RECEIVED") or sum(denm_csv.values())
         prepn_spolu = sum(prepnutia.values()) if prepnutia else 0
         print("  " + "-" * 86)
 
     prr_v = float(prr.group(1)) if prr else float("nan")
     lat_v = float(lat.group(1)) if lat else float("nan")
-    je_lte = "lte" in program.lower()
     print("  NETWORK:")
     if je_lte:
         print(f"    PRR / packet loss          : not applicable for LTE (raw value {prr_v:.6f})")
@@ -560,9 +561,17 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
     if a.sim_time < 60:
         print("      NOTE: PRR uses a 3 s window, with sim-time below 60 s the sample is small.")
     print(f"    average latency            : {lat_v:.3f} ms")
-    print(f"    CAM sent / received        : {cam_tx} / {cam_rx}")
-    print(f"    DENM received / CPM recv.  : {denm_rx} / {cpm_rx}")
-    if prepnutia:
+    # an application that does not print a counter must show n/a, not 0 (0 would look like a total loss)
+    def hodnota(kluc, sucet_hodnot, aj_csv=False):
+        hlasi = any(kluc in u for u in info.values()) or (aj_csv and denm_csv)
+        return str(sucet_hodnot) if hlasi else "n/a"
+    print(f"    CAM sent / received        : {hodnota('CAM-SENT', cam_tx)} / {hodnota('CAM-RECEIVED', cam_rx)}")
+    print(f"    DENM received              : {hodnota('DENM-RECEIVED', denm_rx, True)}")
+    print(f"    CPM sent / received        : {hodnota('CPM-SENT', cpm_tx)} / {hodnota('CPM-RECEIVED', cpm_rx)}")
+    print("      (n/a = the application does not report this counter; actual delivery is in PRR above)")
+    if prepnutia and je_lte:
+        print("    RSU switches               : not applicable for LTE (one server, the RSUs are not used)")
+    elif prepnutia:
         print(f"    RSU switches               : {prepn_spolu} total, "
               f"{prepn_spolu / len(prepnutia):.2f} per vehicle")
     if doprava_celkom:
@@ -594,7 +603,7 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
     prr_txt = "n/a" if je_lte else f"{prr_v:.6f}"
     loss_txt = "n/a" if je_lte else f"{100 * (1 - prr_v):.2f}"
     print(f"  CSV: {program},{a.vehicles},{a.rsu},{int(a.sim_time)},{prr_txt},"
-          f"{loss_txt},{lat_v:.3f},{prepn_spolu},"
+          f"{loss_txt},{lat_v:.3f},{'n/a' if je_lte or not prepnutia else prepn_spolu},"
           f"{doprava_celkom.get('speed', float('nan')):.2f},"
           f"{doprava_celkom.get('stopped_pct', float('nan')):.1f}")
     print("=" * (len(program) + 38))
