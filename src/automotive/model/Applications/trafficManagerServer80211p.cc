@@ -9,6 +9,7 @@
 #include "ns3/gn-utils.h"
 #include "ns3/udp-socket-factory.h" // xgregorm
 #include "ns3/inet-socket-address.h" // xgregorm
+#include "ns3/xgregorm-hybrid-socket.h" // xgregorm
 #include <sstream>
 
 #define YELLOW_DURATION 4
@@ -91,32 +92,25 @@ namespace ns3
             DoubleValue (0),
             MakeDoubleAccessor (&trafficManagerServer80211p::m_coord_lookahead),
             MakeDoubleChecker<double> (0))
-        // xgregorm: moje algoritmy CAM (vsetky vypnute = povodne spravanie)
-        .AddAttribute ("XgSpat",
-            "Algorithm 1: the RSU broadcasts the signal state (SPaT) in a beacon, vehicles waiting at red hold their CAMs",
-            BooleanValue (false),
-            MakeBooleanAccessor (&trafficManagerServer80211p::m_xg_spat),
-            MakeBooleanChecker ())
-        .AddAttribute ("XgAck",
-            "Algorithm 2: the beacon lists the vehicles whose CAM the RSU heard since the previous beacon",
-            BooleanValue (false),
-            MakeBooleanAccessor (&trafficManagerServer80211p::m_xg_ack),
-            MakeBooleanChecker ())
-        .AddAttribute ("XgRelax",
-            "Algorithm 3: the beacon announces the area (distance to the traffic light) in which the RSU needs full-rate CAMs",
-            BooleanValue (false),
-            MakeBooleanAccessor (&trafficManagerServer80211p::m_xg_relax),
-            MakeBooleanChecker ())
+        // xgregorm: hybrid 802.11p + LTE + NR-V2X
         .AddAttribute ("XgBeaconMs",
-            "Beacon period [ms]; 0 = automatic (200 ms with XgAck, otherwise 1000 ms)",
-            UintegerValue (0),
+            "Adaptive hybrid: period of the RSU beacon listing the CAMs heard over each direct technology [ms]",
+            UintegerValue (200),
             MakeUintegerAccessor (&trafficManagerServer80211p::m_xg_beacon_ms),
-            MakeUintegerChecker<uint32_t> ())
-        .AddAttribute ("XgRelevance",
-            "Algorithm 3: vehicles closer than this to the RSU's traffic light (along the route) send full-rate CAMs [m]",
-            DoubleValue (250),
-            MakeDoubleAccessor (&trafficManagerServer80211p::m_xg_relevance),
-            MakeDoubleChecker<double> (0));
+            MakeUintegerChecker<uint32_t> (1))
+        .AddAttribute ("XgHybrid",
+            "Hybrid 802.11p + LTE: 1 = also receive CAMs relayed from the cellular network over the wired backhaul "
+            "(UDP port 9); 2 = in addition send beacons with the list of CAMs heard over 802.11p (link-quality "
+            "feedback for adaptive vehicles)",
+            UintegerValue (0),
+            MakeUintegerAccessor (&trafficManagerServer80211p::m_xg_hybrid),
+            MakeUintegerChecker<uint32_t> (0, 2))
+        .AddAttribute ("XgNr",
+            "Hybrid: the RSU has an NR-V2X sidelink device, receives CAMs over it (UDP 225.0.0.0:19) and, with "
+            "XgHybrid = 2, sends its beacon also over NR (port 20)",
+            BooleanValue (false),
+            MakeBooleanAccessor (&trafficManagerServer80211p::m_xg_nr),
+            MakeBooleanChecker ());
         return tid;
   }
 
@@ -133,9 +127,7 @@ namespace ns3
     m_coord_lookahead = 0;
     m_coord_tx = 0;
     m_coord_rx = 0;
-    m_xg_spat = m_xg_ack = m_xg_relax = false;
-    m_xg_beacon_ms = 0;
-    m_xg_relevance = 250;
+    m_xg_beacon_ms = 200;
   }
 
   trafficManagerServer80211p::~trafficManagerServer80211p ()
@@ -294,9 +286,10 @@ namespace ns3
     m_xg_rsu.believedEdge = &m_veh_position;
     xgstats::registerRsu (&m_xg_rsu, m_client);
 
-    // xgregorm: beacon RSU pre moje algoritmy CAM - vlastny ramec 802.11p (nie GeoNet), simulovany
-    // v ns-3 rovnako ako CAM (kanal, kolizie); MetricSupervisor ho do PRR nezapocita, pocty vypisujeme
-    if (m_xg_spat || m_xg_ack || m_xg_relax)
+    // xgregorm: adaptivny hybrid - beacon RSU (zoznam CAM pocutych kazdou priamou technologiou) = spatna
+    // vazba pre auta; cez 802.11p vlastny ramec (nie GeoNet, ethertype 0x88B5), simulovany v ns-3 rovnako ako
+    // CAM (kanal, kolizie); MetricSupervisor ho do PRR nezapocita, pocty vypisujeme
+    if (m_xg_hybrid == 2)
       {
         m_xg_socket = Socket::CreateSocket (GetNode (), TypeId::LookupByName ("ns3::PacketSocketFactory"));
         PacketSocketAddress xlocal;
@@ -310,13 +303,38 @@ namespace ns3
         xremote.SetPhysicalAddress (GetNode ()->GetDevice (0)->GetBroadcast ());
         xremote.SetProtocol (XG_ETHERTYPE);
         m_xg_socket->Connect (xremote);
-        if (m_xg_beacon_ms == 0)
-          m_xg_beacon_ms = m_xg_ack ? 200 : 1000;
         Ptr<UniformRandomVariable> off = CreateObject<UniformRandomVariable> ();
         m_xg_beacon_ev = Simulator::Schedule (MilliSeconds (off->GetInteger (0, m_xg_beacon_ms)),
-                                              &trafficManagerServer80211p::xgSendBeacon, this, false);
-        if (m_xg_spat && !m_xg_rsu.tls.empty ())
-          Simulator::Schedule (MilliSeconds (100), &trafficManagerServer80211p::xgTick, this);
+                                              &trafficManagerServer80211p::xgSendBeacon, this);
+      }
+
+    // xgregorm: hybrid - CAM, ktore auta poslali cez LTE, preposiela server v sieti po kabli; idu do tej
+    // istej GeoNet/CA sluzby ako CAM z 802.11p (receiveCAM ich rozlisi podla typu adresy)
+    if (m_xg_hybrid)
+      {
+        m_hyb_socket = Socket::CreateSocket (GetNode (), UdpSocketFactory::GetTypeId ());
+        if (m_hyb_socket->Bind (InetSocketAddress (Ipv4Address::GetAny (), 9)) == -1)
+          NS_FATAL_ERROR ("Hybrid mode needs an IPv4 interface on the RSU (wired backhaul)");
+        m_hyb_socket->SetRecvCallback (MakeCallback (&GeoNet::receiveGN, m_geoNet));
+      }
+    // xgregorm: hybrid - NR-V2X sidelink (RSU ako UE v sidelinku, ako C-V2X RSU v realite)
+    if (m_xg_nr)
+      {
+        Ptr<NetDevice> nrDev = xghyb::findDevice (GetNode (), "ns3::NrUeNetDevice");
+        if (!nrDev)
+          NS_FATAL_ERROR ("XgNr needs an NR sidelink device on the RSU");
+        m_nr_socket = Socket::CreateSocket (GetNode (), UdpSocketFactory::GetTypeId ());
+        if (m_nr_socket->Bind (InetSocketAddress (Ipv4Address::GetAny (), 19)) == -1)
+          NS_FATAL_ERROR ("Failed to bind the NR-V2X socket on the RSU");
+        m_nr_socket->BindToNetDevice (nrDev);
+        m_nr_socket->SetRecvCallback (MakeCallback (&GeoNet::receiveGN, m_geoNet));
+        if (m_xg_hybrid == 2)
+          {
+            m_nr_beacon_socket = Socket::CreateSocket (GetNode (), UdpSocketFactory::GetTypeId ());
+            m_nr_beacon_socket->Bind ();
+            m_nr_beacon_socket->BindToNetDevice (nrDev);
+            m_nr_beacon_socket->Connect (InetSocketAddress (Ipv4Address ("225.0.0.0"), 20));
+          }
       }
 
     // xgregorm: UDP socket na kablovej sieti medzi RSU
@@ -366,7 +384,13 @@ namespace ns3
                   << ",EDGE_WRONG:" << r.edgeWrong << ",ERR_SUM:" << r.errSum << ",GT5:" << r.gt5
                   << ",GT10:" << r.gt10 << ",UL_EXP:" << r.ulExp[0] << ",UL_RX:" << r.ulRx[0]
                   << ",ULG_EXP:" << r.ulExp[1] << ",ULG_RX:" << r.ulRx[1] << ",GREENS:" << r.greenStarts.size ()
-                  << ",BEACON_TX:" << m_xg_beacon_tx << ",BEACON_BYTES:" << m_xg_beacon_bytes << std::endl;
+                  << ",BEACON_TX:" << m_xg_beacon_tx << ",BEACON_BYTES:" << m_xg_beacon_bytes
+                  << ",SAMPLES_F:" << r.samplesF << ",UNKNOWN_F:" << r.unknownF << ",ERR_SUM_F:" << r.errSumF
+                  << ",GT10_F:" << r.gt10F << ",AGE_SUM:" << r.ageSum << ",AGE_SUM_F:" << r.ageSumF
+                  << ",LAT_W_SUM:" << r.latSum[0] << ",LAT_W_N:" << r.latN[0] << ",LAT_L_SUM:" << r.latSum[1]
+                  << ",LAT_L_N:" << r.latN[1] << ",LAT_N_SUM:" << r.latSum[2] << ",LAT_N_N:" << r.latN[2]
+                  << ",RX_W:" << m_hyb_rx[0] << ",RX_L:" << m_hyb_rx[1] << ",RX_N:" << m_hyb_rx[2]
+                  << ",STALE:" << m_hyb_stale << ",BEACON_NR_TX:" << m_nr_beacon_tx << std::endl;
         static bool v2v_printed = false;
         if (!v2v_printed)
           std::cout << "XGREGORM-V2V,EXP:" << xgstats::v2vExp () << ",RX:" << xgstats::v2vRx () << std::endl;
@@ -402,10 +426,42 @@ namespace ns3
 
     unsigned long stationId = asn1cpp::getField (cam->header.stationId, unsigned long);
 
-    // xgregorm: merania + zoznam pocutych CAM pre beacon (algoritmus 2)
-    xgstats::onCamRx (&m_xg_rsu, stationId);
-    m_xg_heard.insert (stationId);
-    m_xg_last_cam = Simulator::Now ().GetSeconds ();
+    // xgregorm: merania + zoznam pocutych CAM pre beacon (hybrid)
+    long gdt = asn1cpp::getField (cam->cam.generationDeltaTime, long);
+    // cesta: 802.11p = PacketSocket; UDP od servera z kabla (10.10.0.0/24) = LTE; ine UDP = NR-V2X sidelink
+    int path = 0;
+    if (InetSocketAddress::IsMatchingType (address))
+      path = Ipv4Mask ("255.255.255.0").IsMatch (InetSocketAddress::ConvertFrom (address).GetIpv4 (),
+                                                  Ipv4Address ("10.10.0.0")) ? 1 : 2;
+    xgstats::onCamRx (&m_xg_rsu, stationId, gdt, path);
+    if (m_xg_hybrid)
+      {
+        // ta ista CAM moze prist viac cestami a LTE kopia neskor nez novsia CAM cez priamu technologiu:
+        // spracujeme len CAM novsiu nez posledna (generationDeltaTime, modulo 65536)
+        m_hyb_rx[path]++;
+        auto last = m_hyb_last_gdt.find (stationId);
+        if (last != m_hyb_last_gdt.end ())
+          {
+            long d = (gdt - last->second + 65536) % 65536;
+            if (d == 0 || d >= 32768)
+              {
+                m_hyb_stale++;
+                return;
+              }
+          }
+        m_hyb_last_gdt[stationId] = gdt;
+      }
+    // beacon (aj jeho potvrdenia) sa tyka len priameho spojenia, kazda technologia ma vlastny zoznam
+    if (path == 0)
+      {
+        m_xg_heard.insert (stationId);
+        m_xg_last_cam = Simulator::Now ().GetSeconds ();
+      }
+    else if (path == 2)
+      {
+        m_xg_heard_nr.insert (stationId);
+        m_xg_last_cam_nr = Simulator::Now ().GetSeconds ();
+      }
 
     // xgregorm: koordinacia krizovatiek - zmenu cesty auta oznamime ostatnym RSU po kabli
     if (m_coord && !roadMap.edgeID.empty () && roadMap.edgeID[0] != ':')
@@ -594,60 +650,40 @@ namespace ns3
   }
 
   void
-  trafficManagerServer80211p::xgSendBeacon (bool forced)
+  trafficManagerServer80211p::xgSendBeacon ()
   {
-    // xgregorm: "XG|x|y|tls|stav|relevancia|zaciatok_okna_ms|ack|id;id;..."
-    // periodicky beacon sa posiela, len ak RSU za posledne 2 s pocula nejake auto (inak nie je komu)
+    // xgregorm: adaptivny hybrid - "XG|semafor|zaciatok_okna_ms|id;id;..." = auta, ktorych CAM RSU touto
+    // technologiou pocula od zaciatku okna; ide cez 802.11p aj NR-V2X, kazdy so svojim zoznamom.
+    // Technologiou, ktorou RSU za posledne 2 s nic nepocula, sa beacon neposiela (nie je komu).
     double now = Simulator::Now ().GetSeconds ();
-    if (!forced)
-      m_xg_beacon_ev = Simulator::Schedule (MilliSeconds (m_xg_beacon_ms), &trafficManagerServer80211p::xgSendBeacon, this, false);
-    if (now - m_xg_last_cam > 2.0)
+    m_xg_beacon_ev = Simulator::Schedule (MilliSeconds (m_xg_beacon_ms), &trafficManagerServer80211p::xgSendBeacon, this);
+    auto build = [&] (const std::set<unsigned long> &heard) {
+      std::ostringstream msg;
+      msg << "XG|" << m_xg_rsu.tls << "|" << (long) (m_xg_win_start * 1000) << "|";
+      bool first = true;
+      for (unsigned long sid : heard)
+        {
+          msg << (first ? "" : ";") << sid;
+          first = false;
+        }
+      return msg.str ();
+    };
+    if (now - m_xg_last_cam <= 2.0 && xghyb::up (xghyb::WIFI))
       {
-        m_xg_heard.clear ();
-        m_xg_win_start = now;
-        return;
+        std::string txt = build (m_xg_heard);
+        m_xg_socket->Send (Create<Packet> ((const uint8_t *) txt.c_str (), txt.size ()));
+        m_xg_beacon_tx++;
+        m_xg_beacon_bytes += txt.size ();
       }
-    std::ostringstream msg;
-    msg << "XG|" << (long) m_xg_rsu.x << "|" << (long) m_xg_rsu.y << "|" << m_xg_rsu.tls << "|";
-    if (m_xg_spat && !m_xg_rsu.tls.empty ())
-      msg << m_client->TraCIAPI::trafficlights.getRedYellowGreenState (m_xg_rsu.tls);
-    else
-      msg << "-";
-    msg << "|" << (m_xg_relax ? (long) m_xg_relevance : 0) << "|" << (long) (m_xg_win_start * 1000) << "|"
-        << (m_xg_ack && !forced ? 1 : 0) << "|";
-    if (m_xg_ack && !forced)
+    if (m_nr_beacon_socket && now - m_xg_last_cam_nr <= 2.0 && xghyb::up (xghyb::NR))
       {
-        bool first = true;
-        for (unsigned long sid : m_xg_heard)
-          {
-            msg << (first ? "" : ";") << sid;
-            first = false;
-          }
+        std::string txt = build (m_xg_heard_nr);
+        m_nr_beacon_socket->Send (Create<Packet> ((const uint8_t *) txt.c_str (), txt.size ()));
+        m_nr_beacon_tx++;
       }
-    if (!forced)
-      {
-        // okno potvrdeni sa posuva len periodickym beaconom (mimoriadny SPaT beacon nic nepotvrdzuje)
-        m_xg_heard.clear ();
-        m_xg_win_start = now;
-      }
-    std::string txt = msg.str ();
-    Ptr<Packet> p = Create<Packet> ((const uint8_t *) txt.c_str (), txt.size ());
-    m_xg_socket->Send (p);
-    m_xg_beacon_tx++;
-    m_xg_beacon_bytes += txt.size ();
-  }
-
-  void
-  trafficManagerServer80211p::xgTick ()
-  {
-    // xgregorm: algoritmus 1 - zmenu farby oznamime hned (ako SPaT pri zmene stavu), nie az periodicky
-    if (m_xg_printed)
-      return; // aplikacia uz skoncila
-    std::string st = m_client->TraCIAPI::trafficlights.getRedYellowGreenState (m_xg_rsu.tls);
-    if (!m_xg_last_state.empty () && m_xg_last_state != st)
-      xgSendBeacon (true);
-    m_xg_last_state = st;
-    Simulator::Schedule (MilliSeconds (100), &trafficManagerServer80211p::xgTick, this);
+    m_xg_heard.clear ();
+    m_xg_heard_nr.clear ();
+    m_xg_win_start = now;
   }
 
   void

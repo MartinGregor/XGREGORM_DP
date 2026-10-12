@@ -83,9 +83,8 @@ main (int argc, char *argv[])
   int sumo_seed = 10;
   double coord_lookahead = 0;
   // xgregorm: moje algoritmy CAM (vsetky vypnute = povodne spravanie)
-  bool xg_spat = false, xg_ack = false, xg_relax = false;
-  uint32_t xg_beacon_ms = 0;
-  double xg_hold_max = 1, xg_relevance = 250;
+  bool xg_relax = false;
+  double xg_relevance = 250;
 
 
   int numberOfNodes;
@@ -117,12 +116,8 @@ main (int argc, char *argv[])
   cmd.AddValue ("tls-radius","Each RSU controls only traffic lights within this radius [m] (default: its own intersection); 0 = all (authors' original)",tls_radius);
   cmd.AddValue ("coord-lookahead","With --tls-coord: count a vehicle announced by a neighbour only this many s before its arrival (0 = at once)",coord_lookahead);
   cmd.AddValue ("sumo-seed","Random seed for SUMO (default 10 as in the original example)",sumo_seed);
-  cmd.AddValue ("xg-spat","Algorithm 1: RSU beacon with the signal state, vehicles hold CAMs while waiting at red",xg_spat);
-  cmd.AddValue ("xg-ack","Algorithm 2: RSU beacon lists heard CAMs, vehicles retransmit the unheard ones",xg_ack);
-  cmd.AddValue ("xg-relax","Algorithm 3: full-rate CAMs only near an RSU's traffic light, 1 Hz elsewhere",xg_relax);
-  cmd.AddValue ("xg-beacon-ms","RSU beacon period [ms], 0 = auto (200 with --xg-ack, else 1000)",xg_beacon_ms);
-  cmd.AddValue ("xg-hold-max","Algorithm 1: longest CAM gap while holding at red [s]",xg_hold_max);
-  cmd.AddValue ("xg-relevance","Algorithm 3: distance to the traffic light with full-rate CAMs [m]",xg_relevance);
+  cmd.AddValue ("xg-relax","Relevance-based CAM rate: full ETSI rate only near the next traffic light, 1 Hz elsewhere",xg_relax);
+  cmd.AddValue ("xg-relevance","Relevance-based CAM rate: distance to the traffic light with full-rate CAMs [m]",xg_relevance);
   cmd.AddValue ("tls-coord","RSUs share vehicle positions over a wired backhaul (CSMA 100 Mbit/s, 1 ms)",tls_coord);
 
   /* Cmd Line option for 802.11p */
@@ -312,11 +307,6 @@ main (int argc, char *argv[])
   TrafficManagerServer80211pHelper.SetAttribute ("BackhaulBroadcast", Ipv4AddressValue("10.10.0.255"));
   TrafficManagerServer80211pHelper.SetAttribute ("CoordLookahead", DoubleValue(coord_lookahead));
   TrafficManagerServer80211pHelper.SetAttribute ("MetricSupervisor", PointerValue (metSup));
-  TrafficManagerServer80211pHelper.SetAttribute ("XgSpat", BooleanValue (xg_spat)); // xgregorm
-  TrafficManagerServer80211pHelper.SetAttribute ("XgAck", BooleanValue (xg_ack));
-  TrafficManagerServer80211pHelper.SetAttribute ("XgRelax", BooleanValue (xg_relax));
-  TrafficManagerServer80211pHelper.SetAttribute ("XgBeaconMs", UintegerValue (xg_beacon_ms));
-  TrafficManagerServer80211pHelper.SetAttribute ("XgRelevance", DoubleValue (xg_relevance));
 
   int i = 0;
   for (auto rsu : rsuData)
@@ -343,10 +333,8 @@ main (int argc, char *argv[])
   TrafficManagerClient80211pHelper.SetAttribute ("RealTime", BooleanValue(realtime));
   TrafficManagerClient80211pHelper.SetAttribute ("SendCAM", BooleanValue (send_cam));
   TrafficManagerClient80211pHelper.SetAttribute ("MetricSupervisor", PointerValue (metSup));
-  TrafficManagerClient80211pHelper.SetAttribute ("XgSpat", BooleanValue (xg_spat)); // xgregorm
-  TrafficManagerClient80211pHelper.SetAttribute ("XgAck", BooleanValue (xg_ack));
-  TrafficManagerClient80211pHelper.SetAttribute ("XgRelax", BooleanValue (xg_relax));
-  TrafficManagerClient80211pHelper.SetAttribute ("XgHoldMax", DoubleValue (xg_hold_max));
+  TrafficManagerClient80211pHelper.SetAttribute ("XgRelax", BooleanValue (xg_relax)); // xgregorm
+  TrafficManagerClient80211pHelper.SetAttribute ("XgRelevance", DoubleValue (xg_relevance));
 
   /* callback function for node creation */
   STARTUP_FCN setupNewWifiNode = [&] (std::string vehicleID,TraciClient::StationTypeTraCI_t stationType) -> Ptr<Node>

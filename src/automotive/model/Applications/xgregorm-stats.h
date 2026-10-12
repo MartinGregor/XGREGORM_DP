@@ -3,6 +3,8 @@
 //  - presnost informacie RSU: kazdych 100 ms pre kazde auto, ktore je naozaj na prijazde ku krizovatke
 //    danej RSU a do 100 m od nej, porovna skutocnu polohu/cestu so stavom, ktory RSU pozna z poslednej prijatej CAM
 //  - uplink: kolko CAM odoslanych do 100 m od RSU tato RSU naozaj prijala, zvlast 3 s po zacati zelenej
+//  - hybrid (802.11p + LTE + NR-V2X): CAM sa paruju podla generationDeltaTime, meria sa oneskorenie po kazdej ceste,
+//    vek informacie RSU a presnost aj na celom prijazde (nielen do 100 m)
 #ifndef XGREGORM_STATS_H
 #define XGREGORM_STATS_H
 
@@ -12,6 +14,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <deque>
 #include <cmath>
 
 namespace ns3 {
@@ -31,20 +34,38 @@ struct Rsu
   std::vector<double> greenStarts;                  // [s]
   uint64_t ulExp[2] = {0, 0}, ulRx[2] = {0, 0};     // [0] mimo okna, [1] do 3 s po zelenej
   std::map<unsigned long, std::pair<double, double>> believedPos;   // posledna prijata poloha auta
+  std::map<unsigned long, double> believedT;                        // kedy bola ta CAM odoslana
   const std::map<unsigned long, std::string> *believedEdge = nullptr; // m_veh_position servera
   uint64_t samples = 0, unknown = 0, edgeWrong = 0, gt5 = 0, gt10 = 0;
   double errSum = 0;
+  // cely prijazd (aj > 100 m), vek informacie [s]
+  uint64_t samplesF = 0, unknownF = 0, gt10F = 0;
+  double errSumF = 0, ageSum = 0, ageSumF = 0;
+  // oneskorenie auto -> RSU [0] 802.11p, [1] LTE + kabel, [2] NR-V2X
+  double latSum[3] = {0, 0, 0};
+  uint64_t latN[3] = {0, 0, 0};
 };
 
-struct Tx { double t, x, y; std::set<unsigned long> inRange; };
+struct Tx
+{
+  double t, x, y;
+  long gdt;                           // generationDeltaTime CAM
+  bool direct;                        // odisla priamo autam (802.11p a/alebo NR-V2X)
+  std::set<unsigned long> inRange;
+  std::set<unsigned long> pending;    // auta v dosahu, ktore ju este nedostali
+  std::set<const Rsu *> got;          // RSU, ktore ju uz prijali (prva kopia)
+};
 
 // skutocne PRR medzi autami (poloha zo SUMO, nie z GeoNet EPV, ktora sa obnovuje len raz za 1 s)
 inline std::map<unsigned long, std::pair<double, double>> &vehPos () { static std::map<unsigned long, std::pair<double, double>> m; return m; }
 inline uint64_t &v2vExp () { static uint64_t n = 0; return n; }
 inline uint64_t &v2vRx () { static uint64_t n = 0; return n; }
+// oneskorenie auto -> auto podla technologie [0] 802.11p, [2] NR (prva kopia CAM)
+inline double *v2vLatSum () { static double d[3] = {0, 0, 0}; return d; }
+inline uint64_t *v2vLatN () { static uint64_t n[3] = {0, 0, 0}; return n; }
 
 inline std::vector<Rsu *> &rsus () { static std::vector<Rsu *> v; return v; }
-inline std::map<unsigned long, Tx> &lastTx () { static std::map<unsigned long, Tx> m; return m; }
+inline std::map<unsigned long, std::deque<Tx>> &lastTx () { static std::map<unsigned long, std::deque<Tx>> m; return m; }
 inline Ptr<TraciClient> &client () { static Ptr<TraciClient> c; return c; }
 inline bool &running () { static bool r = false; return r; }
 
@@ -60,39 +81,72 @@ bucket (const Rsu *r, double t)
 }
 
 inline void
-onCamTx (unsigned long sid, double x, double y)
+onCamTx (unsigned long sid, double x, double y, long gdt, bool direct = true)
 {
   double t = Simulator::Now ().GetSeconds ();
-  Tx tx {t, x, y, {}};
-  for (auto &v : vehPos ())
-    if (v.first != sid && std::hypot (x - v.second.first, y - v.second.second) <= kRange)
-      tx.inRange.insert (v.first);
+  Tx tx {t, x, y, gdt, direct, {}, {}, {}};
+  if (direct) // susedne auta dostanu CAM len priamo (802.11p, NR-V2X), nie cez LTE
+    for (auto &v : vehPos ())
+      if (v.first != sid && std::hypot (x - v.second.first, y - v.second.second) <= kRange)
+        tx.inRange.insert (v.first);
+  tx.pending = tx.inRange;
   v2vExp () += tx.inRange.size ();
-  lastTx ()[sid] = tx;
+  std::deque<Tx> &d = lastTx ()[sid];
+  d.push_back (tx);
+  while (d.size () > 1 && t - d.front ().t > 2.0)
+    d.pop_front ();
   for (Rsu *r : rsus ())
     if (std::hypot (x - r->x, y - r->y) <= kRange)
       r->ulExp[bucket (r, t)]++;
 }
 
+// path = 0 802.11p, 1 LTE + kabel, 2 NR-V2X; parovanie podla generationDeltaTime (LTE moze meskat aj > 100 ms)
 inline void
-onCamRx (Rsu *r, unsigned long sid)
+onCamRx (Rsu *r, unsigned long sid, long gdt, int path = 0)
 {
   auto it = lastTx ().find (sid);
-  if (it == lastTx ().end () || Simulator::Now ().GetSeconds () - it->second.t > 0.05)
+  if (it == lastTx ().end ())
     return;
-  const Tx &tx = it->second;
-  r->believedPos[sid] = {tx.x, tx.y};
-  if (std::hypot (tx.x - r->x, tx.y - r->y) <= kRange)
-    r->ulRx[bucket (r, tx.t)]++;
+  for (auto tx = it->second.rbegin (); tx != it->second.rend (); ++tx)
+    {
+      if (tx->gdt != gdt)
+        continue;
+      double now = Simulator::Now ().GetSeconds ();
+      r->latSum[path] += now - tx->t;
+      r->latN[path]++;
+      if (!tx->got.insert (r).second)
+        return; // druha kopia tej istej CAM (DUAL)
+      auto bt = r->believedT.find (sid);
+      if (bt == r->believedT.end () || tx->t > bt->second)
+        {
+          r->believedPos[sid] = {tx->x, tx->y};
+          r->believedT[sid] = tx->t;
+        }
+      if (std::hypot (tx->x - r->x, tx->y - r->y) <= kRange)
+        r->ulRx[bucket (r, tx->t)]++;
+      return;
+    }
 }
 
+// path = 0 802.11p, 2 NR-V2X; kazda CAM sa auto-auto zapocita najviac raz (pri oboch cestach prva kopia)
 inline void
-onVehCamRx (unsigned long receiver, unsigned long sender)
+onVehCamRx (unsigned long receiver, unsigned long sender, long gdt, int path = 0)
 {
   auto it = lastTx ().find (sender);
-  if (it != lastTx ().end () && Simulator::Now ().GetSeconds () - it->second.t <= 0.05 &&
-      it->second.inRange.count (receiver))
-    v2vRx ()++;
+  if (it == lastTx ().end ())
+    return;
+  for (auto tx = it->second.rbegin (); tx != it->second.rend (); ++tx)
+    {
+      if (tx->gdt != gdt)
+        continue;
+      if (tx->pending.erase (receiver))
+        {
+          v2vRx ()++;
+          v2vLatSum ()[path] += Simulator::Now ().GetSeconds () - tx->t;
+          v2vLatN ()[path]++;
+        }
+      return;
+    }
 }
 
 inline void
@@ -121,17 +175,29 @@ sample ()
         {
           if (!r->approaches.count (road))
             continue;
+          auto bp = r->believedPos.find (sid);
+          double e = bp == r->believedPos.end () ? 0 : std::hypot (p.x - bp->second.first, p.y - bp->second.second);
+          double age = bp == r->believedPos.end () ? 0 : now - r->believedT[sid];
+          // cely prijazd (hybrid: LTE doplna informaciu aj mimo dosahu 802.11p)
+          r->samplesF++;
+          if (bp == r->believedPos.end ())
+            r->unknownF++;
+          else
+            {
+              r->errSumF += e;
+              r->ageSumF += age;
+              r->gt10F += e > 10;
+            }
           if (std::hypot (p.x - r->x, p.y - r->y) > kRange)
             continue; // dalej uz rozhoduje dosah, nie algoritmus
           r->samples++;
-          auto bp = r->believedPos.find (sid);
           if (bp == r->believedPos.end ())
             {
               r->unknown++;
               r->edgeWrong++;
               continue;
             }
-          double e = std::hypot (p.x - bp->second.first, p.y - bp->second.second);
+          r->ageSum += age;
           r->errSum += e;
           r->gt5 += e > 5;
           r->gt10 += e > 10;

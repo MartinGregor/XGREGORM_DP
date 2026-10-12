@@ -77,27 +77,41 @@ ap.add_argument("--tls-coord", type=int, default=0, choices=[0, 1],
 ap.add_argument("--coord-lookahead", type=float, default=0,
                 help="with --tls-coord 1: a vehicle announced by a neighbouring RSU is counted only this many "
                      "seconds before its estimated arrival; 0 = immediately")
-# my CAM algorithms (trafficManager 802.11p only); all 0 = authors' ETSI CAM generation
-ap.add_argument("--xg-spat", type=int, default=0, choices=[0, 1],
-                help="algorithm 1: RSU beacon with the signal state (SPaT), vehicles hold CAMs at red")
-ap.add_argument("--xg-ack", type=int, default=0, choices=[0, 1],
-                help="algorithm 2: RSU beacon lists heard CAMs, vehicles retransmit unheard ones")
+# my CAM algorithm (trafficManager 802.11p and hybrid); 0 = authors' ETSI CAM generation
 ap.add_argument("--xg-relax", type=int, default=0, choices=[0, 1],
-                help="algorithm 3: full-rate CAMs only near an RSU's traffic light, 1 Hz elsewhere")
-ap.add_argument("--xg-beacon-ms", type=int, default=0, help="RSU beacon period [ms], 0 = auto (200 with ack, else 1000)")
-ap.add_argument("--xg-hold-max", type=float, default=1, help="algorithm 1: longest CAM gap at red [s], ETSI max 1")
-ap.add_argument("--xg-relevance", type=float, default=250, help="algorithm 3: full-rate distance to the light [m]")
+                help="relevance-based CAM rate: full ETSI rate only near the next traffic light, 1 Hz elsewhere")
+ap.add_argument("--xg-relevance", type=float, default=250,
+                help="relevance-based CAM rate: full-rate distance to the next traffic light [m]")
+ap.add_argument("--beacon-ms", type=int, default=200, help="hybrid adaptive: period of the RSU feedback beacon [ms]")
+# hybrid 802.11p + LTE + NR-V2X (program "hybrid" = xgregorm-hybrid)
+ap.add_argument("--tech", default="80211p,lte,nr",
+                help="hybrid: available technologies, comma separated subset of 80211p,lte,nr")
+ap.add_argument("--policy", default="adaptive", choices=["adaptive", "all"],
+                help="hybrid: adaptive = direct technology + backup only when needed; all = every CAM on all technologies")
+ap.add_argument("--fail-80211p", default="", help="hybrid: 802.11p outage during the run, 'from:to' [s] ('60' = until the end)")
+ap.add_argument("--fail-lte", default="", help="hybrid: LTE outage during the run, 'from:to' [s]")
+ap.add_argument("--fail-nr", default="", help="hybrid: NR-V2X outage during the run, 'from:to' [s]")
+ap.add_argument("--hyb-range", type=float, default=250,
+                help="hybrid adaptive: distance to the next light where its controller needs the vehicle [m]")
+ap.add_argument("--hyb-qmin", type=float, default=0.9,
+                help="hybrid adaptive: lowest share of CAMs confirmed by the RSU to rely on one direct technology")
+ap.add_argument("--hyb-dwell", type=float, default=1.0,
+                help="hybrid adaptive: the direct link must be good this long before the backup is switched off [s]")
+ap.add_argument("--core-delay", type=float, default=5, help="hybrid: one-way delay PGW -> server [ms]")
 ap.add_argument("--seed", type=int, default=None,
                 help="random seed: ns-3 --RngRun for all programs, SUMO seed only for v2i-traffic-80211p "
                      "(--sumo-seed); not set = defaults (SUMO seed 10), identical to the reference results")
 ap.add_argument("--run", default="nic",
                 choices=["nic", "v2i-speed-80211p", "v2i-speed-lte", "v2i-traffic-80211p", "v2i-traffic-lte",
-                         "v2v-80211p", "all"],
+                         "v2v-80211p", "hybrid", "all"],
                 help="which simulation to run after generating the scenario")
 ap.add_argument("--gui", action="store_true", help="enable the SUMO GUI")
 ap.add_argument("--diag", action="store_true",
                 help="before ns-3, run plain SUMO and report how smoothly the traffic flows")
 a = ap.parse_args()
+TECH = [t.strip().lower() for t in a.tech.split(",") if t.strip()]
+if not TECH or any(t not in ("80211p", "lte", "nr") for t in TECH):
+    ap.error("--tech must be a comma separated subset of 80211p,lte,nr")
 
 if not os.path.isfile("./ns3"):
     sys.exit("Error: run this from the ns-3-dev folder (next to the ./ns3 file)")
@@ -370,14 +384,21 @@ ZAKLAD = (f"--sumo-folder={S} --mob-trace={P}cars.rou.xml --sumo-config={cfg_f} 
 TM = f"--phase-time={a.phase_time} --threshold={a.threshold}"
 TM_80211P = (f"{TM} --tls-radius={a.tls_radius} --tls-coord={'true' if a.tls_coord else 'false'}"
              f" --coord-lookahead={a.coord_lookahead}"
-             f" --xg-spat={'true' if a.xg_spat else 'false'} --xg-ack={'true' if a.xg_ack else 'false'}"
-             f" --xg-relax={'true' if a.xg_relax else 'false'} --xg-beacon-ms={a.xg_beacon_ms}"
-             f" --xg-hold-max={a.xg_hold_max} --xg-relevance={a.xg_relevance}")
+             f" --xg-relax={'true' if a.xg_relax else 'false'} --xg-relevance={a.xg_relevance}")
 # SUMO gets its seed from the example on the command line (hardcoded 10 in the authors' examples, so
 # a seed in .sumo.cfg is ignored); only v2i-trafficManager-80211p has the --sumo-seed option so far
 if a.seed is not None:
     TM_80211P += f" --sumo-seed={a.seed}"   # local intersection control (xgregorm change in the authors' app)
 LTE = f"--ns3::LteEnbRrc::SrsPeriodicity={a.srs}"     # otherwise ns-3 aborts with too many UEs
+# my hybrid scenario (802.11p + LTE + NR-V2X, RSU controllers + server in the network); SRS 320 is set inside
+HYB = (f"{TM} --tls-radius={a.tls_radius}"
+       f" --xg-relax={'true' if a.xg_relax else 'false'} --xg-relevance={a.xg_relevance}"
+       f" --beacon-ms={a.beacon_ms}"
+       + "".join(f" --use-{t}={'true' if t in TECH else 'false'}" for t in ("80211p", "lte", "nr"))
+       + f" --policy={a.policy}"
+       + "".join(f" --fail-{t}={v}" for t, v in (("80211p", a.fail_80211p), ("lte", a.fail_lte), ("nr", a.fail_nr)) if v)
+       + f" --hyb-range={a.hyb_range} --hyb-qmin={a.hyb_qmin} --hyb-dwell={a.hyb_dwell}"
+       f" --core-delay={a.core_delay}" + (f" --sumo-seed={a.seed}" if a.seed is not None else ""))
 TMP = f"{P}tmp"
 
 # program name, arguments, has a per-vehicle CSV
@@ -390,6 +411,7 @@ PRIKAZY = {
                            f"{ZAKLAD} {TM_80211P} --tx-power={a.tx_power} --summary=true", False),
     "v2i-traffic-lte": ("v2i-trafficManager-LTE", f"{ZAKLAD} {TM} {LTE} --summary=true", False),
     "v2v-80211p": ("v2v-emergencyVehicleAlert-80211p", f"{ZAKLAD} --tx-power={a.tx_power}", False),
+    "hybrid": ("xgregorm-hybrid", f"{ZAKLAD} {HYB} --tx-power={a.tx_power} --summary=true", False),
 }
 
 
@@ -621,7 +643,8 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
         beac, bbytes = S_("BEACON_TX"), S_("BEACON_BYTES")
         cam_veh_s = cam_tx / max(len(info), 1) / max(a.sim_time, 1)
         v2v = re.search(r"XGREGORM-V2V,EXP:(\d+),RX:(\d+)", vystup)
-        v2v_prr = int(v2v.group(2)) / max(int(v2v.group(1)), 1) if v2v else float("nan")
+        # 0 expected receivers (e.g. LTE only: no CAM goes to the neighbours at all) = not applicable, not 0
+        v2v_prr = int(v2v.group(2)) / int(v2v.group(1)) if v2v and int(v2v.group(1)) > 0 else float("nan")
         prrv = re.search(r"XGREGORM-PRR,VEH:([\d.eE+-]+)", vystup)
         print("  RSU AWARENESS (vehicles on an approach of the RSU's light, sampled every 100 ms):")
         print(f"    samples                    : {sm:.0f}, RSU never heard the vehicle in {100 * S_('UNKNOWN') / sm:.2f} %")
@@ -639,8 +662,8 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
               f"avg {bbytes / max(beac, 1):.0f} B)")
         if xv:
             T = lambda k: sum(r.get(k, 0) for r in xv)
-            print(f"    CAMs held at red (alg. 1)  : {T('HOLD')}, suppressed outside the area (alg. 3): "
-                  f"{T('RELAXED')}, forced on area change: {T('FORCED')}, retransmitted (alg. 2): {T('RETX')}")
+            print(f"    relevance-based CAM rate   : {T('RELAXED')} CAMs suppressed outside the area, "
+                  f"{T('FORCED')} sent at once on entering/leaving it")
         gaps = [dict((k, float(v)) for k, v in re.findall(r"([A-Z_0-9]+):([\d.eE+-]+)", r))
                 for r in re.findall(r"XGREGORM-GAP,(.*)", vystup)]
         gaps = [g for g in gaps if g.get("MIN", -1) >= 0]
@@ -648,17 +671,76 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
             print(f"    ETSI EN 302 637-2 CAM gap  : min {min(g['MIN'] for g in gaps):.0f} ms, max "
                   f"{max(g['MAX'] for g in gaps):.0f} ms (allowed 100-1000), violations "
                   f"< 100 ms: {sum(g['LT100'] for g in gaps):.0f}, > 1000 ms: {sum(g['GT1000'] for g in gaps):.0f}")
-        alg = "+".join(n for n, f in (("spat", a.xg_spat), ("ack", a.xg_ack), ("relax", a.xg_relax)) if f) or "none"
+        hyb = [dict((k, int(v)) for k, v in re.findall(r"([A-Z_0-9]+):(\d+)", r))
+               for r in re.findall(r"XGREGORM-HYB,(.*)", vystup)]
+        if hyb:
+            H = lambda k: sum(r.get(k, 0) for r in hyb)
+            # P<mask>: CAMs by the combination of technologies they really left on (1 802.11p, 2 LTE, 4 NR)
+            ht = max(sum(H(f"P{m}") for m in range(8)), 1)
+            on = lambda bit: sum(H(f"P{m}") for m in range(8) if m & bit)
+            combo = lambda m: "+".join(n for b, n in ((1, "802.11p"), (2, "LTE"), (4, "NR")) if m & b) or "none (outage)"
+            relay = re.search(r"XGREGORM-RELAY,CAM:(\d+)", vystup)
+            lat = [1000 * S_(f"LAT_{k}_SUM") / max(S_(f"LAT_{k}_N"), 1) for k in ("W", "L", "N")]
+            vl = dict((k, float(v)) for k, v in re.findall(r"([A-Z_]+):([\d.eE+-]+)",
+                      (re.search(r"XGREGORM-V2VLAT,(.*)", vystup) or re.search("()", "")).group(1)))
+            smf = max(S_("SAMPLES_F"), 1)
+            knf = max(smf - S_("UNKNOWN_F"), 1)
+            print(f"  HYBRID (technologies {'+'.join(TECH)}, policy {a.policy}"
+                  + "".join(f", {t} outage {v} s" for t, v in (("802.11p", a.fail_80211p), ("LTE", a.fail_lte),
+                                                              ("NR", a.fail_nr)) if v) + "):")
+            print("    CAMs by path               : " + ", ".join(
+                f"{combo(m)} {100 * H(f'P{m}') / ht:.1f} %" for m in range(8) if H(f"P{m}")))
+            print(f"    CAMs per technology        : 802.11p {on(1)}, LTE {on(2)} ({on(2) / max(a.sim_time, 1):.1f}/s "
+                  f"cellular uplink), NR {on(4)}; path switches {H('SWITCH')}, probes of 802.11p {H('PROBE')}")
+            print(f"    relayed by the server      : {relay.group(1) if relay else 'n/a'} CAMs to the RSUs over the backhaul")
+            print(f"    latency vehicle -> RSU     : 802.11p {lat[0]:.2f} ms ({S_('LAT_W_N'):.0f}), LTE + core + backhaul "
+                  f"{lat[1]:.2f} ms ({S_('LAT_L_N'):.0f}, every RSU gets each relayed CAM), NR {lat[2]:.2f} ms ({S_('LAT_N_N'):.0f})")
+            print(f"    latency vehicle -> vehicle : 802.11p {1000 * vl.get('W_SUM', 0) / max(vl.get('W_N', 0), 1):.2f} ms "
+                  f"({vl.get('W_N', 0):.0f}), NR {1000 * vl.get('NR_SUM', 0) / max(vl.get('NR_N', 0), 1):.2f} ms "
+                  f"({vl.get('NR_N', 0):.0f}) - first copy of each CAM")
+            print(f"    RSU info age (<100 m / whole approach): {S_('AGE_SUM') / known:.3f} s / {S_('AGE_SUM_F') / knf:.3f} s")
+            print(f"    whole approach             : unknown {100 * S_('UNKNOWN_F') / smf:.2f} %, error mean "
+                  f"{S_('ERR_SUM_F') / knf:.2f} m, > 10 m in {100 * S_('GT10_F') / knf:.2f} %")
+            print(f"    CAMs received by the RSUs  : 802.11p {S_('RX_W'):.0f}, LTE {S_('RX_L'):.0f}, NR {S_('RX_N'):.0f}; "
+                  f"stale copies dropped {S_('STALE'):.0f}; beacons NR {S_('BEACON_NR_TX'):.0f}")
+            print("      (MetricSupervisor is off in the hybrid scenario - it cannot count LTE/NR or duplicates)")
+            tl = re.search(r"XGREGORM-HYBT,(.*)", vystup)
+            if tl:
+                # timeline in 5 s windows: share of CAMs that left on each technology
+                win = {}
+                for sec, cnt in re.findall(r"T(\d+):([\d/]+)", tl.group(1)):
+                    c = [int(x) for x in cnt.split("/")]
+                    w = win.setdefault(int(sec) // 5, [0] * 8)
+                    for m in range(8):
+                        w[m] += c[m]
+                print("    timeline (5 s, % of CAMs on 802.11p / LTE / NR / none):")
+                for k in sorted(win):
+                    w = win[k]
+                    tot = max(sum(w), 1)
+                    pc = [100 * sum(w[m] for m in range(8) if m & b) / tot for b in (1, 2, 4)]
+                    print(f"      {5 * k:3d}-{5 * k + 5:3d} s: {pc[0]:5.1f} / {pc[1]:5.1f} / {pc[2]:5.1f} / "
+                          f"{100 * w[0] / tot:4.1f}   ({tot} CAMs)")
+            print("  XGCSV-HYB: tech,policy,seed,vehicles,cam_wifi,cam_lte,cam_nr,lte_cam_s,switches,lat_wifi_ms,"
+                  "lat_lte_ms,lat_nr_ms,age_near_s,age_far_s,unknown_far_%,err_far_m,gt10_far_%,v2v_prr,"
+                  "stop_max_s,stopped_%,speed_kmh")
+            print(f"  XGCSV-HYB: {'+'.join(TECH)},{a.policy},{a.seed},{a.vehicles},{on(1)},{on(2)},{on(4)},"
+                  f"{on(2) / max(a.sim_time, 1):.2f},{H('SWITCH')},{lat[0]:.3f},{lat[1]:.3f},{lat[2]:.3f},"
+                  f"{S_('AGE_SUM') / known:.4f},{S_('AGE_SUM_F') / knf:.4f},"
+                  f"{100 * S_('UNKNOWN_F') / smf:.3f},{S_('ERR_SUM_F') / knf:.3f},{100 * S_('GT10_F') / knf:.3f},"
+                  f"{v2v_prr:.5f},{doprava_celkom.get('longest_stop', float('nan')):.1f},"
+                  f"{doprava_celkom.get('stopped_pct', float('nan')):.1f},"
+                  f"{3.6 * doprava_celkom.get('speed', float('nan')):.1f}")
+        alg = "relax" if a.xg_relax else "none"
         print("  XGCSV: alg,seed,vehicles,PRR,latency_ms,cam_tx,cam_veh_s,beacons,beacon_B,frames_s,"
-              "edge_wrong_%,err_mean_m,err_gt5_%,ul,ul_green,unknown_%,retx,stop_max_s,stopped_%,speed_kmh,v2v_prr")
+              "edge_wrong_%,err_mean_m,err_gt5_%,ul,ul_green,unknown_%,stop_max_s,stopped_%,speed_kmh,v2v_prr")
         print(f"  XGCSV: {alg},{a.seed},{a.vehicles},{prr_v:.6f},{lat_v:.4f},{cam_tx},{cam_veh_s:.3f},"
               f"{beac:.0f},{bbytes / max(beac, 1):.0f},{(cam_tx + beac) / max(a.sim_time, 1):.2f},"
               f"{100 * S_('EDGE_WRONG') / sm:.3f},{S_('ERR_SUM') / known:.3f},{100 * S_('GT5') / known:.3f},"
-              f"{ul_all:.5f},{ulg:.5f},{100 * S_('UNKNOWN') / sm:.3f},{sum(r.get('RETX', 0) for r in xv)},"
+              f"{ul_all:.5f},{ulg:.5f},{100 * S_('UNKNOWN') / sm:.3f},"
               f"{doprava_celkom.get('longest_stop', float('nan')):.1f},"
               f"{doprava_celkom.get('stopped_pct', float('nan')):.1f},"
               f"{3.6 * doprava_celkom.get('speed', float('nan')):.1f},{v2v_prr:.5f}")
-    if program == "v2i-trafficManager-80211p":
+    if program in ("v2i-trafficManager-80211p", "xgregorm-hybrid"):
         rezim = "all traffic lights (authors' original)" if a.tls_radius <= 0 else \
             f"own intersection only (radius {a.tls_radius:.0f} m)" + \
             (" + wired coordination with neighbours" if a.tls_coord else "")
@@ -675,5 +757,6 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
 
 
 if a.run != "nic":
-    for k in (list(PRIKAZY) if a.run == "all" else [a.run]):
+    # "all" = the authors' 5 simulations; my hybrid scenario only on request
+    for k in ([k for k in PRIKAZY if k != "hybrid"] if a.run == "all" else [a.run]):
         spusti(k)

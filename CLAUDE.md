@@ -41,7 +41,9 @@ prepnutia medzi RSU) oproti pôvodným aplikáciám autorov.
 | `src/automotive/examples/CMakeLists.txt` | `v2i-trafficManager-80211p` linkuje `${libcsma}` | `xgregorm_kod_zaloha/examples_CMakeLists.txt` |
 | `areaSpeedAdvisorClient80211p.cc`, `areaSpeedAdvisorServer80211p.cc`, `trafficManagerClient80211p.cc`, `trafficManagerServer80211p.cc`, `emergencyVehicleWarningClient80211p.cc`, `emergencyVehicleWarningServer80211p.cc`, `areaSpeedAdvisorClientLTE.cc`, `trafficManagerClientLTE.cc` | **oprava A – desynchronizácia CAM**: `std::srand(Now)` + `rand()` nahradené `UniformRandomVariable` (rovnako ako autori v `emergencyVehicleAlert.cc`). Neprepínateľné – stará referencia „s chybou“ je len v Denníku (alebo zo záloh). `simpleCAMSender-gps-tc`, `simpleVAMSender-gps-tc`, `v2xEmulator` nechané (nepoužívame). | `xgregorm_kod_zaloha/` |
 | `caBasicService.cc/.h` (jadro CAM, používajú ho všetky príklady) | **háčiky pre moje algoritmy CAM**: `setCamGate()` (pred CAM spustenou v `checkCamConditions` sa opýta, či ju poslať; `dynamic` = trigger poloha/smer/rýchlosť, inak časový), `addCamTxCallback()` (po každej odoslanej CAM), `forceCam()` (pošli CAM hneď; zachová T_GenCam a reštartuje 100 ms kontrolu, aby ďalšia CAM prišla najneskôr po T_GenCam). Bez nastavenia = pôvodné ETSI správanie, overené bit po bite | `xgregorm_kod_zaloha/` |
-| `trafficManagerClient80211p.cc/.h`, `trafficManagerServer80211p.cc/.h`, `v2i-trafficManager-80211p.cc` | **algoritmy CAM 1-3** (atribúty `XgSpat`, `XgAck`, `XgRelax`, `XgBeaconMs`, `XgHoldMax`, `XgRelevance`; CLI `--xg-spat/--xg-ack/--xg-relax/--xg-beacon-ms/--xg-hold-max/--xg-relevance`), beacon RSU (vlastný 802.11p rámec, ethertype 0x88B5), merania `XGREGORM-AW/-V2V/-VEH/-GAP/-PRR(V)`; dodržiava ETSI EN 302 637-2 (odstup CAM 100-1000 ms); `forceCam` zachová T_GenCam; viď Denník 2026-10-12 | `xgregorm_kod_zaloha/` |
+| `trafficManagerClient80211p.cc/.h`, `trafficManagerServer80211p.cc/.h`, `v2i-trafficManager-80211p.cc` | **algoritmus CAM podľa relevancie** (atribúty klienta `XgRelax`, `XgRelevance`; CLI `--xg-relax`, `--xg-relevance`): ďalej než 250 m pred ďalším semaforom na trase (z mapy) najviac 1 CAM/s, pri vstupe/odchode z oblasti CAM hneď; dodržiava ETSI EN 302 637-2 (odstup 100-1000 ms). Algoritmy 1 (SPaT) a 2 (potvrdenie + opakovanie) **odstránené 2026-10-12** (výsledky ostávajú v Denníku). Merania `XGREGORM-AW/-V2V/-VEH/-GAP/-PRR(V)`; viď Denník 2026-10-12 | `xgregorm_kod_zaloha/` |
+| `trafficManagerClient80211p.cc/.h`, `trafficManagerServer80211p.cc/.h` | **hybrid 802.11p + LTE + NR-V2X**: klient atribúty `XgHybrid` (0 = vypnuté/pôvodné, 1 = každá CAM všetkými technológiami, 2 = adaptívne), `XgPaths` (maska 1 = 802.11p, 2 = LTE na `ServerAddr` UDP 9, 4 = NR-V2X multicast 225.0.0.0:19), `XgHybRange`, `XgHybQmin`, `XgHybDwell`; server `XgHybrid` (1 = prijíma CAM z kábla UDP 9, 2 = aj beacon s potvrdeniami cez 802.11p aj NR), `XgNr` (NR sidelink na RSU), zahadzuje staršie kópie (generationDeltaTime); výpisy `XGREGORM-HYB` (P0..P7 = CAM podľa kombinácie ciest), rozšírené `XGREGORM-AW`. Pri 0 bez zmeny (overené bit po bite pred pridaním NR) | `xgregorm_kod_zaloha/` |
+| `xgregorm-hybrid-socket.h` (nový), `xgregorm-hybrid.cc` (nový príklad), `src/automotive/CMakeLists.txt`, `src/automotive/examples/CMakeLists.txt` | prepínač ciest CAM pod GeoNet (Socket, ktorý posiela cez 802.11p / LTE / NR-V2X), výpadky technológií počas behu (`xghyb::up`) a hybridný scenár (viď Denník 2026-10-12) | `xgregorm_kod_zaloha/` |
 | `xgregorm-stats.h` (nový, `model/Applications/`), `src/automotive/CMakeLists.txt` | merania (len čítanie zo SUMO): presnosť informácie RSU, uplink do RSU, skutočné PRR auto-auto; hlavička zaradená do zoznamu hlavičiek modulu | `xgregorm_kod_zaloha/automotive_CMakeLists.txt` |
 
 **Pravidlo riadenia semaforov:** 802.11p = každá RSU riadi len semafor svojej križovatky (ako
@@ -177,7 +179,10 @@ VaN3Twin `0e70bb36` (zmena je v prvom commite repozitára, priečinok zálohy za
 cd ~/VaN3Twin/ns-3-dev
 python3 xgregorm_gen_scenario.py --diag                     # scenár + kontrola plynulosti premávky
 python3 xgregorm_gen_scenario.py --run v2i-speed-80211p     # scenár + simulácia + súhrn
-python3 xgregorm_gen_scenario.py --run all                  # všetkých 5 simulácií
+python3 xgregorm_gen_scenario.py --run all                  # všetkých 5 simulácií autorov
+python3 xgregorm_gen_scenario.py --run hybrid                # môj hybrid 802.11p + LTE + NR-V2X, adaptívne
+python3 xgregorm_gen_scenario.py --run hybrid --tech 80211p,lte --policy all   # vybrané technológie, každá CAM všetkými
+python3 xgregorm_gen_scenario.py --run hybrid --fail-80211p 60:90              # výpadok 802.11p od 60 do 90 s
 ./ns3 build                                                 # len po zmene C++ kódu
 ```
 
@@ -411,6 +416,72 @@ python3 xgregorm_gen_scenario.py --run all                  # všetkých 5 simul
   bit po bite zhodná s predošlou (`none,...,0.997178,...,14510`). Záver: v rámci ETSI má zmysel len alg. 3;
   alg. 1 pri limite 1 s nemá čo ušetriť (stojace auto aj tak posiela 1 CAM/s); alg. 2 pri 30 autách
   (kanál takmer prázdny) len pridáva beacony a stratu mierne zvyšuje.
+- **2026-10-12** – **Hybridný scenár 802.11p + LTE** (`xgregorm-hybrid.cc`, v skripte `--run hybrid --hybrid 0..3`,
+  `--run all` ho nespúšťa). Každé auto má 802.11p aj LTE UE, jedna makro bunka eNB v strede mesta (30 m),
+  EPC -> server v sieti (p2p, `--core-delay` 5 ms ako autori) -> kábel CSMA (100 Mb/s, 1 ms) ku všetkým RSU;
+  RSU = radič semaforu svojej križovatky (ako v 802.11p). Infraštruktúra je rovnaká vo všetkých režimoch,
+  mení sa len cesta CAM: 0 = len 802.11p, 1 = len LTE, 2 = vždy oboje, 3 = adaptívne.
+  Princíp: CA služba (ETSI) rozhodne, **kedy** CAM poslať, prepínač pod GeoNet (`XgHybridSocket`) **ktorou cestou**.
+  Adaptívne pravidlo (každých 100 ms, auto): 802.11p je základ (CAM je hlavne pre susedné autá, LTE ich
+  nedosiahne). LTE sa pridá (DUAL), len ak (a) auto je do `XgHybRange` (250 m) pred semaforom, teda ho radič
+  potrebuje, a (b) nemá dôkaz, že ho RSU cez 802.11p počuje: beacon jej RSU za poslednú 1 s a kĺzavý priemer
+  potvrdených CAM (zoznam v beacone, α = 0.2) ≥ `XgHybQmin` 0.9. Späť na samotné 802.11p až po `XgHybDwell` 1 s
+  dobrého spojenia (hysterézia). Samotné LTE adaptívny režim nepoužíva nikdy (auto by zmizlo susedom).
+  RSU spracuje len CAM novšiu než poslednú od auta (DUAL kópia cez LTE príde ~18 ms po 802.11p).
+  **MetricSupervisor je v hybride vypnutý** – CAM poslanú oboma cestami počíta ako dva príjmy (PRR > 1 ->
+  pád) a LTE CAM ako nepočutý broadcast. Merania: skutočné PRR auto-auto, uplink, vek a presnosť informácie
+  RSU do 100 m aj na celom príjazde, oneskorenie po každej ceste, podiel ciest, prepnutia (`XGCSV-HYB`).
+  Opravené pri teste: auto bez alg. 2 spadlo na beacone s potvrdeniami (chýbal generátor jittra).
+  Overenie len chodu (10 áut, 60 s, nie porovnanie): adaptívny 71.5 % CAM 802.11p / 28.5 % oboje, 30 prepnutí,
+  oneskorenie 802.11p 0.27 ms, LTE + jadro + kábel 18.5 ms; len LTE: susedia 0 CAM, uplink 0.9988.
+  Referencia `v2i-trafficManager-80211p` po zmenách bit po bite rovnaká. Porovnanie režimov zatiaľ nerobené.
+- **2026-10-12** – **Hybrid rozšírený o NR-V2X a vypínanie technológií** (nahrádza `--hybrid 0..3` vyššie).
+  Technológie: `--use-80211p/--use-lte/--use-nr` (v skripte `--tech 80211p,lte,nr`, ľubovoľná podmnožina).
+  Vypnuté LTE/NR sa vôbec neinštaluje; 802.11p zariadenie ostáva vždy (GeoNet berie adresu zo zariadenia 0),
+  ale nič nevysiela (ani CAM samotných RSU). Politika `--policy all` = každá CAM všetkými zapnutými (jedna
+  technológia = čistá referencia), `adaptive` = pravidlo nižšie. Výpadok počas behu `--fail-80211p/-lte/-nr od:do`
+  (`xghyb::up`): prepínač na vypadnutú cestu nič nepošle, RSU na nej neposiela beacony, auto o výpadku vie (modem).
+  NR-V2X: nastavenie ako `v2v-emergencyVehicleAlert-nrv2x` autorov (5.89 GHz, 40 MHz, 23 dBm, MCS 14, mode 2
+  bez gNB, bearer od 2 s), sidelink majú autá aj RSU (RSU ako UE, ako C-V2X RSU v realite), IP 8.0.0.0/8,
+  multicast 225.0.0.0 port 19 (CAM) a 20 (beacony). 802.11p a NR sú na oddelených kanáloch (vzájomné rušenie
+  sa nemodeluje, na to je príklad autorov `v2v-coexistence-80211p-nrv2x`).
+  Adaptívne pravidlo (auto, každých 100 ms, len z toho, čo samo vie):
+  1. priama technológia pre susedov: 802.11p, ak je dostupné, inak NR-V2X (CAM je hlavne pre susedov);
+  2. ak radič najbližšieho semafora auto potrebuje (do 250 m) a RSU mu cez primárnu technológiu nepotvrdzuje
+     CAM (beacon za 1 s a ≥ 90 % potvrdených), ale cez druhú priamu áno, prepne sa na ňu;
+  3. ak potvrdenie nemá ani tak, pridá zálohu: LTE (nezávislé od dosahu), bez LTE druhú priamu technológiu;
+  4. zálohu vypne až po 1 s dobrého spojenia; bez priamej technológie posiela len cez LTE.
+  Merania navyše: CAM podľa kombinácie ciest (P0..P7), oneskorenie auto -> RSU pre 802.11p/LTE/NR, auto -> auto
+  pre 802.11p/NR (`XGREGORM-V2VLAT`), skutočné PRR auto-auto počíta každú CAM raz (prvá kópia, párovanie podľa
+  generationDeltaTime). Časová os `XGREGORM-HYBT` (CAM za 1 s podľa kombinácie ciest, skript ju vypíše po 5 s).
+- **2026-10-12** – **Prvý test hybridu 802.11p + LTE + NR-V2X** (10 áut, 60 s, 1 beh, adaptívne).
+  Opravy pri teste: (1) LTE a NR majú každé vlastný EPC helper s natvrdo rovnakými internými adresami
+  (PGW 7.0.0.1) -> `Address Collision`; NR sidelink LTE EPC nepríjme (`DoActivateEpsBearerForUe` padne na
+  LTE UE), preto dve oddelené siete a vypnutá len globálna kontrola kolízií (`Ipv4AddressGenerator::TestMode`,
+  len keď sú zapnuté obe); (2) helpery LTE/NR boli lokálne v `if` bloku -> zanikli pred štartom -> pád;
+  (3) adaptívne pravidlo záviselo od histórie: NR sa pri príjazde použilo, len ak ho niekto „náhodou“ skúsil
+  (RSU posiela beacon cez technológiu, len keď ňou niečo počula) -> prepísané (body 1-3 v Princípe nižšie)
+  a auto na NR skúša raz za sekundu 802.11p. Výsledné pravidlo v oblasti radiča: RSU potvrdzuje 802.11p ->
+  802.11p; len NR -> NR + skúška 802.11p; nič -> všetky priame + LTE (LTE ešte 1 s po potvrdení).
+  Výpadok 802.11p 25-45 s (časová os, % CAM 802.11p / LTE / NR):
+  pred 83-100 / 0-20 / 2-20; počas 0 / 3-13 / 99-100 (1.4 % CAM v prvých ≤ 100 ms výpadku sa stratilo);
+  po 68-77 / 15-28 / 35-56. NR po výpadku = autá 150-250 m pred RSU, kam 802.11p beacon nedosiahne (rovnaké
+  pravidlo ako pred výpadkom, overené výpisom stavov; viac áut v tej vzdialenosti). Skutočné PRR auto-auto
+  1.000, uplink do RSU 1.000, odstupy CAM podľa ETSI bez porušenia. Oneskorenie auto -> RSU: 802.11p 0.27 ms,
+  NR 11.5 ms, LTE + jadro + kábel 18.4 ms; auto -> auto: 802.11p 0.27 ms, NR 8.2 ms.
+  Vypnutie technológie prepínačom: `--tech 80211p,lte --fail-lte 20:40` OK (LTE 0 % počas výpadku, 802.11p
+  100 %); `--tech nr --policy all` OK, ale samotné NR: PRR auto-auto 0.944, uplink 0.946 (do 3 s po zelenej
+  0.892) - sidelink mode 2 bez sensingu (`EnableSensing=false` ako u autorov) má kolízie. Beh s NR trvá ~1 min
+  pri 10 autách / 60 s (bez NR ~30 s).
+- **2026-10-12** – **Upratanie: ostáva len algoritmus 3 (relevancia).** Algoritmy 1 (SPaT, držanie CAM pri
+  červenej) a 2 (potvrdenie v beacone + opakovanie CAM) odstránené z kódu aj zo skriptu (`--xg-spat`, `--xg-ack`,
+  `--xg-hold-max`, `--xg-beacon-ms` už neexistujú): v rámci ETSI prínos ~0 % / pri malej záťaži škodili (viď
+  vyššie). Algoritmus 3 už **nepotrebuje beacon RSU**: relevanciu určuje auto samo z mapy (ďalší semafor na
+  trase bližšie než `--xg-relevance`, predvolene 250 m; predtým navyše musel byť počuť beacon jeho RSU). Výsledky
+  alg. 3 v tabuľkách vyššie sú s beaconom, nová verzia môže dať mierne iné čísla (netestované).
+  Beacon RSU ostáva **len v adaptívnom hybride** ako jeho spätná väzba, zúžený na `XG|semafor|začiatok_okna_ms|id;id;...`
+  (bez stavu semafora a relevancie), perióda `--beacon-ms` 200 ms (hybrid). Bez `--policy adaptive` RSU nevysiela
+  žiadny beacon. Stĺpec `retx` z `XGCSV` vypadol. Skompilované, netestované (na želanie).
 - Pozn.: v sekcii „Tok komunikácie“ je prehľad, čo ide cez ns-3 (CAM, kábel RSU-RSU) a čo cez
   TraCI (RSU -> semafor, mapa).
 

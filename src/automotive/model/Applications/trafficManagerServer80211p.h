@@ -74,9 +74,8 @@ class trafficManagerServer80211p : public Application
     void sendCoord(unsigned long stationId, std::string edgeID);
     void receiveCoord(Ptr<Socket> socket);
     void applyCoordDelayed(unsigned long stationId, std::string edgeID, Time reported);
-    // xgregorm: RSU beacon pre moje algoritmy CAM (SPaT, potvrdenie prijatych CAM, relevancia)
-    void xgSendBeacon(bool forced);
-    void xgTick();
+    // xgregorm: adaptivny hybrid - beacon so zoznamom pocutych CAM (spatna vazba pre auta)
+    void xgSendBeacon();
 
     uint8_t edgeCheck(double,double,double);
 
@@ -104,11 +103,7 @@ class trafficManagerServer80211p : public Application
     uint64_t m_coord_tx; //!< xgregorm
     double m_coord_lookahead; //!< xgregorm: count announced vehicles this many s before arrival (0 = at once)
     uint64_t m_coord_rx; //!< xgregorm
-    bool m_xg_spat; //!< xgregorm: algoritmus 1 - SPaT v beacone, auta pri cervenej drzia CAM
-    bool m_xg_ack; //!< xgregorm: algoritmus 2 - beacon obsahuje zoznam pocutych CAM
-    bool m_xg_relax; //!< xgregorm: algoritmus 3 - beacon oznamuje relevantnu oblast
-    uint32_t m_xg_beacon_ms; //!< xgregorm: perioda beaconu, 0 = auto (200 ms s ACK, inak 1000 ms)
-    double m_xg_relevance; //!< xgregorm: [m] vzdialenost k semaforu, od ktorej je auto relevantne
+    uint32_t m_xg_beacon_ms; //!< xgregorm: perioda beaconu adaptivneho hybridu [ms]
     Ptr<Socket> m_xg_socket; //!< xgregorm
     EventId m_xg_beacon_ev; //!< xgregorm
     std::set<unsigned long> m_xg_heard; //!< xgregorm: CAM pocute od posledneho beaconu
@@ -117,7 +112,15 @@ class trafficManagerServer80211p : public Application
     uint64_t m_xg_beacon_tx = 0, m_xg_beacon_bytes = 0; //!< xgregorm
     xgstats::Rsu m_xg_rsu; //!< xgregorm: merania
     bool m_xg_printed = false; //!< xgregorm
-    std::string m_xg_last_state; //!< xgregorm
+    uint32_t m_xg_hybrid = 0; //!< xgregorm: hybrid 802.11p + LTE: 1 CAM aj z kabla, 2 aj beacon s potvrdeniami
+    Ptr<Socket> m_hyb_socket; //!< xgregorm: CAM preposlane zo siete LTE
+    std::map<unsigned long, long> m_hyb_last_gdt; //!< xgregorm: posledna spracovana CAM auta
+    uint64_t m_hyb_rx[3] = {0, 0, 0}, m_hyb_stale = 0; //!< xgregorm: prijate [802.11p, LTE, NR], zahodene stare
+    bool m_xg_nr = false; //!< xgregorm: RSU ma NR-V2X sidelink
+    Ptr<Socket> m_nr_socket, m_nr_beacon_socket; //!< xgregorm: CAM a beacony cez NR-V2X
+    std::set<unsigned long> m_xg_heard_nr; //!< xgregorm: CAM pocute cez NR od posledneho beaconu
+    double m_xg_last_cam_nr = -10; //!< xgregorm
+    uint64_t m_nr_beacon_tx = 0; //!< xgregorm
     std::map <unsigned long, std::string> m_veh_position;
     std::map <std::string, unsigned long> m_veh_number;
     std::map <std::string,std::pair<double,double>> m_load;

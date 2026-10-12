@@ -40,6 +40,20 @@ build_lib_example(
     ${libtraci}
 )
 
+# xgregorm: hybridny scenar 802.11p + LTE + NR-V2X
+build_lib_example(
+    NAME xgregorm-hybrid
+    SOURCE_FILES xgregorm-hybrid.cc
+    LIBRARIES_TO_LINK
+    ${libcsma}
+    ${libcarla}
+    ${libautomotive}
+    ${libwave}
+    ${liblte}
+    ${libnr}
+    ${libtraci}
+)
+
 build_lib_example(
     NAME v2i-trafficManager-LTE
     SOURCE_FILES v2i-trafficManager-LTE.cc

@@ -12,6 +12,7 @@
 #include "ns3/traci-client.h"
 #include "ns3/random-variable-stream.h" // xgregorm
 #include <map> // xgregorm
+#include <array> // xgregorm
 
 namespace ns3 {
 
@@ -65,35 +66,37 @@ private:
 
   Ptr<MetricSupervisor> m_metric_supervisor = nullptr;
 
-  // xgregorm: moje algoritmy CAM (vsetky vypnute = povodne spravanie ETSI)
+  // xgregorm: moj algoritmus CAM podla relevancie (vypnuty = povodne spravanie ETSI) + merania
   bool camGate (bool dynamic);
   void xgTick ();
   void xgReceiveBeacon (Ptr<Socket> socket);
-  void xgRetransmit ();
   bool xgRelevant ();
+  void xgHybridDecide ();
   void xgCount (uint64_t &counter);
   unsigned long m_sid = 0;
-  bool m_xg_spat = false, m_xg_ack = false, m_xg_relax = false;
-  double m_xg_hold_max = 1;            //!< [s] najdlhsie drzanie CAM pri cervenej (ETSI max 1 s)
-  Ptr<Socket> m_xg_socket;
+  bool m_xg_relax = false;
+  double m_xg_relevance = 250;         //!< [m] pred semaforom plna frekvencia CAM
+  Ptr<Socket> m_xg_socket;             //!< beacony RSU cez 802.11p (adaptivny hybrid)
   EventId m_xg_tick_ev;
-  Ptr<UniformRandomVariable> m_xg_jitter;
   std::string m_next_tls;              //!< najblizsi semafor na trase (z mapy, ako MAPEM)
-  int m_next_idx = -1;
   double m_next_dist = 1e9;
-  double m_x = 0, m_y = 0;
-  bool m_red = false;                  //!< posledny SPaT pre moj signal hovori cervena/zlta
-  std::string m_red_tls;
-  double m_red_time = -10;
-  std::map<std::string, std::pair<double, double>> m_rel_heard; //!< tls -> (cas beaconu, relevancia [m])
   bool m_relevant = true;
   double m_last_tx = -10;
-  double m_retx_for = -1;              //!< CAM, ktoru ide algoritmus 2 zopakovat
   double m_gap_min = 1e9, m_gap_max = 0; //!< [s] odstupy CAM (kontrola ETSI)
   uint64_t m_gap_low = 0, m_gap_high = 0;
-  bool m_ack_wait = false, m_last_was_retx = false, m_retx_now = false;
+  // hybrid 802.11p + LTE + NR-V2X
+  uint32_t m_xg_hybrid = 0;            //!< 0 vypnute, 1 vsetky cesty z masky, 2 adaptivne
+  uint32_t m_hyb_mask = 1;             //!< technologie v aute: 1 802.11p, 2 LTE, 4 NR-V2X
+  double m_hyb_range = 250, m_hyb_qmin = 0.9, m_hyb_dwell = 1.0;
+  int m_hyb_path = 1;                  //!< maska ciest aktualnej CAM (xghyb::Path)
+  struct HybLink { double last = -10, q = 1.0, eval = -1; };
+  std::map<std::string, std::array<HybLink, 3>> m_hyb_link; //!< tls -> [802.11p, -, NR]: beacon RSU, podiel potvrdenych CAM
+  double m_hyb_last_tx[3] = {-10, -10, -10}, m_hyb_ok_since = -1, m_hyb_probe_t = -10;
+  uint64_t m_hyb_probes = 0;           //!< skusky povodnej technologie
+  Ptr<Socket> m_nr_beacon_socket;      //!< beacony RSU cez NR-V2X
+  uint64_t m_hyb_cnt[8] = {0, 0, 0, 0, 0, 0, 0, 0}, m_hyb_switch = 0;
   double m_last_gate_count = -1;
-  uint64_t m_xg_hold = 0, m_xg_relaxed = 0, m_xg_retx = 0, m_xg_force = 0, m_xg_beacons = 0;
+  uint64_t m_xg_relaxed = 0, m_xg_force = 0, m_xg_beacons = 0;
 };
 }
 #endif // trafficManagerClient80211p_H

@@ -8,6 +8,9 @@
 #include "ns3/network-module.h"
 #include "ns3/gn-utils.h" // Needed for GN_ETHERTYPE
 #include "ns3/xgregorm-stats.h" // xgregorm
+#include "ns3/xgregorm-hybrid-socket.h" // xgregorm
+#include "ns3/udp-socket-factory.h" // xgregorm
+#include "ns3/inet-socket-address.h" // xgregorm
 #include <sstream> // xgregorm
 #define XG_ETHERTYPE 0x88B5 // xgregorm: beacon RSU
 
@@ -55,27 +58,46 @@ namespace ns3
             BooleanValue(true),
             MakeBooleanAccessor (&trafficManagerClient80211p::m_send_cam),
             MakeBooleanChecker ())
-        // xgregorm: moje algoritmy CAM
-        .AddAttribute ("XgSpat",
-            "Algorithm 1: hold CAMs while standing at a red light announced by the RSU (SPaT)",
-            BooleanValue (false),
-            MakeBooleanAccessor (&trafficManagerClient80211p::m_xg_spat),
-            MakeBooleanChecker ())
-        .AddAttribute ("XgAck",
-            "Algorithm 2: retransmit a CAM that the RSU's beacon does not list as heard",
-            BooleanValue (false),
-            MakeBooleanAccessor (&trafficManagerClient80211p::m_xg_ack),
-            MakeBooleanChecker ())
+        // xgregorm: moj algoritmus CAM (podla relevancie)
         .AddAttribute ("XgRelax",
-            "Algorithm 3: outside the area announced by an RSU send only the 1 Hz time-triggered CAMs",
+            "Relevance-based CAM rate: farther than XgRelevance before the next traffic light (along the route, "
+            "from the map) send at most 1 CAM per second (ETSI T_GenCamMax), full ETSI rate only on the approach",
             BooleanValue (false),
             MakeBooleanAccessor (&trafficManagerClient80211p::m_xg_relax),
             MakeBooleanChecker ())
-        .AddAttribute ("XgHoldMax",
-            "Algorithm 1: longest time [s] without any CAM while holding at a red light (ETSI T_GenCamMax = 1 s)",
-            DoubleValue (1),
-            MakeDoubleAccessor (&trafficManagerClient80211p::m_xg_hold_max),
-            MakeDoubleChecker<double> (0.1, 1)); // xgregorm: ETSI EN 302 637-2 nedovoli dlhsie nez 1 s
+        .AddAttribute ("XgRelevance",
+            "Relevance-based CAM rate: distance to the next traffic light with full-rate CAMs [m]",
+            DoubleValue (250),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_xg_relevance),
+            MakeDoubleChecker<double> (0))
+        // xgregorm: hybrid 802.11p + LTE + NR-V2X
+        .AddAttribute ("XgHybrid",
+            "CAM path policy: 0 = off (802.11p only, original), 1 = every CAM on all technologies in XgPaths, "
+            "2 = adaptive (one direct technology for the neighbours, a backup path added only when the controller "
+            "of the next traffic light needs the vehicle and does not confirm hearing it)",
+            UintegerValue (0),
+            MakeUintegerAccessor (&trafficManagerClient80211p::m_xg_hybrid),
+            MakeUintegerChecker<uint32_t> (0, 2))
+        .AddAttribute ("XgPaths",
+            "Technologies available in the vehicle (bit mask): 1 = 802.11p, 2 = LTE (to ServerAddr), 4 = NR-V2X sidelink",
+            UintegerValue (1),
+            MakeUintegerAccessor (&trafficManagerClient80211p::m_hyb_mask),
+            MakeUintegerChecker<uint32_t> (1, 7))
+        .AddAttribute ("XgHybRange",
+            "Adaptive hybrid: distance to the next traffic light (along the route) where its controller needs the vehicle [m]",
+            DoubleValue (250),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_hyb_range),
+            MakeDoubleChecker<double> (0))
+        .AddAttribute ("XgHybQmin",
+            "Adaptive hybrid: lowest share of own direct CAMs confirmed by the RSU (moving average) to rely on that technology only",
+            DoubleValue (0.9),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_hyb_qmin),
+            MakeDoubleChecker<double> (0, 1))
+        .AddAttribute ("XgHybDwell",
+            "Adaptive hybrid: the direct link must be good this long before the backup path is switched off again [s] (hysteresis)",
+            DoubleValue (1.0),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_hyb_dwell),
+            MakeDoubleChecker<double> (0));
         return tid;
   }
 
@@ -167,14 +189,28 @@ namespace ns3
     m_caService.setVDP(traci_vdp);
     m_denService.setVDP(traci_vdp);
 
-    // xgregorm: kazdu odoslanu CAM zaznamename (merania + cakanie na potvrdenie od RSU)
+    // xgregorm: kazdu odoslanu CAM zaznamename (merania, hybrid, kontrola odstupov ETSI)
     m_sid = std::stol (m_id.substr (3));
     m_caService.addCamTxCallback ([this] () {
       libsumo::TraCIPosition p = m_client->TraCIAPI::vehicle.getPosition (m_id);
-      m_x = p.x;
-      m_y = p.y;
-      xgstats::onCamTx (m_sid, p.x, p.y);
+      // generationDeltaTime tejto CAM (rovnaky cas ako v generateAndEncodeCam) - parovanie pri LTE/NR
+      long gdt = compute_timestampIts (m_real_time) % 65536;
       double t = Simulator::Now ().GetSeconds ();
+      int sent = xghyb::WIFI;
+      if (m_xg_hybrid)
+        {
+          // cesty, ktorymi CAM naozaj odisla (zvolene, v aute dostupne a nevypadnute)
+          sent = 0;
+          for (int b : {xghyb::WIFI, xghyb::LTE, xghyb::NR})
+            if ((m_hyb_path & m_hyb_mask & b) && xghyb::up (b))
+              {
+                sent |= b;
+                m_hyb_last_tx[xghyb::idx (b)] = t;
+              }
+          m_hyb_cnt[sent]++;
+          xghyb::timeline ()[(int) t][sent]++;
+        }
+      xgstats::onCamTx (m_sid, p.x, p.y, gdt, sent & (xghyb::WIFI | xghyb::NR));
       if (m_last_tx >= 0)
         {
           // kontrola ETSI EN 302 637-2: odstup dvoch CAM 100 ms .. 1000 ms
@@ -185,12 +221,49 @@ namespace ns3
           m_gap_high += gap > 1.0 + 1e-6;
         }
       m_last_tx = t;
-      m_ack_wait = true;
-      m_last_was_retx = m_retx_now;
     });
-    if (m_xg_spat || m_xg_ack || m_xg_relax)
+    // xgregorm: hybrid - CAM z CA sluzby ide cez prepinac: 802.11p (povodny socket), LTE (UDP na server
+    // v sieti, ServerAddr) a/alebo NR-V2X (UDP multicast 225.0.0.0:19 cez sidelink). Prijem: 802.11p a NR
+    // (od LTE auto nic nedostava). Beacony RSU cez NR chodia na port 20.
+    if (m_xg_hybrid)
       {
-        m_caService.setCamGate (std::bind (&trafficManagerClient80211p::camGate, this, std::placeholders::_1));
+        Ptr<Socket> lte, nr;
+        if (m_hyb_mask & xghyb::LTE)
+          {
+            lte = Socket::CreateSocket (GetNode (), UdpSocketFactory::GetTypeId ());
+            if (lte->Bind () == -1)
+              NS_FATAL_ERROR ("LTE path needs an IPv4 (LTE) interface on the vehicle");
+            lte->Connect (InetSocketAddress (m_server_addr, 9));
+          }
+        if (m_hyb_mask & xghyb::NR)
+          {
+            Ptr<NetDevice> nrDev = xghyb::findDevice (GetNode (), "ns3::NrUeNetDevice");
+            if (!nrDev)
+              NS_FATAL_ERROR ("NR-V2X path needs an NR sidelink device on the vehicle");
+            nr = Socket::CreateSocket (GetNode (), UdpSocketFactory::GetTypeId ());
+            if (nr->Bind (InetSocketAddress (Ipv4Address::GetAny (), 19)) == -1)
+              NS_FATAL_ERROR ("Failed to bind the NR-V2X socket");
+            nr->BindToNetDevice (nrDev);
+            nr->Connect (InetSocketAddress (Ipv4Address ("225.0.0.0"), 19));
+            nr->SetRecvCallback (MakeCallback (&GeoNet::receiveGN, m_geoNet));
+            if (m_xg_hybrid == 2)
+              {
+                m_nr_beacon_socket = Socket::CreateSocket (GetNode (), UdpSocketFactory::GetTypeId ());
+                m_nr_beacon_socket->Bind (InetSocketAddress (Ipv4Address::GetAny (), 20));
+                m_nr_beacon_socket->BindToNetDevice (nrDev);
+                m_nr_beacon_socket->SetRecvCallback (MakeCallback (&trafficManagerClient80211p::xgReceiveBeacon, this));
+              }
+          }
+        // zaciatok: vsetky dostupne cesty (adaptivny rezim to po prvom ticku zuzi)
+        m_hyb_path = m_hyb_mask;
+        m_caService.setSocketTx (Create<XgHybridSocket> (m_socket, lte, nr, [this] () { return m_hyb_path; }));
+      }
+    // xgregorm: algoritmus relevancie - brana pred kazdou CAM spustenou v CA sluzbe
+    if (m_xg_relax)
+      m_caService.setCamGate (std::bind (&trafficManagerClient80211p::camGate, this, std::placeholders::_1));
+    // xgregorm: adaptivny hybrid - beacon RSU (zoznam pocutych CAM) cez 802.11p
+    if (m_xg_hybrid == 2 && (m_hyb_mask & xghyb::WIFI))
+      {
         m_xg_socket = Socket::CreateSocket (GetNode (), tid);
         PacketSocketAddress xlocal;
         xlocal.SetSingleDevice (GetNode ()->GetDevice (0)->GetIfIndex ());
@@ -199,12 +272,6 @@ namespace ns3
         if (m_xg_socket->Bind (xlocal) == -1)
           NS_FATAL_ERROR ("Failed to bind the xgregorm beacon socket");
         m_xg_socket->SetRecvCallback (MakeCallback (&trafficManagerClient80211p::xgReceiveBeacon, this));
-        if (m_xg_ack)
-          {
-            m_xg_jitter = CreateObject<UniformRandomVariable> ();
-            m_xg_jitter->SetAttribute ("Min", DoubleValue (0.0));
-            m_xg_jitter->SetAttribute ("Max", DoubleValue (0.02));
-          }
       }
 
     /* Schedule CAM dissemination */
@@ -217,7 +284,7 @@ namespace ns3
       desync_rvar->SetAttribute ("Max", DoubleValue (1.0));
       double desync = desync_rvar->GetValue ();
       m_caService.startCamDissemination(desync);
-      if (m_xg_socket)
+      if (m_xg_relax || m_xg_hybrid == 2)
         m_xg_tick_ev = Simulator::Schedule (Seconds (desync), &trafficManagerClient80211p::xgTick, this);
     }
   }
@@ -237,31 +304,21 @@ namespace ns3
   bool
   trafficManagerClient80211p::xgRelevant ()
   {
-    // algoritmus 3: auto je relevantne, ak je na trase k semaforu, ktoreho RSU nedavno vysielala beacon,
-    // a je k nemu blizsie nez oznamena vzdialenost (RSU potrebuje plnu frekvenciu CAM len na prijazde)
-    auto it = m_rel_heard.find (m_next_tls);
-    return it != m_rel_heard.end () && Simulator::Now ().GetSeconds () - it->second.first < 2.5 &&
-           m_next_dist < it->second.second;
+    // auto je relevantne, ak je na trase k semaforu blizsie nez XgRelevance (radic potrebuje plnu frekvenciu
+    // CAM len na prijazde); vzdialenost z mapy (v realite digitalna mapa / MAPEM)
+    return !m_next_tls.empty () && m_next_dist < m_xg_relevance;
   }
 
   bool
   trafficManagerClient80211p::camGate (bool dynamic)
   {
     // ETSI EN 302 637-2: odstup CAM je vzdy medzi T_GenCamMin = 100 ms a T_GenCamMax = 1000 ms.
-    // Algoritmy 1 a 3 len predlzia minimalny odstup dynamicky spustenych CAM (ako DCC: T_GenCam_DCC
-    // <= T_GenCamMax), casovo spustena CAM po T_GenCam ide vzdy.
+    // Mimo relevantnej oblasti len predlzime minimalny odstup dynamicky spustenych CAM na 1 s (ako DCC:
+    // T_GenCam_DCC <= T_GenCamMax), casovo spustena CAM po T_GenCam ide vzdy.
     double gap = Simulator::Now ().GetSeconds () - m_last_tx;
     if (gap < 0.1 - 1e-6)
       return false; // tesne po vynutenej CAM (forceCam), dalsia este nesmie ist
-    // algoritmus 1: stojim pri cervenej (podla SPaT z RSU) -> RSU o mne vie a kym je cervena, nepohnem sa
-    if (m_xg_spat && m_red && m_red_tls == m_next_tls && Simulator::Now ().GetSeconds () - m_red_time < 2.5 &&
-        m_next_dist < 100 && gap < m_xg_hold_max - 0.05 && m_client->TraCIAPI::vehicle.getSpeed (m_id) < 0.5)
-      {
-        xgCount (m_xg_hold);
-        return false;
-      }
-    // algoritmus 3: mimo relevantnej oblasti najviac 1 CAM za sekundu
-    if (m_xg_relax && !m_relevant && gap < 0.95)
+    if (!m_relevant && gap < 0.95)
       {
         xgCount (m_xg_relaxed);
         return false;
@@ -274,31 +331,15 @@ namespace ns3
   {
     // najblizsi semafor na trase a vzdialenost k nemu (staticka mapa, v realite MAPEM / digitalna mapa)
     std::vector<libsumo::TraCINextTLSData> nt = m_client->TraCIAPI::vehicle.getNextTLS (m_id);
-    if (nt.empty ())
-      {
-        m_next_tls = "";
-        m_next_idx = -1;
-        m_next_dist = 1e9;
-      }
-    else
-      {
-        m_next_tls = nt[0].id;
-        m_next_idx = nt[0].tlIndex;
-        m_next_dist = nt[0].dist;
-      }
-    if (m_xg_ack)
-      {
-        libsumo::TraCIPosition p = m_client->TraCIAPI::vehicle.getPosition (m_id);
-        m_x = p.x;
-        m_y = p.y;
-      }
+    m_next_tls = nt.empty () ? "" : nt[0].id;
+    m_next_dist = nt.empty () ? 1e9 : nt[0].dist;
     if (m_xg_relax)
       {
         bool rel = xgRelevant ();
         if (rel != m_relevant)
           {
-            // vstup do oblasti RSU aj odchod z nej oznamime hned, aby RSU mala spravny stav
-            // (ak CAM odisla pred menej nez 100 ms, RSU ma cerstvy stav a dalsia CAM by porusila T_GenCamMin)
+            // vstup do oblasti aj odchod z nej oznamime hned, aby radic mal spravny stav
+            // (ak CAM odisla pred menej nez 100 ms, radic ma cerstvy stav a dalsia CAM by porusila T_GenCamMin)
             m_relevant = rel;
             if (Simulator::Now ().GetSeconds () - m_last_tx >= 0.1 - 1e-6)
               {
@@ -307,12 +348,78 @@ namespace ns3
               }
           }
       }
+    if (m_xg_hybrid == 2)
+      xgHybridDecide ();
     m_xg_tick_ev = Simulator::Schedule (MilliSeconds (100), &trafficManagerClient80211p::xgTick, this);
+  }
+
+  void
+  trafficManagerClient80211p::xgHybridDecide ()
+  {
+    // adaptivny hybrid (rozhoduje auto kazdych 100 ms len z toho, co samo vie):
+    //  - mimo oblasti radica (dalej nez XgHybRange pred semaforom): len priama technologia pre susedov
+    //    (na to je CAM) - 802.11p, ak je dostupne, inak NR-V2X
+    //  - v oblasti radica podla potvrdeni RSU (beacon za poslednu 1 s a podiel potvrdenych CAM >= XgHybQmin):
+    //    1. RSU potvrdzuje 802.11p -> 802.11p
+    //    2. RSU potvrdzuje len NR (napr. vacsi dosah NR) -> NR; raz za sekundu jedna CAM aj cez 802.11p
+    //       (skuska - RSU, ktora auto cez 802.11p nepocuje, mu cez 802.11p ani nic nepotvrdi)
+    //    3. nepotvrdzuje nic -> vsetky priame technologie (tak sa zisti, ktora RSU dosiahne) + LTE ako zaloha
+    //       (do siete nezavisle od dosahu); LTE vypne az po XgHybDwell s potvrdenia (hysterezia)
+    //  - bez priamej technologie len LTE
+    // Vypadnuta technologia (xghyb::up) je pre auto nedostupna - modem o vypadku vie.
+    double now = Simulator::Now ().GetSeconds ();
+    int avail = 0;
+    for (int b : {xghyb::WIFI, xghyb::LTE, xghyb::NR})
+      if ((m_hyb_mask & b) && xghyb::up (b))
+        avail |= b;
+    bool need = !m_next_tls.empty () && m_next_dist < m_hyb_range;
+    auto lk = m_hyb_link.find (m_next_tls);
+    auto ok = [&] (int b) {
+      if (!(avail & b) || lk == m_hyb_link.end ())
+        return false;
+      const HybLink &l = lk->second[xghyb::idx (b)];
+      return now - l.last < 1.0 && l.q >= m_hyb_qmin;
+    };
+    int direct = avail & (xghyb::WIFI | xghyb::NR);
+    int path;
+    bool confirmed = true;
+    if (!direct)
+      path = avail & xghyb::LTE;
+    else if (!need)
+      path = (direct & xghyb::WIFI) ? xghyb::WIFI : xghyb::NR;
+    else if (ok (xghyb::WIFI))
+      path = xghyb::WIFI;
+    else if (ok (xghyb::NR))
+      {
+        path = xghyb::NR;
+        if ((direct & xghyb::WIFI) && now - m_hyb_probe_t >= 1.0)
+          {
+            path |= xghyb::WIFI; // skuska 802.11p (jeden tick = najviac jedna CAM)
+            m_hyb_probe_t = now;
+            m_hyb_probes++;
+          }
+      }
+    else
+      {
+        path = direct | (avail & xghyb::LTE);
+        confirmed = false;
+      }
+    if (!confirmed)
+      m_hyb_ok_since = -1;
+    else if (m_hyb_ok_since < 0)
+      m_hyb_ok_since = now;
+    if (need && direct && confirmed && (m_hyb_path & xghyb::LTE) && now - m_hyb_ok_since < m_hyb_dwell)
+      path |= avail & xghyb::LTE; // hysterezia: LTE drzime este XgHybDwell s po potvrdeni
+    if (path != m_hyb_path)
+      m_hyb_switch++;
+    m_hyb_path = path;
   }
 
   void
   trafficManagerClient80211p::xgReceiveBeacon (Ptr<Socket> socket)
   {
+    // adaptivny hybrid: beacon RSU "XG|semafor|zaciatok_okna_ms|id;id;..." = CAM, ktore RSU touto
+    // technologiou (802.11p alebo NR, podla socketu) pocula od zaciatku okna
     Ptr<Packet> p;
     while ((p = socket->Recv ()))
       {
@@ -324,64 +431,36 @@ namespace ns3
         std::string item;
         while (std::getline (ss, item, '|'))
           f.push_back (item);
-        if (f.size () < 8 || f[0] != "XG")
+        if (f.size () < 3 || f[0] != "XG")
           continue;
-        if (f.size () == 8)
+        if (f.size () == 3)
           f.push_back ("");
         m_xg_beacons++;
         double now = Simulator::Now ().GetSeconds ();
-        double rx = std::stod (f[1]), ry = std::stod (f[2]);
-        std::string tls = f[3];
-        if (tls.empty ())
-          continue;
-        // algoritmus 3: RSU oznamuje, kde potrebuje plnu frekvenciu CAM
-        if (std::stod (f[5]) > 0)
-          m_rel_heard[tls] = {now, std::stod (f[5])};
-        if (tls != m_next_tls)
+        const std::string &tls = f[1];
+        if (tls.empty () || tls != m_next_tls)
           continue; // beacon inej krizovatky, nez ku ktorej idem
-        // algoritmus 1: farba pre moj signal (index z mapy)
-        if (f[4] != "-" && m_next_idx >= 0 && m_next_idx < (int) f[4].size ())
+        // kvalita priameho spojenia k RSU, ku ktorej idem = podiel mojich CAM poslanych touto technologiou,
+        // ktore RSU potvrdila
+        int ti = socket == m_nr_beacon_socket ? xghyb::idx (xghyb::NR) : xghyb::idx (xghyb::WIFI);
+        if (!xghyb::up (ti == 0 ? xghyb::WIFI : xghyb::NR))
+          continue; // radio tejto technologie je vypadnute, beacon by neprisiel
+        HybLink &lk = m_hyb_link[tls][ti];
+        double my_tx = m_hyb_last_tx[ti];
+        if (now - lk.last > 2.0)
+          lk.q = 1.0; // novy kontakt s RSU: zaciname dovernou hodnotou, prva nepotvrdena CAM ju zhodi
+        lk.last = now;
+        double win_start = std::stod (f[2]) / 1000.0;
+        if (my_tx >= win_start && my_tx < now - 0.002 && lk.eval != my_tx)
           {
-            char c = f[4][m_next_idx];
-            m_red = (c == 'r' || c == 'R' || c == 'y' || c == 'Y');
-            m_red_tls = tls;
-            m_red_time = now;
+            bool heard = false;
+            std::stringstream ids (f[3]);
+            while (std::getline (ids, item, ';'))
+              if (!item.empty () && std::stoul (item) == m_sid)
+                heard = true;
+            lk.q = 0.8 * lk.q + 0.2 * heard;
+            lk.eval = my_tx;
           }
-        // algoritmus 2: potvrdenie mojej poslednej CAM od RSU krizovatky, ku ktorej idem
-        if (f[7] == "1" && m_ack_wait && std::hypot (m_x - rx, m_y - ry) < 150)
-          {
-            double win_start = std::stod (f[6]) / 1000.0;
-            if (m_last_tx >= win_start && m_last_tx < now - 0.002)
-              {
-                bool heard = false;
-                std::stringstream ids (f[8]);
-                while (std::getline (ids, item, ';'))
-                  if (!item.empty () && std::stoul (item) == m_sid)
-                    heard = true;
-                m_ack_wait = false;
-                if (!heard && !m_last_was_retx)
-                  {
-                    // najskor T_GenCamMin = 100 ms po nepotvrdenej CAM (ETSI EN 302 637-2)
-                    double delay = std::max (m_xg_jitter->GetValue (), m_last_tx + 0.1 - now);
-                    m_retx_for = m_last_tx;
-                    Simulator::Schedule (Seconds (delay), &trafficManagerClient80211p::xgRetransmit, this);
-                  }
-              }
-          }
-      }
-  }
-
-  void
-  trafficManagerClient80211p::xgRetransmit ()
-  {
-    // algoritmus 2: RSU moju CAM nepocula -> poslem aktualnu CAM (najviac raz za povodnu CAM),
-    // ak medzitym neodisla nova CAM
-    if (m_last_tx == m_retx_for)
-      {
-        m_retx_now = true;
-        m_xg_retx++;
-        m_caService.forceCam ();
-        m_retx_now = false;
       }
   }
 
@@ -401,9 +480,18 @@ namespace ns3
                 << ",CAM-SENT:" << cam_sent
                 << ",DENM-RECEIVED:" << m_denm_received
                 << std::endl;
-      if (m_xg_socket)
-        std::cout << "XGREGORM-VEH," << m_id << ",HOLD:" << m_xg_hold << ",RELAXED:" << m_xg_relaxed
-                  << ",RETX:" << m_xg_retx << ",FORCED:" << m_xg_force << ",BEACONS_RX:" << m_xg_beacons << std::endl;
+      if (m_xg_relax || m_xg_hybrid)
+        std::cout << "XGREGORM-VEH," << m_id << ",RELAXED:" << m_xg_relaxed << ",FORCED:" << m_xg_force
+                  << ",BEACONS_RX:" << m_xg_beacons << std::endl;
+      if (m_xg_hybrid)
+        {
+          // pocet CAM podla kombinacie ciest, ktorymi naozaj odisli: P1 = 802.11p, P2 = LTE, P3 = 802.11p+LTE,
+          // P4 = NR, P5 = 802.11p+NR, P6 = LTE+NR, P7 = vsetky tri, P0 = ziadna (vsetky zvolene vypadnute)
+          std::cout << "XGREGORM-HYB," << m_id;
+          for (int m = 0; m < 8; m++)
+            std::cout << ",P" << m << ":" << m_hyb_cnt[m];
+          std::cout << ",SWITCH:" << m_hyb_switch << ",PROBE:" << m_hyb_probes << std::endl;
+        }
       std::cout << "XGREGORM-GAP," << m_id << ",MIN:" << (m_gap_min < 1e8 ? m_gap_min * 1000 : -1)
                 << ",MAX:" << m_gap_max * 1000 << ",LT100:" << m_gap_low << ",GT1000:" << m_gap_high << std::endl;
       m_already_print=true;
@@ -434,6 +522,7 @@ namespace ns3
     // xgregorm: skutocne PRR medzi autami (len meranie)
     unsigned long sender = asn1cpp::getField (cam->header.stationId, unsigned long);
     if (sender < 1000000)
-      xgstats::onVehCamRx (m_sid, sender);
+      xgstats::onVehCamRx (m_sid, sender, asn1cpp::getField (cam->cam.generationDeltaTime, long),
+                           InetSocketAddress::IsMatchingType (from) ? 2 : 0); // UDP = NR-V2X
   }
 }
