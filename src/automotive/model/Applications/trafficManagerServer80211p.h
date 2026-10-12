@@ -14,6 +14,8 @@
 #include <unordered_map>
 #include "ns3/traci-client.h"
 #include "ns3/ipv4-address.h" // xgregorm
+#include "ns3/xgregorm-stats.h" // xgregorm
+#include <set>
 namespace ns3 {
 
 class trafficManagerServer80211p : public Application
@@ -72,6 +74,9 @@ class trafficManagerServer80211p : public Application
     void sendCoord(unsigned long stationId, std::string edgeID);
     void receiveCoord(Ptr<Socket> socket);
     void applyCoordDelayed(unsigned long stationId, std::string edgeID, Time reported);
+    // xgregorm: RSU beacon pre moje algoritmy CAM (SPaT, potvrdenie prijatych CAM, relevancia)
+    void xgSendBeacon(bool forced);
+    void xgTick();
 
     uint8_t edgeCheck(double,double,double);
 
@@ -99,6 +104,20 @@ class trafficManagerServer80211p : public Application
     uint64_t m_coord_tx; //!< xgregorm
     double m_coord_lookahead; //!< xgregorm: count announced vehicles this many s before arrival (0 = at once)
     uint64_t m_coord_rx; //!< xgregorm
+    bool m_xg_spat; //!< xgregorm: algoritmus 1 - SPaT v beacone, auta pri cervenej drzia CAM
+    bool m_xg_ack; //!< xgregorm: algoritmus 2 - beacon obsahuje zoznam pocutych CAM
+    bool m_xg_relax; //!< xgregorm: algoritmus 3 - beacon oznamuje relevantnu oblast
+    uint32_t m_xg_beacon_ms; //!< xgregorm: perioda beaconu, 0 = auto (200 ms s ACK, inak 1000 ms)
+    double m_xg_relevance; //!< xgregorm: [m] vzdialenost k semaforu, od ktorej je auto relevantne
+    Ptr<Socket> m_xg_socket; //!< xgregorm
+    EventId m_xg_beacon_ev; //!< xgregorm
+    std::set<unsigned long> m_xg_heard; //!< xgregorm: CAM pocute od posledneho beaconu
+    double m_xg_win_start = 0; //!< xgregorm
+    double m_xg_last_cam = -10; //!< xgregorm
+    uint64_t m_xg_beacon_tx = 0, m_xg_beacon_bytes = 0; //!< xgregorm
+    xgstats::Rsu m_xg_rsu; //!< xgregorm: merania
+    bool m_xg_printed = false; //!< xgregorm
+    std::string m_xg_last_state; //!< xgregorm
     std::map <unsigned long, std::string> m_veh_position;
     std::map <std::string, unsigned long> m_veh_number;
     std::map <std::string,std::pair<double,double>> m_load;

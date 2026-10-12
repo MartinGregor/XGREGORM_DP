@@ -10,6 +10,8 @@
 
 #include "ns3/btp.h"
 #include "ns3/traci-client.h"
+#include "ns3/random-variable-stream.h" // xgregorm
+#include <map> // xgregorm
 
 namespace ns3 {
 
@@ -62,6 +64,36 @@ private:
   bool m_send_cam;
 
   Ptr<MetricSupervisor> m_metric_supervisor = nullptr;
+
+  // xgregorm: moje algoritmy CAM (vsetky vypnute = povodne spravanie ETSI)
+  bool camGate (bool dynamic);
+  void xgTick ();
+  void xgReceiveBeacon (Ptr<Socket> socket);
+  void xgRetransmit ();
+  bool xgRelevant ();
+  void xgCount (uint64_t &counter);
+  unsigned long m_sid = 0;
+  bool m_xg_spat = false, m_xg_ack = false, m_xg_relax = false;
+  double m_xg_hold_max = 1;            //!< [s] najdlhsie drzanie CAM pri cervenej (ETSI max 1 s)
+  Ptr<Socket> m_xg_socket;
+  EventId m_xg_tick_ev;
+  Ptr<UniformRandomVariable> m_xg_jitter;
+  std::string m_next_tls;              //!< najblizsi semafor na trase (z mapy, ako MAPEM)
+  int m_next_idx = -1;
+  double m_next_dist = 1e9;
+  double m_x = 0, m_y = 0;
+  bool m_red = false;                  //!< posledny SPaT pre moj signal hovori cervena/zlta
+  std::string m_red_tls;
+  double m_red_time = -10;
+  std::map<std::string, std::pair<double, double>> m_rel_heard; //!< tls -> (cas beaconu, relevancia [m])
+  bool m_relevant = true;
+  double m_last_tx = -10;
+  double m_retx_for = -1;              //!< CAM, ktoru ide algoritmus 2 zopakovat
+  double m_gap_min = 1e9, m_gap_max = 0; //!< [s] odstupy CAM (kontrola ETSI)
+  uint64_t m_gap_low = 0, m_gap_high = 0;
+  bool m_ack_wait = false, m_last_was_retx = false, m_retx_now = false;
+  double m_last_gate_count = -1;
+  uint64_t m_xg_hold = 0, m_xg_relaxed = 0, m_xg_retx = 0, m_xg_force = 0, m_xg_beacons = 0;
 };
 }
 #endif // trafficManagerClient80211p_H

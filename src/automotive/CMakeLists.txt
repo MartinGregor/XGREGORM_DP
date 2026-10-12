@@ -1623,6 +1623,7 @@ set(header_files
         helper/trafficManagerServerLTE-helper.h
         model/Applications/trafficManagerClient80211p.h
         model/Applications/trafficManagerServer80211p.h
+        model/Applications/xgregorm-stats.h
         model/Applications/trafficManagerClientLTE.h
         model/Applications/trafficManagerServerLTE.h
         model/Applications/emergencyVehicleWarningServer80211p.h

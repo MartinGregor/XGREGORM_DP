@@ -77,6 +77,16 @@ ap.add_argument("--tls-coord", type=int, default=0, choices=[0, 1],
 ap.add_argument("--coord-lookahead", type=float, default=0,
                 help="with --tls-coord 1: a vehicle announced by a neighbouring RSU is counted only this many "
                      "seconds before its estimated arrival; 0 = immediately")
+# my CAM algorithms (trafficManager 802.11p only); all 0 = authors' ETSI CAM generation
+ap.add_argument("--xg-spat", type=int, default=0, choices=[0, 1],
+                help="algorithm 1: RSU beacon with the signal state (SPaT), vehicles hold CAMs at red")
+ap.add_argument("--xg-ack", type=int, default=0, choices=[0, 1],
+                help="algorithm 2: RSU beacon lists heard CAMs, vehicles retransmit unheard ones")
+ap.add_argument("--xg-relax", type=int, default=0, choices=[0, 1],
+                help="algorithm 3: full-rate CAMs only near an RSU's traffic light, 1 Hz elsewhere")
+ap.add_argument("--xg-beacon-ms", type=int, default=0, help="RSU beacon period [ms], 0 = auto (200 with ack, else 1000)")
+ap.add_argument("--xg-hold-max", type=float, default=1, help="algorithm 1: longest CAM gap at red [s], ETSI max 1")
+ap.add_argument("--xg-relevance", type=float, default=250, help="algorithm 3: full-rate distance to the light [m]")
 ap.add_argument("--seed", type=int, default=None,
                 help="random seed: ns-3 --RngRun for all programs, SUMO seed only for v2i-traffic-80211p "
                      "(--sumo-seed); not set = defaults (SUMO seed 10), identical to the reference results")
@@ -359,7 +369,10 @@ ZAKLAD = (f"--sumo-folder={S} --mob-trace={P}cars.rou.xml --sumo-config={cfg_f} 
           + (f" --RngRun={a.seed}" if a.seed is not None else ""))
 TM = f"--phase-time={a.phase_time} --threshold={a.threshold}"
 TM_80211P = (f"{TM} --tls-radius={a.tls_radius} --tls-coord={'true' if a.tls_coord else 'false'}"
-             f" --coord-lookahead={a.coord_lookahead}")
+             f" --coord-lookahead={a.coord_lookahead}"
+             f" --xg-spat={'true' if a.xg_spat else 'false'} --xg-ack={'true' if a.xg_ack else 'false'}"
+             f" --xg-relax={'true' if a.xg_relax else 'false'} --xg-beacon-ms={a.xg_beacon_ms}"
+             f" --xg-hold-max={a.xg_hold_max} --xg-relevance={a.xg_relevance}")
 # SUMO gets its seed from the example on the command line (hardcoded 10 in the authors' examples, so
 # a seed in .sumo.cfg is ignored); only v2i-trafficManager-80211p has the --sumo-seed option so far
 if a.seed is not None:
@@ -593,6 +606,58 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
         rx = sum(int(c[2]) for c in coord)
         print(f"  wired RSU coordination: {tx} messages sent, {rx} received "
               f"({tx / max(a.sim_time, 1):.1f} msg/s over the whole network)")
+    # my measurements (xgregorm-stats.h): what the RSUs know about the vehicles on their approaches
+    aw = [dict((k, float(v)) for k, v in re.findall(r"([A-Z_0-9]+):([\d.eE+-]+)", r))
+          for r in re.findall(r"XGREGORM-AW,(.*)", vystup)]
+    xv = [dict((k, int(v)) for k, v in re.findall(r"([A-Z_]+):(\d+)", r))
+          for r in re.findall(r"XGREGORM-VEH,(.*)", vystup)]
+    if aw:
+        S_ = lambda k: sum(r.get(k, 0) for r in aw)
+        sm = max(S_("SAMPLES"), 1)
+        known = max(sm - S_("UNKNOWN"), 1)
+        ul = S_("UL_RX") / max(S_("UL_EXP"), 1)
+        ulg = S_("ULG_RX") / max(S_("ULG_EXP"), 1)
+        ul_all = (S_("UL_RX") + S_("ULG_RX")) / max(S_("UL_EXP") + S_("ULG_EXP"), 1)
+        beac, bbytes = S_("BEACON_TX"), S_("BEACON_BYTES")
+        cam_veh_s = cam_tx / max(len(info), 1) / max(a.sim_time, 1)
+        v2v = re.search(r"XGREGORM-V2V,EXP:(\d+),RX:(\d+)", vystup)
+        v2v_prr = int(v2v.group(2)) / max(int(v2v.group(1)), 1) if v2v else float("nan")
+        prrv = re.search(r"XGREGORM-PRR,VEH:([\d.eE+-]+)", vystup)
+        print("  RSU AWARENESS (vehicles on an approach of the RSU's light, sampled every 100 ms):")
+        print(f"    samples                    : {sm:.0f}, RSU never heard the vehicle in {100 * S_('UNKNOWN') / sm:.2f} %")
+        print(f"    RSU has a wrong edge       : {100 * S_('EDGE_WRONG') / sm:.2f} % of samples")
+        print(f"    position error             : mean {S_('ERR_SUM') / known:.2f} m, > 5 m in "
+              f"{100 * S_('GT5') / known:.2f} %, > 10 m in {100 * S_('GT10') / known:.2f} %")
+        print(f"    true PRR car -> car (<100 m, SUMO positions): {v2v_prr:.5f}"
+              f"{' (' + v2v.group(2) + '/' + v2v.group(1) + ')' if v2v else ''}")
+        print("      (MetricSupervisor takes the sender position from GeoNet, refreshed only every 1 s,")
+        print("       so its PRR is biased and the bias depends on the CAM rate - compare this one instead)")
+        print(f"    uplink CAM -> RSU (<100 m) : {ul_all:.4f} (3 s after a green start {ulg:.4f}, "
+              f"otherwise {ul:.4f})")
+        print(f"    CAM per vehicle per second : {cam_veh_s:.2f}")
+        print(f"    RSU beacons                : {beac:.0f} ({beac / max(a.sim_time, 1):.1f}/s, "
+              f"avg {bbytes / max(beac, 1):.0f} B)")
+        if xv:
+            T = lambda k: sum(r.get(k, 0) for r in xv)
+            print(f"    CAMs held at red (alg. 1)  : {T('HOLD')}, suppressed outside the area (alg. 3): "
+                  f"{T('RELAXED')}, forced on area change: {T('FORCED')}, retransmitted (alg. 2): {T('RETX')}")
+        gaps = [dict((k, float(v)) for k, v in re.findall(r"([A-Z_0-9]+):([\d.eE+-]+)", r))
+                for r in re.findall(r"XGREGORM-GAP,(.*)", vystup)]
+        gaps = [g for g in gaps if g.get("MIN", -1) >= 0]
+        if gaps:
+            print(f"    ETSI EN 302 637-2 CAM gap  : min {min(g['MIN'] for g in gaps):.0f} ms, max "
+                  f"{max(g['MAX'] for g in gaps):.0f} ms (allowed 100-1000), violations "
+                  f"< 100 ms: {sum(g['LT100'] for g in gaps):.0f}, > 1000 ms: {sum(g['GT1000'] for g in gaps):.0f}")
+        alg = "+".join(n for n, f in (("spat", a.xg_spat), ("ack", a.xg_ack), ("relax", a.xg_relax)) if f) or "none"
+        print("  XGCSV: alg,seed,vehicles,PRR,latency_ms,cam_tx,cam_veh_s,beacons,beacon_B,frames_s,"
+              "edge_wrong_%,err_mean_m,err_gt5_%,ul,ul_green,unknown_%,retx,stop_max_s,stopped_%,speed_kmh,v2v_prr")
+        print(f"  XGCSV: {alg},{a.seed},{a.vehicles},{prr_v:.6f},{lat_v:.4f},{cam_tx},{cam_veh_s:.3f},"
+              f"{beac:.0f},{bbytes / max(beac, 1):.0f},{(cam_tx + beac) / max(a.sim_time, 1):.2f},"
+              f"{100 * S_('EDGE_WRONG') / sm:.3f},{S_('ERR_SUM') / known:.3f},{100 * S_('GT5') / known:.3f},"
+              f"{ul_all:.5f},{ulg:.5f},{100 * S_('UNKNOWN') / sm:.3f},{sum(r.get('RETX', 0) for r in xv)},"
+              f"{doprava_celkom.get('longest_stop', float('nan')):.1f},"
+              f"{doprava_celkom.get('stopped_pct', float('nan')):.1f},"
+              f"{3.6 * doprava_celkom.get('speed', float('nan')):.1f},{v2v_prr:.5f}")
     if program == "v2i-trafficManager-80211p":
         rezim = "all traffic lights (authors' original)" if a.tls_radius <= 0 else \
             f"own intersection only (radius {a.tls_radius:.0f} m)" + \

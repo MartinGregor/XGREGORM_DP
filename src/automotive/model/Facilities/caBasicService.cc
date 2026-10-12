@@ -478,7 +478,7 @@ namespace ns3
     double head_diff = m_vdp->getHeadingValue () - m_prev_heading;
     head_diff += (head_diff>180.0) ? -360.0 : (head_diff<-180.0) ? 360.0 : 0.0;
     data_head="[HEADING] HeadingUnavailable="+std::to_string((float)HeadingValue_unavailable/10)+" PrevHead="+std::to_string(m_prev_heading/10)+" CurrHead="+std::to_string(m_vdp->getHeadingValue ())+" HeadDiff="+std::to_string(head_diff)+"\n";
-    if (head_diff > 4.0 || head_diff < -4.0)
+    if ((head_diff > 4.0 || head_diff < -4.0) && camGateOpen (true)) // xgregorm: camGateOpen
       {
         if (m_T_next_dcc == -1 || now - lastCamGen >= m_T_next_dcc)
         {
@@ -506,7 +506,7 @@ namespace ns3
     */
     double pos_diff = m_vdp->getTravelledDistance () - m_prev_distance;
     data_pos="[DISTANCE] PrevLat="+std::to_string(m_prev_position.lat)+" PrevLon="+std::to_string(m_prev_position.lon)+" CurrLat="+std::to_string(m_vdp->getPosition().lat)+" CurrLon="+std::to_string(m_vdp->getPosition().lon)+" PosDiff="+std::to_string(pos_diff)+"\n";
-    if (!condition_verified && (pos_diff > 4.0 || pos_diff < -4.0))
+    if (!condition_verified && (pos_diff > 4.0 || pos_diff < -4.0) && camGateOpen (true)) // xgregorm
       {
         if (m_T_next_dcc == -1 || now - lastCamGen >= m_T_next_dcc)
         {
@@ -533,7 +533,7 @@ namespace ns3
     */
     double speed_diff = m_vdp->getSpeedValue () - m_prev_speed;
     data_speed="[SPEED] SpeedUnavailable="+std::to_string((float)SpeedValue_unavailable)+" PrevSpeed="+std::to_string(m_prev_speed)+" CurrSpeed="+std::to_string(m_vdp->getSpeedValue ())+" SpeedDiff="+std::to_string(speed_diff)+"\n";
-    if (!condition_verified && (speed_diff > 0.5 || speed_diff < -0.5))
+    if (!condition_verified && (speed_diff > 0.5 || speed_diff < -0.5) && camGateOpen (true)) // xgregorm
       {
         if (m_T_next_dcc == -1 || now - lastCamGen >= m_T_next_dcc)
         {
@@ -558,7 +558,7 @@ namespace ns3
     */
     long time_difference = now - lastCamGen;
     data_time="[TIME] Timestamp="+std::to_string(now)+" LastCAMSend="+std::to_string(lastCamGen)+" NumThreshold="+std::to_string(m_N_GenCamMax)+" NumCAM="+std::to_string(m_N_GenCam)+" TimeThreshold="+std::to_string(m_T_GenCam_ms)+" TimeDiff="+std::to_string(time_difference)+" TimeNextCAM="+std::to_string(m_T_GenCam_ms - time_difference)+"\n";
-    if(!condition_verified && (now-lastCamGen>=m_T_GenCam_ms))
+    if(!condition_verified && (now-lastCamGen>=m_T_GenCam_ms) && camGateOpen (false)) // xgregorm
       {
         if (m_T_next_dcc == -1 || now - lastCamGen >= m_T_next_dcc)
         {
@@ -589,6 +589,24 @@ namespace ns3
     write_log_triggering (condition_verified, head_diff, pos_diff, speed_diff, time_difference, data_head, data_pos, data_speed, data_time, data_dcc);
 
     m_event_camCheckConditions = Simulator::Schedule (MilliSeconds(m_T_CheckCamGen_ms), &CABasicService::checkCamConditions, this);
+  }
+
+  // xgregorm: CAM mimo checkCamConditions (moje algoritmy 2 a 3). ETSI EN 302 637-2 meni T_GenCam
+  // len po dynamickom triggeri, preto ho vynutena CAM nesmie skratit (generateAndEncodeCam ho nastavi
+  // na odstup od predoslej CAM). Kontrolu podmienok spustime znova od tejto CAM, aby casovy trigger
+  // prisiel presne T_GenCam po nej (inak by mriezka 100 ms predlzila odstup az na T_GenCamMax + 100 ms).
+  CABasicService_error_t
+  CABasicService::forceCam()
+  {
+    long t_gen = m_T_GenCam_ms;
+    CABasicService_error_t err = generateAndEncodeCam ();
+    m_T_GenCam_ms = t_gen;
+    if (err == CAM_NO_ERROR && m_event_camCheckConditions.IsRunning ())
+      {
+        Simulator::Cancel (m_event_camCheckConditions);
+        m_event_camCheckConditions = Simulator::Schedule (MilliSeconds (m_T_CheckCamGen_ms), &CABasicService::checkCamConditions, this);
+      }
+    return err;
   }
 
   CABasicService_error_t
@@ -1007,6 +1025,7 @@ namespace ns3
     /* Update the CAM statistics */
     if(dataConfirm == ACCEPTED) {
         if (message_id == MessageId_cam) m_cam_sent++;
+        if (m_cam_tx_cb) m_cam_tx_cb (); // xgregorm
       }
 
     // Estimation of the transmission time

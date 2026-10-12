@@ -40,6 +40,9 @@ prepnutia medzi RSU) oproti pôvodným aplikáciám autorov.
 | `trafficManagerServer80211p.cc/.h`, `v2i-trafficManager-80211p.cc` | atribút `CoordLookahead` / CLI `--coord-lookahead`: auto ohlásené susedom na mojom príjazde sa započíta až X s pred odhadovaným príchodom (dĺžka pruhu / limit); `applyCoordDelayed()` ho zahodí, ak medzitým prišla novšia informácia | `xgregorm_kod_zaloha/` |
 | `src/automotive/examples/CMakeLists.txt` | `v2i-trafficManager-80211p` linkuje `${libcsma}` | `xgregorm_kod_zaloha/examples_CMakeLists.txt` |
 | `areaSpeedAdvisorClient80211p.cc`, `areaSpeedAdvisorServer80211p.cc`, `trafficManagerClient80211p.cc`, `trafficManagerServer80211p.cc`, `emergencyVehicleWarningClient80211p.cc`, `emergencyVehicleWarningServer80211p.cc`, `areaSpeedAdvisorClientLTE.cc`, `trafficManagerClientLTE.cc` | **oprava A – desynchronizácia CAM**: `std::srand(Now)` + `rand()` nahradené `UniformRandomVariable` (rovnako ako autori v `emergencyVehicleAlert.cc`). Neprepínateľné – stará referencia „s chybou“ je len v Denníku (alebo zo záloh). `simpleCAMSender-gps-tc`, `simpleVAMSender-gps-tc`, `v2xEmulator` nechané (nepoužívame). | `xgregorm_kod_zaloha/` |
+| `caBasicService.cc/.h` (jadro CAM, používajú ho všetky príklady) | **háčiky pre moje algoritmy CAM**: `setCamGate()` (pred CAM spustenou v `checkCamConditions` sa opýta, či ju poslať; `dynamic` = trigger poloha/smer/rýchlosť, inak časový), `addCamTxCallback()` (po každej odoslanej CAM), `forceCam()` (pošli CAM hneď; zachová T_GenCam a reštartuje 100 ms kontrolu, aby ďalšia CAM prišla najneskôr po T_GenCam). Bez nastavenia = pôvodné ETSI správanie, overené bit po bite | `xgregorm_kod_zaloha/` |
+| `trafficManagerClient80211p.cc/.h`, `trafficManagerServer80211p.cc/.h`, `v2i-trafficManager-80211p.cc` | **algoritmy CAM 1-3** (atribúty `XgSpat`, `XgAck`, `XgRelax`, `XgBeaconMs`, `XgHoldMax`, `XgRelevance`; CLI `--xg-spat/--xg-ack/--xg-relax/--xg-beacon-ms/--xg-hold-max/--xg-relevance`), beacon RSU (vlastný 802.11p rámec, ethertype 0x88B5), merania `XGREGORM-AW/-V2V/-VEH/-GAP/-PRR(V)`; dodržiava ETSI EN 302 637-2 (odstup CAM 100-1000 ms); `forceCam` zachová T_GenCam; viď Denník 2026-10-12 | `xgregorm_kod_zaloha/` |
+| `xgregorm-stats.h` (nový, `model/Applications/`), `src/automotive/CMakeLists.txt` | merania (len čítanie zo SUMO): presnosť informácie RSU, uplink do RSU, skutočné PRR auto-auto; hlavička zaradená do zoznamu hlavičiek modulu | `xgregorm_kod_zaloha/automotive_CMakeLists.txt` |
 
 **Pravidlo riadenia semaforov:** 802.11p = každá RSU riadi len semafor svojej križovatky (ako
 v realite: radič + RSU na každej križovatke), predvolené v kóde aj v skripte. LTE = jeden server
@@ -82,6 +85,15 @@ VaN3Twin `0e70bb36` (zmena je v prvom commite repozitára, priečinok zálohy za
   **Príčina nájdená (2026-10-07):** synchronizované CAM, viď Denník. Nie je to zahltenie ani chyba scenára.
   **Opravené 2026-10-11 (oprava A):** V2I 802.11p PRR je teraz ~0.996 aj pri 30 autách. Výsledky
   V2I spred tohto dátumu sú „autori s chybou“ a s novými sa priamo porovnávať nedajú.
+- **PRR z MetricSupervisora je skreslené (zistené 2026-10-12):** polohu odosielateľa berie z GeoNet
+  EPV, ktorá sa obnovuje len raz za 1 s (`m_GnMinUpdateFrequencyEPV = 1000`). Do „baseline“ tak
+  započíta autá okolo polohy starej až 1 s (pri 90 km/h 25 m vedľa) a chýbajúce príjmy sú z veľkej časti
+  artefakt. Skreslenie závisí od frekvencie CAM: pri algoritme 3 kleslo z 0.995 na 0.988, hoci skutočné
+  doručenie ostalo 100 %. Pri porovnávaní algoritmov, ktoré menia počet CAM, používať **skutočné PRR**
+  `XGREGORM-V2V` (poloha zo SUMO v okamihu vyslania, rovnaký 100 m baseline).
+- **`--datarate` v príkladoch 802.11p nefunguje pre CAM:** nastavuje `DataMode` v `ConstantRateWifiManager`,
+  ale broadcast ide v ns-3 rýchlosťou `NonUnicastMode` (predvolená). 3/6/12 Mbit/s dali bit po bite
+  rovnaké výsledky (chyba autorov, neopravená).
 - PRR sa počíta v 3-sekundovom okne, takže `--sim-time` pod 60 s dáva nepoužiteľnú vzorku.
 - Nízke PRR pri v2v 802.11p = zahltenie kanála (veľa vozidiel a RSU na malej ploche), nie chyba konfigurácie.
 - **Počty CAM/DENM/CPM v súhrne sú z riadkov `INFO-vehX`, ktoré tlačia aplikácie** – každá iné:
@@ -352,6 +364,53 @@ python3 xgregorm_gen_scenario.py --run all                  # všetkých 5 simul
   skript `v2i-traffic-80211p` identický s referenciou; `v2i-traffic-lte` identický (53.222 ms).
   Nová referencia pôvodného režimu po oprave A (`--tls-radius 0`):
   `v2i-trafficManager-80211p,10,5,120,0.993968,0.60,0.265,0,11.97,33.9` (max státie stále 107 s).
+- **2026-10-11** – **Overenie s 5 seedmi po oprave A: pôvodný trafficManager vs. lokálne riadenie**
+  (802.11p, 120 s, 5 RSU, `--seed 1..5`, priemer ± sm. odch.):
+
+  | autá | režim | max státie [s] | priem. najdlhšie státie [s] | čas v státí [%] | rýchlosť [km/h] | PRR |
+  |---|---|---|---|---|---|---|
+  | 10 | pôvodne (`--tls-radius 0`) | 104.1 ± 2.3 | 40.1 ± 1.7 | 34.1 ± 1.5 | 41.5 ± 0.8 | 0.994 |
+  | 10 | lokálne (každá RSU svoj semafor) | **17.1 ± 2.3** | **2.9 ± 0.4** | **3.2 ± 0.5** | **55.2 ± 1.5** | 0.995 |
+  | 30 | pôvodne | 105.8 ± 0.5 | 44.3 ± 0.7 | 37.5 ± 0.7 | 38.9 ± 0.5 | 0.996 |
+  | 30 | lokálne | **23.8 ± 3.0** | **7.4 ± 1.0** | **8.7 ± 1.2** | **49.8 ± 1.1** | 0.997 |
+
+  Pôvodný režim má po oprave A rovnakú dopravu ako pred ňou (boj RSU o semafory prevláda nad
+  kvalitou dát). Lokálny režim pri 30 autách po oprave A mierne horší než pred ňou
+  (18.8 ± 0.5 s / 7.0 % -> 23.8 ± 3.0 s / 8.7 %) – potvrdené 5 seedmi: viac doručených CAM =
+  viac okamžitých prepnutí v algoritme autorov.
+- **2026-10-12** – **Algoritmy CAM 1-3** (viď Moje zmeny). Princíp: 1 = SPaT – auto stojace pri červenej
+  (farbu oznámi RSU beaconom) potláča dynamické CAM; 2 = RSU v beacone (200 ms) posiela zoznam áut, ktorých
+  CAM počula, nepotvrdené auto CAM raz zopakuje; 3 = relevancia – mimo oblasti, ktorú RSU oznámi (250 m
+  pred jej semaforom na trase auta), len 1 CAM/s. Meranie: skutočné PRR auto-auto (`XGREGORM-V2V`,
+  viď Interpretácia metrík), uplink do RSU, presnosť polohy, ktorú RSU pozná. Bez algoritmov bit po bite
+  zhodné s referenciou. Hypotéza „zhluk CAM po zelenej“ vyvrátená (uplink do 3 s po zelenej 1.0000 vs. 0.9996).
+  Prvá verzia (porušovala ETSI, viď nižšie), 30 áut priemer 3 seedov: alg. 3 CAM −55 %, rámce −51 %,
+  PRR a doprava bez zmeny; alg. 1 −2.5 % CAM; alg. 2 +21 % rámcov bez prínosu. 100 áut (seed 1, beh so
+  150 autami a seedy 2-3 sa prerušili): strata auto-auto 0.12 % -> ACK 0.07 %, 1+2+3 0.05 % pri −55 % CAM;
+  alg. 1 a 3 samostatne stratu zvýšili (0.33 %, 0.20 %) – neoverené viac seedmi.
+- **2026-10-12** – **Algoritmy upravené podľa ETSI EN 302 637-2** (odstup CAM 100-1000 ms, prahy 4°/4 m/0.5 m/s;
+  kód autorov ich dodržiava). Prvá verzia porušovala: alg. 1 držal CAM až 5 s; opakovanie (alg. 2) a vynútená
+  CAM pri zmene oblasti (alg. 3) mohli ísť < 100 ms po predošlej; `forceCam` skrátil T_GenCam (nasledujúce
+  CAM potom chodili častejšie) a časový trigger po nej prišiel až o ~1.1 s. Oprava: brána (`camGate`) nikdy
+  nepustí CAM < 100 ms po predošlej; alg. 1 a 3 len predlžujú minimálny odstup dynamických CAM najviac na
+  1 s (ako DCC, T_GenCam_DCC ≤ T_GenCamMax), časová CAM po 1 s ide vždy; `XgHoldMax` predvolene 1, povolené
+  0.1-1; opakovanie najskôr 100 ms po nepotvrdenej CAM a len ak medzitým neodišla nová; `forceCam` zachová
+  T_GenCam a reštartuje kontrolu podmienok. Nová kontrola `XGREGORM-GAP` (min/max odstup CAM, porušenia).
+  Odchýlka, ktorú treba v práci uviesť: štandard dovoľuje obmedziť dynamické CAM len kvôli DCC (zaťaženie
+  kanála), my podľa relevancie/SPaT. `./ns3 build` celý. Test 30 áut, 120 s, bez `--seed`, 1 beh:
+
+  | konfigurácia | CAM | rámce/s | strata auto-auto | uplink | min/max odstup | porušenia ETSI |
+  |---|---|---|---|---|---|---|
+  | bez algoritmov | 14510 | 120.9 | 1/37318 | 1.0000 | 100/1000 ms | 0 |
+  | 1 (SPaT) | 14390 (−0.8 %) | 126.2 (+4 %) | 1/36779 | 1.0000 | 100/1000 | 0 |
+  | 2 (ACK) | 14517 (31 opakovaní) | 144.9 (+20 %) | 19/37427 | 1.0000 | 100/1000 | 0 |
+  | 3 (relevancia) | **6399 (−56 %)** | **58.1 (−52 %)** | **0/23477** | 1.0000 | 100/1000 | 0 |
+  | 1+2+3 | 6345 (−56 %) | 78.2 (−35 %) | 14/23091 | 1.0000 | 100/1000 | 0 |
+
+  Doprava vo všetkých rovnaká (49.0 km/h, 10.3-10.4 % státia, max 25.4 s). Referencia bez algoritmov je
+  bit po bite zhodná s predošlou (`none,...,0.997178,...,14510`). Záver: v rámci ETSI má zmysel len alg. 3;
+  alg. 1 pri limite 1 s nemá čo ušetriť (stojace auto aj tak posiela 1 CAM/s); alg. 2 pri 30 autách
+  (kanál takmer prázdny) len pridáva beacony a stratu mierne zvyšuje.
 - Pozn.: v sekcii „Tok komunikácie“ je prehľad, čo ide cez ns-3 (CAM, kábel RSU-RSU) a čo cez
   TraCI (RSU -> semafor, mapa).
 

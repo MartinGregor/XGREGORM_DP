@@ -208,8 +208,21 @@ namespace ns3
 
     uint64_t getWannabeSent() {return m_wannabe_sent;}
 
+    // xgregorm: hooks for my CAM generation algorithms; nothing set = original ETSI behaviour.
+    // The gate is asked before a CAM triggered by checkCamConditions() is generated
+    // (dynamic = heading/position/speed trigger, false = time trigger); false suppresses it.
+    void setCamGate(std::function<bool(bool)> gate) {m_cam_gate=gate;}
+    // called after every CAM accepted by the lower layers
+    void addCamTxCallback(std::function<void()> cb) {m_cam_tx_cb=cb;}
+    // generate and send a CAM now (outside the periodic check), e.g. a retransmission;
+    // keeps T_GenCam and restarts the periodic check so that the next CAM still comes within T_GenCam
+    CABasicService_error_t forceCam();
+
   private:
     const size_t m_MaxPHLength = 23;
+    std::function<bool(bool)> m_cam_gate; //!< xgregorm
+    std::function<void()> m_cam_tx_cb; //!< xgregorm
+    bool camGateOpen(bool dynamic) {return !m_cam_gate || m_cam_gate(dynamic);} //!< xgregorm
 
     void initDissemination();
     void RSUDissemination();
