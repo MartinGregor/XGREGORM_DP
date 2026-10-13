@@ -4,7 +4,7 @@
 //   LTE  = LTE cez eNB a jadro siete (UDP na server v sieti, ten ju po kabli doruci RSU)
 //   NR   = NR-V2X sidelink (5G, priamo autam a RSU v dosahu, multicast 225.0.0.0)
 // GeoNet o tom nevie, vola len Send(). Prijem ide cez povodne sockety (kazdy ma RecvCallback na GeoNet).
-// Vypadok technologie pocas behu (--fail-*): xghyb::up() - prepinac na vypadnutu cestu nic neposle.
+// Vypadky technologie pocas behu (--fail-*, aj viac intervalov): xghyb::up() - prepinac na vypadnutu cestu nic neposle.
 #ifndef XGREGORM_HYBRID_SOCKET_H
 #define XGREGORM_HYBRID_SOCKET_H
 
@@ -17,6 +17,8 @@
 #include <string>
 #include <map>
 #include <array>
+#include <vector>
+#include <sstream>
 
 namespace ns3 {
 
@@ -26,25 +28,31 @@ enum Path { WIFI = 1, LTE = 2, NR = 4 };
 inline int idx (int path) { return path == WIFI ? 0 : path == LTE ? 1 : 2; }
 inline const char *name (int i) { return i == 0 ? "80211p" : i == 1 ? "LTE" : "NR"; }
 
-// vypadok technologie [s]: od-do, -1 = nikdy
-inline double *downFrom () { static double d[3] = {-1, -1, -1}; return d; }
-inline double *downTo () { static double d[3] = {-1, -1, -1}; return d; }
+// vypadky technologie [s]: zoznam intervalov od-do (do < 0 = do konca behu)
+inline std::vector<std::pair<double, double>> *outages () { static std::vector<std::pair<double, double>> v[3]; return v; }
 inline bool
 up (int path)
 {
-  int i = idx (path);
   double now = Simulator::Now ().GetSeconds ();
-  return !(downFrom ()[i] >= 0 && now >= downFrom ()[i] && (downTo ()[i] < 0 || now < downTo ()[i]));
+  for (const auto &o : outages ()[idx (path)])
+    if (now >= o.first && (o.second < 0 || now < o.second))
+      return false;
+  return true;
 }
-// "start:end" alebo "start" -> vypadok technologie path
+// "od:do", "od" (do konca) alebo viac intervalov "od:do,od:do,..." -> vypadky technologie path
 inline void
 setOutage (int path, const std::string &spec)
 {
-  if (spec.empty ())
-    return;
-  size_t c = spec.find (':');
-  downFrom ()[idx (path)] = std::stod (spec.substr (0, c));
-  downTo ()[idx (path)] = c == std::string::npos ? -1 : std::stod (spec.substr (c + 1));
+  std::stringstream ss (spec);
+  std::string one;
+  while (std::getline (ss, one, ','))
+    {
+      if (one.empty ())
+        continue;
+      size_t c = one.find (':');
+      outages ()[idx (path)].push_back ({std::stod (one.substr (0, c)),
+                                         c == std::string::npos ? -1 : std::stod (one.substr (c + 1))});
+    }
 }
 
 // casova os: pocet CAM za sekundu podla kombinacie ciest, ktorymi naozaj odisli (index = maska 0..7)

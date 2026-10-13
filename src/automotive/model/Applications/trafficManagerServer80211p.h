@@ -114,7 +114,7 @@ class trafficManagerServer80211p : public Application
     bool m_xg_printed = false; //!< xgregorm
     uint32_t m_xg_hybrid = 0; //!< xgregorm: hybrid 802.11p + LTE: 1 CAM aj z kabla, 2 aj beacon s potvrdeniami
     Ptr<Socket> m_hyb_socket; //!< xgregorm: CAM preposlane zo siete LTE
-    std::map<unsigned long, long> m_hyb_last_gdt; //!< xgregorm: posledna spracovana CAM auta
+    std::map<unsigned long, std::pair<long, double>> m_hyb_last_gdt; //!< xgregorm: posledna spracovana CAM auta (gdt, cas prijatia)
     uint64_t m_hyb_rx[3] = {0, 0, 0}, m_hyb_stale = 0; //!< xgregorm: prijate [802.11p, LTE, NR], zahodene stare
     bool m_xg_nr = false; //!< xgregorm: RSU ma NR-V2X sidelink
     Ptr<Socket> m_nr_socket, m_nr_beacon_socket; //!< xgregorm: CAM a beacony cez NR-V2X

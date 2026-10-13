@@ -26,6 +26,8 @@
 #include "ns3/lte-module.h"
 #include "ns3/nr-module.h"
 #include "ns3/antenna-module.h"
+#include "ns3/buildings-module.h"
+#include "ns3/propagation-module.h"
 #include "ns3/point-to-point-helper.h"
 #include "ns3/wave-module.h"
 #include "ns3/mobility-module.h"
@@ -42,6 +44,7 @@ namespace {
 // kazda RSU si z nej vezme, len ak je auto na prijazde k jej semaforu (ako v realite geo-filter brokera)
 Ptr<Socket> g_relay_out;
 uint64_t g_relay_n = 0;
+uint64_t g_ho[4] = {0, 0, 0, 0}; // xgregorm: LTE odovzdavanie medzi bunkami: zaciatok, OK, chyba, strata spojenia
 const Ipv4Address kBackhaulNet ("10.10.0.0");
 const Ipv4Mask kBackhaulMask ("255.255.255.0");
 
@@ -98,6 +101,7 @@ main (int argc, char *argv[])
   std::string policy = "adaptive";
   std::string fail_80211p, fail_lte, fail_nr;
   double hyb_range = 250, hyb_qmin = 0.9, hyb_dwell = 1.0;
+  bool density = true;
   double core_delay_ms = 5; // PGW -> server, ako autori v v2i-trafficManager-LTE
   // NR-V2X (hodnoty z v2v-emergencyVehicleAlert-nrv2x autorov)
   double nr_freq = 5.89e9;
@@ -105,6 +109,7 @@ main (int argc, char *argv[])
   double nr_tx_power = 23;
   uint16_t nr_numerology = 2;
   uint8_t nr_mcs = 14;
+  bool nr_sensing = false; // autori: false (nahodny vyber zdrojov bez sledovania obsadenosti)
   Time nr_bearer_time = Seconds (2.0);
 
   int numberOfNodes;
@@ -142,14 +147,30 @@ main (int argc, char *argv[])
   cmd.AddValue ("fail-nr","NR-V2X outage during the run, \"from:to\" [s]",fail_nr);
   cmd.AddValue ("hyb-range","Adaptive: distance to the next traffic light where its controller needs the vehicle [m]",hyb_range);
   cmd.AddValue ("hyb-qmin","Adaptive: lowest share of CAMs confirmed by the RSU to rely on one direct technology",hyb_qmin);
+  cmd.AddValue ("density","Adaptive: density rule P1 - a vehicle without 802.11p neighbours sends also on NR-V2X",density);
   cmd.AddValue ("hyb-dwell","Adaptive: the direct link must be good this long before the backup is switched off [s]",hyb_dwell);
   cmd.AddValue ("core-delay","One-way delay PGW -> server [ms]",core_delay_ms);
   cmd.AddValue ("nr-tx-power","NR-V2X tx power [dBm]",nr_tx_power);
   cmd.AddValue ("nr-mcs","NR-V2X sidelink MCS",nr_mcs);
+  cmd.AddValue ("nr-sensing","NR-V2X mode 2: sensing-based resource selection (authors: false)",nr_sensing);
   cmd.AddValue ("tx-power", "802.11p transmission power [dBm]", txPower);
   cmd.AddValue ("datarate", "802.11p channel data rate [Mbit/s]", datarate);
   cmd.AddValue ("sim-time", "Total duration of the simulation [s]", simTime);
+  bool range_stats = false;
+  std::string channel_model = "authors";
+  uint32_t n_enb = 1;
+  double enb_isd = 500;
+  double lte_ue_power = 10;
+  cmd.AddValue ("lte-ue-power","LTE UE max tx power [dBm] (ns-3 default 10; real UE power class 3 = 23)",lte_ue_power);
+  cmd.AddValue ("enb","LTE macro cells: 1 = one cell in the middle of the RSUs (attach at start); k*k > 1 = square grid "
+                "with inter-site distance --enb-isd, X2 handover (A3 RSRP), a vehicle attaches when it enters the map",n_enb);
+  cmd.AddValue ("enb-isd","Inter-site distance of the LTE cells [m] (3GPP urban macro: 500 m)",enb_isd);
+  cmd.AddValue ("channel","Radio channel of the direct technologies: authors = 802.11p LogDistance (authors' 802.11p examples) "
+                "and NR 3GPP TR 37.885 V2V highway (authors' NR example); 3gpp = 802.11p on the same 3GPP V2V highway model as NR",
+                channel_model);
+  cmd.AddValue ("range-stats","Measure delivery vs. distance (50 m bins up to 1000 m), car-car and car-RSU",range_stats);
   cmd.Parse (argc, argv);
+  xgstats::rangeOn () = range_stats;
 
   uint32_t paths = (use_80211p ? xghyb::WIFI : 0) | (use_lte ? xghyb::LTE : 0) | (use_nr ? xghyb::NR : 0);
   if (paths == 0)
@@ -217,6 +238,25 @@ main (int argc, char *argv[])
   wifiPhy.Set ("TxPowerEnd", DoubleValue (txPower));
   YansWifiChannelHelper wifiChannel = YansWifiChannelHelper::Default ();
   Ptr<YansWifiChannel> channel = wifiChannel.Create ();
+  // xgregorm: --channel 3gpp - 802.11p na rovnakom modeli sirenia ako NR-V2X (3GPP TR 37.885 V2V highway: LOS/NLOSv
+  // podla vzdialenosti, bez tienenia, stav kanala pre dvojicu sa neaktualizuje - presne ako NR u autorov), aby rozdiel
+  // dosahu urcovala technologia (vykon, citlivost, modulacia), nie rozny model
+  if (channel_model == "3gpp")
+    {
+      Ptr<ThreeGppV2vHighwayChannelConditionModel> ccm = CreateObject<ThreeGppV2vHighwayChannelConditionModel> ();
+      ccm->SetAttribute ("UpdatePeriod", TimeValue (MilliSeconds (0)));
+      ccm->AssignStreams (2000);
+      Ptr<ThreeGppV2vHighwayPropagationLossModel> loss = CreateObject<ThreeGppV2vHighwayPropagationLossModel> ();
+      loss->SetAttribute ("Frequency", DoubleValue (5.9e9));
+      loss->SetAttribute ("ShadowingEnabled", BooleanValue (false));
+      loss->SetChannelConditionModel (ccm);
+      loss->AssignStreams (2010);
+      channel = CreateObject<YansWifiChannel> ();
+      channel->SetPropagationDelayModel (CreateObject<ConstantSpeedPropagationDelayModel> ());
+      channel->SetPropagationLossModel (loss);
+    }
+  else if (channel_model != "authors")
+    NS_FATAL_ERROR ("--channel must be authors or 3gpp");
   wifiPhy.SetChannel (channel);
   wifiPhy.SetPcapDataLinkType (YansWifiPhyHelper::DLT_IEEE802_11);
   NqosWaveMacHelper wifi80211pMac = NqosWaveMacHelper::Default ();
@@ -240,8 +280,10 @@ main (int argc, char *argv[])
   Ptr<NrPointToPointEpcHelper> nrEpcHelper;
   Ptr<NrHelper> nrHelper;
   Ptr<NrSlHelper> nrSlHelper;
+  NetDeviceContainer lteUeDevs;
   if (use_lte)
     {
+      Config::SetDefault ("ns3::LteUePhy::TxPower", DoubleValue (lte_ue_power));
       lteHelper = CreateObject<LteHelper> ();
       epcHelper = CreateObject<PointToPointEpcHelper> ();
       lteHelper->SetEpcHelper (epcHelper);
@@ -267,16 +309,29 @@ main (int argc, char *argv[])
           cx += std::get<1> (r) / rsuData.size ();
           cy += std::get<2> (r) / rsuData.size ();
         }
+      // viac buniek (--enb k*k): stvorcova siet stoziarov okolo stredu, sused po enb_isd, odovzdavanie cez X2
+      uint32_t k = (uint32_t) std::lround (std::sqrt ((double) n_enb));
+      if (k < 1 || k * k != n_enb)
+        NS_FATAL_ERROR ("--enb must be a square number (1, 4, 9, ...)");
+      if (n_enb > 1)
+        {
+          lteHelper->SetHandoverAlgorithmType ("ns3::A3RsrpHandoverAlgorithm");
+          lteHelper->SetHandoverAlgorithmAttribute ("Hysteresis", DoubleValue (3.0));
+          lteHelper->SetHandoverAlgorithmAttribute ("TimeToTrigger", TimeValue (MilliSeconds (256)));
+        }
       NodeContainer enbNodes;
-      enbNodes.Create (1);
+      enbNodes.Create (n_enb);
       MobilityHelper enbMobility;
       Ptr<ListPositionAllocator> enbPos = CreateObject<ListPositionAllocator> ();
-      enbPos->Add (Vector (cx, cy, 30));
+      for (uint32_t a = 0; a < k; a++)
+        for (uint32_t b = 0; b < k; b++)
+          enbPos->Add (Vector (cx + (a - (k - 1) / 2.0) * enb_isd, cy + (b - (k - 1) / 2.0) * enb_isd, 30));
       enbMobility.SetPositionAllocator (enbPos);
       enbMobility.Install (enbNodes);
 
       NetDeviceContainer enbDevs = lteHelper->InstallEnbDevice (enbNodes);
       NetDeviceContainer ueDevs = lteHelper->InstallUeDevice (obuNodes);
+      lteUeDevs = ueDevs;
       epcHelper->AssignUeIpv4Address (ueDevs);
       for (uint32_t u = 0; u < obuNodes.GetN (); ++u)
         {
@@ -285,7 +340,20 @@ main (int argc, char *argv[])
           ipv4RoutingHelper.GetStaticRouting (ipv4)->SetDefaultRoute (epcHelper->GetUeDefaultGatewayAddress (),
                                                                        ipv4->GetInterfaceForDevice (ueDevs.Get (u)));
         }
-      lteHelper->Attach (ueDevs, enbDevs.Get (0));
+      if (n_enb == 1)
+        lteHelper->Attach (ueDevs, enbDevs.Get (0));
+      else
+        {
+          lteHelper->AddX2Interface (enbNodes); // UE sa pripoja az pri vstupe do mapy (vyber bunky podla polohy)
+          Config::ConnectWithoutContext ("/NodeList/*/DeviceList/*/LteUeRrc/HandoverStart",
+                                         MakeCallback (+[] (uint64_t, uint16_t, uint16_t, uint16_t) { g_ho[0]++; }));
+          Config::ConnectWithoutContext ("/NodeList/*/DeviceList/*/LteUeRrc/HandoverEndOk",
+                                         MakeCallback (+[] (uint64_t, uint16_t, uint16_t) { g_ho[1]++; }));
+          Config::ConnectWithoutContext ("/NodeList/*/DeviceList/*/LteUeRrc/HandoverEndError",
+                                         MakeCallback (+[] (uint64_t, uint16_t, uint16_t) { g_ho[2]++; }));
+          Config::ConnectWithoutContext ("/NodeList/*/DeviceList/*/LteUeRrc/RadioLinkFailure",
+                                         MakeCallback (+[] (uint64_t, uint16_t, uint16_t) { g_ho[3]++; }));
+        }
     }
 
   /*** 5. NR-V2X sidelink (mode 2, bez gNB): auta aj RSU; nastavenie ako v2v-emergencyVehicleAlert-nrv2x ***/
@@ -317,7 +385,7 @@ main (int argc, char *argv[])
       nrHelper->SetUeAntennaAttribute ("NumColumns", UintegerValue (2));
       nrHelper->SetUeAntennaAttribute ("AntennaElement", PointerValue (CreateObject<IsotropicAntennaModel> ()));
       nrHelper->SetUePhyAttribute ("TxPower", DoubleValue (nr_tx_power));
-      nrHelper->SetUeMacAttribute ("EnableSensing", BooleanValue (false));
+      nrHelper->SetUeMacAttribute ("EnableSensing", BooleanValue (nr_sensing));
       nrHelper->SetUeMacAttribute ("T1", UintegerValue (2));
       nrHelper->SetUeMacAttribute ("T2", UintegerValue (81));
       nrHelper->SetUeMacAttribute ("ActivePoolId", UintegerValue (0));
@@ -507,12 +575,19 @@ main (int argc, char *argv[])
   clientHelper.SetAttribute ("XgHybRange", DoubleValue (hyb_range));
   clientHelper.SetAttribute ("XgHybQmin", DoubleValue (hyb_qmin));
   clientHelper.SetAttribute ("XgHybDwell", DoubleValue (hyb_dwell));
+  clientHelper.SetAttribute ("XgDensity", BooleanValue (density));
 
   STARTUP_FCN setupNewNode = [&] (std::string vehicleID,TraciClient::StationTypeTraCI_t stationType) -> Ptr<Node>
     {
       if (nodeCounter >= obuNodes.GetN())
         NS_FATAL_ERROR("Node Pool empty!: " << nodeCounter << " nodes created.");
       Ptr<Node> includedNode = obuNodes.Get(nodeCounter);
+      // xgregorm: viac LTE buniek - UE sa pripoji, az ked ma auto polohu (vyber bunky v idle mode)
+      if (use_lte && n_enb > 1)
+        {
+          Ptr<NetDevice> ue = lteUeDevs.Get (nodeCounter);
+          Simulator::Schedule (MilliSeconds (10), [lteHelper, ue] () { lteHelper->Attach (ue); });
+        }
       ++nodeCounter;
       ApplicationContainer ClientApp = clientHelper.Install (includedNode);
       ClientApp.Start (Seconds (0.0));
@@ -536,6 +611,7 @@ main (int argc, char *argv[])
   Simulator::Destroy ();
 
   std::cout << "XGREGORM-RELAY,CAM:" << g_relay_n << std::endl;
+  std::cout << "XGREGORM-LTEHO,START:" << g_ho[0] << ",OK:" << g_ho[1] << ",ERR:" << g_ho[2] << ",RLF:" << g_ho[3] << std::endl;
   // casova os po 1 s: T<sekunda>:pocet CAM pre masku 0..7 (oddelene /)
   std::cout << "XGREGORM-HYBT";
   for (auto &e : xghyb::timeline ())
@@ -545,8 +621,35 @@ main (int argc, char *argv[])
         std::cout << (m ? "/" : "") << e.second[m];
     }
   std::cout << std::endl;
+  // casova os dorucenia po 1 s (xgstats::timeline): T<s>:ul_exp/ul_rx/v2v_exp/v2v_rx/vzorky/nevie/vek_ms/chyba>10m
+  std::cout << "XGREGORM-LOSST";
+  for (auto &e : xgstats::timeline ())
+    {
+      std::cout << ",T" << e.first << ":";
+      for (int k = 0; k < 8; k++)
+        std::cout << (k ? "/" : "") << e.second[k];
+    }
+  std::cout << std::endl;
   // oneskorenie auto -> auto: W = 802.11p, NR = NR-V2X (prva kopia kazdej CAM)
   std::cout << "XGREGORM-V2VLAT,W_SUM:" << xgstats::v2vLatSum ()[0] << ",W_N:" << xgstats::v2vLatN ()[0]
             << ",NR_SUM:" << xgstats::v2vLatSum ()[2] << ",NR_N:" << xgstats::v2vLatN ()[2] << std::endl;
+  // hustota po 1 s: T<s>:vzorky/sum_cbr_e4/max_cbr_e4/sum_nb_w/sum_nb_nr/izolovane/cbr>0.3/cbr>0.6
+  std::cout << "XGREGORM-DENS";
+  for (auto &e : xgstats::densT ())
+    {
+      std::cout << ",T" << e.first << ":";
+      for (int k = 0; k < 8; k++)
+        std::cout << (k ? "/" : "") << e.second[k];
+    }
+  std::cout << std::endl;
+  // dorucenie podla vzdialenosti (po 50 m): B<index>:v2v_exp/v2v_rx/ul_exp/ul_rx
+  if (range_stats)
+    {
+      std::cout << "XGREGORM-RANGE";
+      for (int b = 0; b < xgstats::kBins; b++)
+        std::cout << ",B" << b << ":" << xgstats::rangeBins ()[0][b] << "/" << xgstats::rangeBins ()[1][b] << "/"
+                  << xgstats::rangeBins ()[2][b] << "/" << xgstats::rangeBins ()[3][b];
+      std::cout << std::endl;
+    }
   return 0;
 }

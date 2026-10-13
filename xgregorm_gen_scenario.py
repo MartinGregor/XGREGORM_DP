@@ -32,8 +32,8 @@ ap.add_argument("--name", default="mesto", help="scenario name -> src/automotive
 ap.add_argument("--grid", type=int, default=3, help="number of intersections per row")
 ap.add_argument("--step", type=float, default=200,
                 help="distance between intersections [m]; 150-250 m is a typical urban block between "
-                     "signalised junctions, and with the default 802.11p channel (~200 m range at 30 dBm) "
-                     "RSUs on neighbouring junctions just overlap")
+                     "signalised junctions; with the default 802.11p channel (measured: 100 %% delivery up to ~130 m, "
+                     "nothing beyond ~145 m at 30 dBm) the coverage of neighbouring RSUs does not overlap")
 ap.add_argument("--odstup", type=float, default=250, help="distance of the bypass from the city edge [m]")
 ap.add_argument("--v-mesto", type=float, default=13.89, help="city speed [m/s] (13.89 = 50 km/h)")
 ap.add_argument("--v-obchvat", type=float, default=25.0, help="bypass speed [m/s] (25 = 90 km/h)")
@@ -97,6 +97,23 @@ ap.add_argument("--hyb-qmin", type=float, default=0.9,
                 help="hybrid adaptive: lowest share of CAMs confirmed by the RSU to rely on one direct technology")
 ap.add_argument("--hyb-dwell", type=float, default=1.0,
                 help="hybrid adaptive: the direct link must be good this long before the backup is switched off [s]")
+ap.add_argument("--channel", default="authors", choices=["authors", "3gpp"],
+                help="hybrid: radio channel of 802.11p and NR-V2X; authors = 802.11p LogDistance (authors' 802.11p "
+                     "examples) and NR 3GPP V2V highway (authors' NR example), 3gpp = both on the same 3GPP TR 37.885 "
+                     "V2V highway model")
+ap.add_argument("--enb", type=int, default=1,
+                help="hybrid: LTE macro cells; 1 = one cell in the middle, k*k = square grid with X2 handover "
+                     "(one cell serves at most ~320 vehicles)")
+ap.add_argument("--enb-isd", type=float, default=500, help="hybrid: LTE inter-site distance [m] (3GPP urban macro 500 m)")
+ap.add_argument("--lte-ue-power", type=float, default=10,
+                help="hybrid: LTE UE max tx power [dBm] (ns-3 default 10, real UE power class 3 = 23)")
+ap.add_argument("--density", type=int, default=1, choices=[0, 1],
+                help="hybrid adaptive: density rule P1 - a vehicle with no 802.11p neighbour sends its CAMs also on NR-V2X "
+                     "(0 = off, for comparison)")
+ap.add_argument("--range-stats", type=int, default=0, choices=[0, 1],
+                help="hybrid: measure delivery vs. distance (50 m bins up to 1000 m), car->car and car->RSU")
+ap.add_argument("--nr-sensing", type=int, default=0, choices=[0, 1],
+                help="hybrid: NR-V2X mode 2 sensing-based resource selection (authors: 0)")
 ap.add_argument("--core-delay", type=float, default=5, help="hybrid: one-way delay PGW -> server [ms]")
 ap.add_argument("--seed", type=int, default=None,
                 help="random seed: ns-3 --RngRun for all programs, SUMO seed only for v2i-traffic-80211p "
@@ -224,11 +241,19 @@ for i in range(a.grid - 1):
         okruhy.append([E(f"C{i}{j}", f"C{i}{j + 1}"), E(f"C{i}{j + 1}", f"C{i + 1}{j + 1}"),
                        E(f"C{i + 1}{j + 1}", f"C{i + 1}{j}"), E(f"C{i + 1}{j}", f"C{i}{j}")])
 stred = f"C{m}{m}"
+
+
+def rovno(p, q):
+    """edges straight through the city from junction p to q (same row or column); with --grid 3 just one edge"""
+    (i1, j1), (i2, j2) = (int(p[1]), int(p[2])), (int(q[1]), int(q[2]))
+    di, dj = (i2 > i1) - (i2 < i1), (j2 > j1) - (j2 < j1)
+    body = [(i1 + k * di, j1 + k * dj) for k in range(max(abs(i2 - i1), abs(j2 - j1)) + 1)]
+    return [E(f"C{a}{b}", f"C{c}{d}") for (a, b), (c, d) in zip(body, body[1:])]
 for c1, b1, b2, b3, c2 in [(f"C{g}{m}", "B0", "B1", "B2", f"C{m}{g}"),
                            (f"C{m}{g}", "B2", "B3", "B4", f"C0{m}"),
                            (f"C0{m}", "B4", "B5", "B6", f"C{m}0"),
                            (f"C{m}0", "B6", "B7", "B0", f"C{g}{m}")]:
-    okruhy.append([E(c1, b1), E(b1, b2), E(b2, b3), E(b3, c2), E(c2, stred), E(stred, c1)])
+    okruhy.append([E(c1, b1), E(b1, b2), E(b2, b3), E(b3, c2)] + rovno(c2, stred) + rovno(stred, c1))
 
 every = round(1 / a.emergency) if a.emergency > 0 else 0
 n_amb = 0
@@ -393,13 +418,17 @@ LTE = f"--ns3::LteEnbRrc::SrsPeriodicity={a.srs}"     # otherwise ns-3 aborts wi
 # my hybrid scenario (802.11p + LTE + NR-V2X, RSU controllers + server in the network); SRS 320 is set inside
 HYB = (f"{TM} --tls-radius={a.tls_radius}"
        f" --xg-relax={'true' if a.xg_relax else 'false'} --xg-relevance={a.xg_relevance}"
-       f" --beacon-ms={a.beacon_ms}"
+       f" --beacon-ms={a.beacon_ms} --nr-sensing={'true' if a.nr_sensing else 'false'}"
+       f" --range-stats={'true' if a.range_stats else 'false'} --channel={a.channel}"
+       f" --enb={a.enb} --enb-isd={a.enb_isd} --lte-ue-power={a.lte_ue_power}"
+       f" --density={'true' if a.density else 'false'}"
        + "".join(f" --use-{t}={'true' if t in TECH else 'false'}" for t in ("80211p", "lte", "nr"))
        + f" --policy={a.policy}"
        + "".join(f" --fail-{t}={v}" for t, v in (("80211p", a.fail_80211p), ("lte", a.fail_lte), ("nr", a.fail_nr)) if v)
        + f" --hyb-range={a.hyb_range} --hyb-qmin={a.hyb_qmin} --hyb-dwell={a.hyb_dwell}"
        f" --core-delay={a.core_delay}" + (f" --sumo-seed={a.seed}" if a.seed is not None else ""))
-TMP = f"{P}tmp"
+# per scenario name, so that runs with different --name can go in parallel
+TMP = f"{P}tmp" if a.name == "mesto" else f"{P}tmp_{a.name}"
 
 # program name, arguments, has a per-vehicle CSV
 # --summary=true is added only where the example supports that option
@@ -678,7 +707,7 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
             # P<mask>: CAMs by the combination of technologies they really left on (1 802.11p, 2 LTE, 4 NR)
             ht = max(sum(H(f"P{m}") for m in range(8)), 1)
             on = lambda bit: sum(H(f"P{m}") for m in range(8) if m & bit)
-            combo = lambda m: "+".join(n for b, n in ((1, "802.11p"), (2, "LTE"), (4, "NR")) if m & b) or "none (outage)"
+            combo = lambda m: "+".join(n for b, n in ((1, "802.11p"), (2, "LTE"), (4, "NR")) if m & b) or "none (outage / LTE not needed)"
             relay = re.search(r"XGREGORM-RELAY,CAM:(\d+)", vystup)
             lat = [1000 * S_(f"LAT_{k}_SUM") / max(S_(f"LAT_{k}_N"), 1) for k in ("W", "L", "N")]
             vl = dict((k, float(v)) for k, v in re.findall(r"([A-Z_]+):([\d.eE+-]+)",
@@ -692,6 +721,9 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
                 f"{combo(m)} {100 * H(f'P{m}') / ht:.1f} %" for m in range(8) if H(f"P{m}")))
             print(f"    CAMs per technology        : 802.11p {on(1)}, LTE {on(2)} ({on(2) / max(a.sim_time, 1):.1f}/s "
                   f"cellular uplink), NR {on(4)}; path switches {H('SWITCH')}, probes of 802.11p {H('PROBE')}")
+            if H("TICKS"):
+                print(f"    density rule P1            : NR added for isolation in {100 * H('ISO') / H('TICKS'):.1f} % of decisions"
+                      f"{'' if a.density else ' (P1 off)'}")
             print(f"    relayed by the server      : {relay.group(1) if relay else 'n/a'} CAMs to the RSUs over the backhaul")
             print(f"    latency vehicle -> RSU     : 802.11p {lat[0]:.2f} ms ({S_('LAT_W_N'):.0f}), LTE + core + backhaul "
                   f"{lat[1]:.2f} ms ({S_('LAT_L_N'):.0f}, every RSU gets each relayed CAM), NR {lat[2]:.2f} ms ({S_('LAT_N_N'):.0f})")
@@ -701,25 +733,59 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
             print(f"    RSU info age (<100 m / whole approach): {S_('AGE_SUM') / known:.3f} s / {S_('AGE_SUM_F') / knf:.3f} s")
             print(f"    whole approach             : unknown {100 * S_('UNKNOWN_F') / smf:.2f} %, error mean "
                   f"{S_('ERR_SUM_F') / knf:.2f} m, > 10 m in {100 * S_('GT10_F') / knf:.2f} %")
+            print(f"    phantom vehicles           : {100 * S_('PHANTOM') / max(S_('BEL_ON'), 1):.2f} % of the vehicles a "
+                  "controller counts on its approach are no longer there (last CAM > 2 s old)")
             print(f"    CAMs received by the RSUs  : 802.11p {S_('RX_W'):.0f}, LTE {S_('RX_L'):.0f}, NR {S_('RX_N'):.0f}; "
                   f"stale copies dropped {S_('STALE'):.0f}; beacons NR {S_('BEACON_NR_TX'):.0f}")
             print("      (MetricSupervisor is off in the hybrid scenario - it cannot count LTE/NR or duplicates)")
             tl = re.search(r"XGREGORM-HYBT,(.*)", vystup)
-            if tl:
-                # timeline in 5 s windows: share of CAMs that left on each technology
-                win = {}
+            lt = re.search(r"XGREGORM-LOSST,(.*)", vystup)
+            if tl and lt:
+                # timeline in 5 s windows: share of CAMs per technology + what was delivered
+                paths, loss = {}, {}
                 for sec, cnt in re.findall(r"T(\d+):([\d/]+)", tl.group(1)):
-                    c = [int(x) for x in cnt.split("/")]
-                    w = win.setdefault(int(sec) // 5, [0] * 8)
-                    for m in range(8):
-                        w[m] += c[m]
-                print("    timeline (5 s, % of CAMs on 802.11p / LTE / NR / none):")
-                for k in sorted(win):
-                    w = win[k]
-                    tot = max(sum(w), 1)
-                    pc = [100 * sum(w[m] for m in range(8) if m & b) / tot for b in (1, 2, 4)]
-                    print(f"      {5 * k:3d}-{5 * k + 5:3d} s: {pc[0]:5.1f} / {pc[1]:5.1f} / {pc[2]:5.1f} / "
-                          f"{100 * w[0] / tot:4.1f}   ({tot} CAMs)")
+                    paths[int(sec)] = [int(x) for x in cnt.split("/")]
+                for sec, cnt in re.findall(r"T(\d+):([\d/]+)", lt.group(1)):
+                    loss[int(sec)] = [int(x) for x in cnt.split("/")]
+                pct = lambda x, n: f"{100 * x / n:5.1f}" if n else "   - "
+                print("    timeline (5 s): % of CAMs on 802.11p / LTE / NR / none | delivered: uplink to RSU <100 m, "
+                      "car->car <100 m | RSU on the approach: does not know the car %, info age s")
+                for k in range(0, max(list(paths) + list(loss) + [0]) // 5 + 1):
+                    w = [sum(paths.get(t, [0] * 8)[m] for t in range(5 * k, 5 * k + 5)) for m in range(8)]
+                    l = [sum(loss.get(t, [0] * 8)[m] for t in range(5 * k, 5 * k + 5)) for m in range(8)]
+                    tot = sum(w)
+                    pc = [pct(sum(w[m] for m in range(8) if m & b), tot) for b in (1, 2, 4)]
+                    known_k = l[4] - l[5]
+                    age = f"{l[6] / 1000 / known_k:5.2f}" if known_k else "   - "
+                    print(f"      {5 * k:3d}-{5 * k + 5:3d} s: {pc[0]} /{pc[1]} /{pc[2]} /{pct(w[0], tot)} | "
+                          f"{pct(l[1], l[0])} {pct(l[3], l[2])} | {pct(l[5], l[4])} {age}   ({tot} CAMs)")
+                # single seconds with a loss burst (the 5 s average could hide it)
+                bad = [t for t, l in sorted(loss.items())
+                       if (l[0] >= 5 and l[1] < 0.9 * l[0]) or (l[2] >= 10 and l[3] < 0.9 * l[2])
+                       or (l[4] - l[5] and l[6] / 1000 / (l[4] - l[5]) > 1.5)]
+                print(f"    seconds with uplink or car->car < 90 % or RSU info older than 1.5 s: "
+                      f"{', '.join(map(str, bad)) if bad else 'none'}")
+            dn = re.search(r"XGREGORM-DENS,(.*)", vystup)
+            if dn:
+                # local density as every vehicle sees it (every 100 ms): neighbours heard in the last 1 s and the
+                # 802.11p channel busy ratio (CBR, ETSI TS 102 687 DCC: > 0.3 active, > 0.6 restrictive)
+                dd = [[int(x) for x in c.split("/")] for _, c in re.findall(r"T(\d+):([\d/]+)", dn.group(1))]
+                n = max(sum(d[0] for d in dd), 1)
+                per_s = [d[1] / 1e4 / d[0] for d in dd if d[0]]
+                print(f"    density (per vehicle)      : neighbours heard 802.11p {sum(d[3] for d in dd) / n:.1f}, NR "
+                      f"{sum(d[4] for d in dd) / n:.1f}; isolated (no 802.11p neighbour) {100 * sum(d[5] for d in dd) / n:.1f} %")
+                print(f"    802.11p CBR                : mean {sum(d[1] for d in dd) / 1e4 / n:.3f}, worst second "
+                      f"{max(per_s or [0]):.3f}, max sample {max([d[2] for d in dd] or [0]) / 1e4:.3f}; samples > 0.3: "
+                      f"{100 * sum(d[6] for d in dd) / n:.2f} %, > 0.6: {100 * sum(d[7] for d in dd) / n:.2f} %")
+            rg = re.search(r"XGREGORM-RANGE,(.*)", vystup)
+            if rg:
+                # delivery vs. distance: share of CAMs received (first copy) by vehicles / RSUs at that distance
+                pct = lambda x, n: f"{100 * x / n:5.1f}" if n else "   - "
+                print("    delivery vs. distance      : distance m | car->car % (expected) | car->RSU % (expected)")
+                for b, cnt in re.findall(r"B(\d+):([\d/]+)", rg.group(1)):
+                    e1, r1, e2, r2 = [int(x) for x in cnt.split("/")]
+                    if e1 or e2:
+                        print(f"      {50 * int(b):4d}-{50 * int(b) + 50:4d} m | {pct(r1, e1)} ({e1:7d}) | {pct(r2, e2)} ({e2:6d})")
             print("  XGCSV-HYB: tech,policy,seed,vehicles,cam_wifi,cam_lte,cam_nr,lte_cam_s,switches,lat_wifi_ms,"
                   "lat_lte_ms,lat_nr_ms,age_near_s,age_far_s,unknown_far_%,err_far_m,gt10_far_%,v2v_prr,"
                   "stop_max_s,stopped_%,speed_kmh")

@@ -207,6 +207,9 @@ namespace ns3
     /* Set callback and station properties in CABasicService (which will only be used to receive CAMs) */
     m_caService.setStationProperties (m_stationId_baseline + id, StationType_roadSideUnit);
     m_caService.setSocketTx (m_socket);
+    // xgregorm: hybrid - CAM samotnej RSU (802.11p) cez prepinac, aby pri vypadku 802.11p (xghyb::up) nevysielala
+    if (m_xg_hybrid)
+      m_caService.setSocketTx (Create<XgHybridSocket> (m_socket, nullptr, nullptr, [] () { return (int) xghyb::WIFI; }));
     m_caService.setSocketRx (m_socket);
     m_caService.addCARxCallback (std::bind(&trafficManagerServer80211p::receiveCAM,this,std::placeholders::_1,std::placeholders::_2));
 
@@ -390,7 +393,8 @@ namespace ns3
                   << ",LAT_W_SUM:" << r.latSum[0] << ",LAT_W_N:" << r.latN[0] << ",LAT_L_SUM:" << r.latSum[1]
                   << ",LAT_L_N:" << r.latN[1] << ",LAT_N_SUM:" << r.latSum[2] << ",LAT_N_N:" << r.latN[2]
                   << ",RX_W:" << m_hyb_rx[0] << ",RX_L:" << m_hyb_rx[1] << ",RX_N:" << m_hyb_rx[2]
-                  << ",STALE:" << m_hyb_stale << ",BEACON_NR_TX:" << m_nr_beacon_tx << std::endl;
+                  << ",STALE:" << m_hyb_stale << ",BEACON_NR_TX:" << m_nr_beacon_tx
+                  << ",BEL_ON:" << r.believedOn << ",PHANTOM:" << r.phantom << std::endl;
         static bool v2v_printed = false;
         if (!v2v_printed)
           std::cout << "XGREGORM-V2V,EXP:" << xgstats::v2vExp () << ",RX:" << xgstats::v2vRx () << std::endl;
@@ -437,19 +441,22 @@ namespace ns3
     if (m_xg_hybrid)
       {
         // ta ista CAM moze prist viac cestami a LTE kopia neskor nez novsia CAM cez priamu technologiu:
-        // spracujeme len CAM novsiu nez posledna (generationDeltaTime, modulo 65536)
+        // spracujeme len CAM novsiu nez posledna (generationDeltaTime, modulo 65536). Porovnanie modulo plati len
+        // pre CAM blizko seba v case: auto, ktore RSU nepocula dlhsie nez 10 s (napr. objazd okruhu 33-65 s),
+        // ma CAM vzdy novu (inak by ju porovnanie modulo 65.536 s mohlo vyhodnotit ako staru a RSU by auto ignorovala)
         m_hyb_rx[path]++;
+        double now = Simulator::Now ().GetSeconds ();
         auto last = m_hyb_last_gdt.find (stationId);
-        if (last != m_hyb_last_gdt.end ())
+        if (last != m_hyb_last_gdt.end () && now - last->second.second < 10.0)
           {
-            long d = (gdt - last->second + 65536) % 65536;
+            long d = (gdt - last->second.first + 65536) % 65536;
             if (d == 0 || d >= 32768)
               {
                 m_hyb_stale++;
                 return;
               }
           }
-        m_hyb_last_gdt[stationId] = gdt;
+        m_hyb_last_gdt[stationId] = {gdt, now};
       }
     // beacon (aj jeho potvrdenia) sa tyka len priameho spojenia, kazda technologia ma vlastny zoznam
     if (path == 0)

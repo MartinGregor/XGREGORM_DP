@@ -12,6 +12,9 @@
 #include "ns3/udp-socket-factory.h" // xgregorm
 #include "ns3/inet-socket-address.h" // xgregorm
 #include <sstream> // xgregorm
+#include "ns3/wifi-net-device.h" // xgregorm
+#include "ns3/wifi-phy.h" // xgregorm
+#include "ns3/wifi-phy-state-helper.h" // xgregorm
 #define XG_ETHERTYPE 0x88B5 // xgregorm: beacon RSU
 
 namespace ns3
@@ -93,6 +96,11 @@ namespace ns3
             DoubleValue (0.9),
             MakeDoubleAccessor (&trafficManagerClient80211p::m_hyb_qmin),
             MakeDoubleChecker<double> (0, 1))
+        .AddAttribute ("XgDensity",
+            "Adaptive hybrid, density rule P1: a vehicle with no 802.11p neighbour sends its CAMs also on NR-V2X (longer range)",
+            BooleanValue (false),
+            MakeBooleanAccessor (&trafficManagerClient80211p::m_xg_density),
+            MakeBooleanChecker ())
         .AddAttribute ("XgHybDwell",
             "Adaptive hybrid: the direct link must be good this long before the backup path is switched off again [s] (hysteresis)",
             DoubleValue (1.0),
@@ -200,13 +208,10 @@ namespace ns3
       if (m_xg_hybrid)
         {
           // cesty, ktorymi CAM naozaj odisla (zvolene, v aute dostupne a nevypadnute)
-          sent = 0;
+          sent = xgEffectivePath ();
           for (int b : {xghyb::WIFI, xghyb::LTE, xghyb::NR})
-            if ((m_hyb_path & m_hyb_mask & b) && xghyb::up (b))
-              {
-                sent |= b;
-                m_hyb_last_tx[xghyb::idx (b)] = t;
-              }
+            if (sent & b)
+              m_hyb_last_tx[xghyb::idx (b)] = t;
           m_hyb_cnt[sent]++;
           xghyb::timeline ()[(int) t][sent]++;
         }
@@ -254,9 +259,14 @@ namespace ns3
                 m_nr_beacon_socket->SetRecvCallback (MakeCallback (&trafficManagerClient80211p::xgReceiveBeacon, this));
               }
           }
+        // hustota: obsadenost kanala 802.11p z PHY (ako CBR v ETSI DCC: podiel casu, ked je kanal obsadeny)
+        Ptr<WifiNetDevice> wdev = DynamicCast<WifiNetDevice> (GetNode ()->GetDevice (0));
+        if (wdev)
+          wdev->GetPhy ()->GetState ()->TraceConnectWithoutContext (
+              "State", MakeCallback (&trafficManagerClient80211p::xgPhyState, this));
         // zaciatok: vsetky dostupne cesty (adaptivny rezim to po prvom ticku zuzi)
-        m_hyb_path = m_hyb_mask;
-        m_caService.setSocketTx (Create<XgHybridSocket> (m_socket, lte, nr, [this] () { return m_hyb_path; }));
+        m_hyb_path = m_hyb_base = m_hyb_mask;
+        m_caService.setSocketTx (Create<XgHybridSocket> (m_socket, lte, nr, [this] () { return xgEffectivePath (); }));
       }
     // xgregorm: algoritmus relevancie - brana pred kazdou CAM spustenou v CA sluzbe
     if (m_xg_relax)
@@ -333,6 +343,21 @@ namespace ns3
     std::vector<libsumo::TraCINextTLSData> nt = m_client->TraCIAPI::vehicle.getNextTLS (m_id);
     m_next_tls = nt.empty () ? "" : nt[0].id;
     m_next_dist = nt.empty () ? 1e9 : nt[0].dist;
+    if (m_xg_hybrid == 2 && !m_next_tls.empty ())
+      {
+        // som na prijazde k tomuto semaforu? (cesty, ktorych pruhy semafor riadi = MAPEM / digitalna mapa)
+        auto ap = m_tls_approach.find (m_next_tls);
+        if (ap == m_tls_approach.end ())
+          {
+            std::set<std::string> edges;
+            for (const std::string &lane : m_client->TraCIAPI::trafficlights.getControlledLanes (m_next_tls))
+              edges.insert (lane.substr (0, lane.find_last_of ('_')));
+            ap = m_tls_approach.emplace (m_next_tls, edges).first;
+          }
+        m_on_approach = ap->second.count (m_client->TraCIAPI::vehicle.getRoadID (m_id)) > 0;
+      }
+    else
+      m_on_approach = false;
     if (m_xg_relax)
       {
         bool rel = xgRelevant ();
@@ -349,15 +374,83 @@ namespace ns3
           }
       }
     if (m_xg_hybrid == 2)
-      xgHybridDecide ();
+      {
+        xgDensityUpdate ();
+        xgHybridDecide ();
+      }
     m_xg_tick_ev = Simulator::Schedule (MilliSeconds (100), &trafficManagerClient80211p::xgTick, this);
+  }
+
+  void
+  trafficManagerClient80211p::xgPhyState (Time start, Time duration, WifiPhyState state)
+  {
+    // PHY hlasi kazdy ukonceny usek stavu; obsadeny kanal = prijem, vysielanie alebo CCA busy
+    if (state == WifiPhyState::RX || state == WifiPhyState::TX || state == WifiPhyState::CCA_BUSY)
+      m_busy.push_back ({start.GetSeconds (), (start + duration).GetSeconds ()});
+  }
+
+  void
+  trafficManagerClient80211p::xgDensityUpdate ()
+  {
+    // lokalna hustota, ktoru auto samo pozna: susedia, od ktorych za poslednu 1 s prisla CAM (zvlast 802.11p a NR),
+    // a CBR 802.11p za poslednych 100 ms
+    double now = Simulator::Now ().GetSeconds ();
+    for (int k = 0; k < 2; k++)
+      {
+        m_nb_n[k] = 0;
+        for (auto it = m_nb_last[k].begin (); it != m_nb_last[k].end ();)
+          {
+            if (now - it->second > 2.0)
+              {
+                it = m_nb_last[k].erase (it);
+                continue;
+              }
+            m_nb_n[k] += now - it->second <= 1.0;
+            ++it;
+          }
+      }
+    // izolacia pre P1: ziadny sused na 802.11p za 2 s (= 2 x T_GenCamMax: jedna stratena CAM suseda este nie je izolacia)
+    m_nb_isolated = m_nb_last[0].empty ();
+    double from = now - 0.1, busy = 0;
+    while (!m_busy.empty () && m_busy.front ().second < from)
+      m_busy.pop_front ();
+    for (const auto &b : m_busy)
+      busy += std::max (0.0, std::min (b.second, now) - std::max (b.first, from));
+    m_cbr = std::min (1.0, busy / 0.1);
+    xgstats::onDensity (m_cbr, m_nb_n[0], m_nb_n[1]);
+  }
+
+  int
+  trafficManagerClient80211p::xgEffectivePath ()
+  {
+    // cesta pre CAM odosielanu prave teraz: zvolena (m_hyb_path), bez vypadnutych technologii; ak vypadli
+    // vsetky zvolene (a nejaka zvolena bola - 0 = rozhodnutie neposielat), hned nahradna (802.11p, NR, LTE) -
+    // modem o vypadku aj obnoveni vie a necaka na dalsie rozhodnutie
+    int avail = 0;
+    for (int b : {xghyb::WIFI, xghyb::LTE, xghyb::NR})
+      if ((m_hyb_mask & b) && xghyb::up (b))
+        avail |= b;
+    int path = m_hyb_path & avail;
+    if (!path && m_hyb_path)
+      for (int b : {xghyb::WIFI, xghyb::NR, xghyb::LTE})
+        if (avail & b)
+          {
+            path = b;
+            break;
+          }
+    // a naopak: priama technologia sa prave obnovila, ale rozhodnutie ju este nema (islo len LTE) -> hned ju pridame,
+    // inak by susedia do dalsieho rozhodnutia (najviac 100 ms) CAM nedostali
+    int direct = avail & (xghyb::WIFI | xghyb::NR);
+    if (direct && !(path & (xghyb::WIFI | xghyb::NR)))
+      path |= (direct & xghyb::WIFI) ? xghyb::WIFI : xghyb::NR;
+    return path;
   }
 
   void
   trafficManagerClient80211p::xgHybridDecide ()
   {
     // adaptivny hybrid (rozhoduje auto kazdych 100 ms len z toho, co samo vie):
-    //  - mimo oblasti radica (dalej nez XgHybRange pred semaforom): len priama technologia pre susedov
+    //  - mimo oblasti radica (nie na prijazde k semaforu a dalej nez XgHybRange): len priama technologia pre susedov
     //    (na to je CAM) - 802.11p, ak je dostupne, inak NR-V2X
     //  - v oblasti radica podla potvrdeni RSU (beacon za poslednu 1 s a podiel potvrdenych CAM >= XgHybQmin):
     //    1. RSU potvrdzuje 802.11p -> 802.11p
@@ -365,14 +458,16 @@ namespace ns3
     //       (skuska - RSU, ktora auto cez 802.11p nepocuje, mu cez 802.11p ani nic nepotvrdi)
     //    3. nepotvrdzuje nic -> vsetky priame technologie (tak sa zisti, ktora RSU dosiahne) + LTE ako zaloha
     //       (do siete nezavisle od dosahu); LTE vypne az po XgHybDwell s potvrdenia (hysterezia)
-    //  - bez priamej technologie len LTE
+    //  - bez priamej technologie len LTE, a to len ak auto radic potrebuje (susedia CAM cez LTE aj tak nedostanu,
+    //    LTE by sa zbytocne zatazovalo - pri vypadku 802.11p v hustej premavke je to jeho kapacitny limit)
     // Vypadnuta technologia (xghyb::up) je pre auto nedostupna - modem o vypadku vie.
     double now = Simulator::Now ().GetSeconds ();
     int avail = 0;
     for (int b : {xghyb::WIFI, xghyb::LTE, xghyb::NR})
       if ((m_hyb_mask & b) && xghyb::up (b))
         avail |= b;
-    bool need = !m_next_tls.empty () && m_next_dist < m_hyb_range;
+    // radic auto potrebuje na celom prijazde k semaforu (pocita vsetky auta na nom) a do XgHybRange pred nim
+    bool need = !m_next_tls.empty () && (m_on_approach || m_next_dist < m_hyb_range);
     auto lk = m_hyb_link.find (m_next_tls);
     auto ok = [&] (int b) {
       if (!(avail & b) || lk == m_hyb_link.end ())
@@ -382,9 +477,14 @@ namespace ns3
     };
     int direct = avail & (xghyb::WIFI | xghyb::NR);
     int path;
+    int probe = 0;
     bool confirmed = true;
+    if (need)
+      m_hyb_need_t = now;
     if (!direct)
-      path = avail & xghyb::LTE;
+      // CAM cez LTE dostanu len radice semaforov - kto nie je potrebny, neposiela; po opusteni prijazdu este
+      // XgHybDwell s, aby radic videl, ze auto odislo (inak by ho dalej pocital na prijazde)
+      path = now - m_hyb_need_t < m_hyb_dwell ? avail & xghyb::LTE : 0;
     else if (!need)
       path = (direct & xghyb::WIFI) ? xghyb::WIFI : xghyb::NR;
     else if (ok (xghyb::WIFI))
@@ -394,7 +494,7 @@ namespace ns3
         path = xghyb::NR;
         if ((direct & xghyb::WIFI) && now - m_hyb_probe_t >= 1.0)
           {
-            path |= xghyb::WIFI; // skuska 802.11p (jeden tick = najviac jedna CAM)
+            probe = xghyb::WIFI; // skuska 802.11p (jeden tick = najviac jedna CAM)
             m_hyb_probe_t = now;
             m_hyb_probes++;
           }
@@ -410,9 +510,19 @@ namespace ns3
       m_hyb_ok_since = now;
     if (need && direct && confirmed && (m_hyb_path & xghyb::LTE) && now - m_hyb_ok_since < m_hyb_dwell)
       path |= avail & xghyb::LTE; // hysterezia: LTE drzime este XgHybDwell s po potvrdeni
-    if (path != m_hyb_path)
+    // P1 (hustota - riedko): auto bez suseda na 802.11p posiela aj cez NR-V2X (dosah ~3x vacsi), aby ho videli
+    // aj vzdialenejsie auta; hned ako sa sused na 802.11p objavi, NR sa prestane pridavat
+    m_ticks++;
+    if (m_xg_density && (path & xghyb::WIFI) && (avail & xghyb::NR) && m_nb_isolated)
+      {
+        path |= xghyb::NR;
+        m_p1_ticks++;
+      }
+    // prepnutie = zmena zvolenych technologii (skuska 802.11p sa za prepnutie nepocita)
+    if (path != m_hyb_base)
       m_hyb_switch++;
-    m_hyb_path = path;
+    m_hyb_base = path;
+    m_hyb_path = path | probe;
   }
 
   void
@@ -486,11 +596,12 @@ namespace ns3
       if (m_xg_hybrid)
         {
           // pocet CAM podla kombinacie ciest, ktorymi naozaj odisli: P1 = 802.11p, P2 = LTE, P3 = 802.11p+LTE,
-          // P4 = NR, P5 = 802.11p+NR, P6 = LTE+NR, P7 = vsetky tri, P0 = ziadna (vsetky zvolene vypadnute)
+          // P4 = NR, P5 = 802.11p+NR, P6 = LTE+NR, P7 = vsetky tri, P0 = ziadna (vsetky vypadnute, alebo bez priamej technologie a radic auto nepotrebuje)
           std::cout << "XGREGORM-HYB," << m_id;
           for (int m = 0; m < 8; m++)
             std::cout << ",P" << m << ":" << m_hyb_cnt[m];
-          std::cout << ",SWITCH:" << m_hyb_switch << ",PROBE:" << m_hyb_probes << std::endl;
+          std::cout << ",SWITCH:" << m_hyb_switch << ",PROBE:" << m_hyb_probes << ",TICKS:" << m_ticks
+                    << ",ISO:" << m_p1_ticks << std::endl;
         }
       std::cout << "XGREGORM-GAP," << m_id << ",MIN:" << (m_gap_min < 1e8 ? m_gap_min * 1000 : -1)
                 << ",MAX:" << m_gap_max * 1000 << ",LT100:" << m_gap_low << ",GT1000:" << m_gap_high << std::endl;
@@ -521,6 +632,8 @@ namespace ns3
     (void) from; // Contains the address from which the CAM has been received
     // xgregorm: skutocne PRR medzi autami (len meranie)
     unsigned long sender = asn1cpp::getField (cam->header.stationId, unsigned long);
+    if (sender < 1000000)
+      m_nb_last[InetSocketAddress::IsMatchingType (from) ? 1 : 0][sender] = Simulator::Now ().GetSeconds ();
     if (sender < 1000000)
       xgstats::onVehCamRx (m_sid, sender, asn1cpp::getField (cam->cam.generationDeltaTime, long),
                            InetSocketAddress::IsMatchingType (from) ? 2 : 0); // UDP = NR-V2X
