@@ -3,13 +3,19 @@
 xgregorm_gen_scenario.py - generates a VaN3Twin scenario and optionally runs the simulation
 with a final summary. The VaN3Twin source code is NOT modified, the original applications are used.
 
-Map:      3x3 city intersections (50 km/h, 1 lane, 200 m apart -> 400x400 m town centre)
+Maps (--map):
+default   3x3 city intersections (50 km/h, 1 lane, 200 m apart -> 400x400 m town centre)
           + circular bypass (90 km/h, 2 lanes, 250 m from the city edge, radius 450 m)
           connected to the middle of each side of the city by 70 km/h roads.
           - traffic lights are given ONLY to 4-arm intersections (the authors' trafficManager
             indexes exactly 4 approaches and reads out of range on a 3-arm intersection),
           - the bypass gates use "right_before_left", otherwise vehicles coming from the city
             wait up to 40 s to merge into the dense bypass traffic.
+city-center  9 signalised 4-arm intersections, 3 lanes per direction (right lane right + straight, middle
+          straight, left lane left only, permissive left turns, 4-phase programs for trafficManager), irregular
+          blocks 171-286 m (not a chessboard), outer streets continue 200 m out to a one-way ring road; a vehicle
+          leaving the centre drives one ring segment to the neighbouring entry and comes back (600 vehicles:
+          rush hour, 0 teleports, 10-23 vehicles queued on the busy approaches on average, 30-40 at peaks).
 Traffic:  a fixed number of vehicles, all created at t=0, driving in closed loops forever,
           so the number of vehicles in the network stays constant.
 Output:   no CSV is left on disk - helper files are written to a temporary folder, parsed
@@ -27,32 +33,41 @@ import xml.etree.ElementTree as ET
 P = "xgregorm_"
 
 ap = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-ap.add_argument("--name", default="mesto", help="scenario name -> src/automotive/examples/xgregorm_<name>/")
+ap.add_argument("--map", default="default", choices=["default", "city-center"],
+                help="default = 3x3 town (5 traffic lights, 1 lane) + bypass; city-center = 9 traffic lights, "
+                     "3 lanes per direction, irregular blocks 170-285 m, ring road around")
+ap.add_argument("--name", default=None,
+                help="scenario name -> src/automotive/examples/xgregorm_<name>/ (default: mesto / city_center)")
 # map
 ap.add_argument("--grid", type=int, default=3, help="number of intersections per row")
 ap.add_argument("--step", type=float, default=200,
                 help="distance between intersections [m]; 150-250 m is a typical urban block between "
                      "signalised junctions; with the default 802.11p channel (measured: 100 %% delivery up to ~130 m, "
                      "nothing beyond ~145 m at 30 dBm) the coverage of neighbouring RSUs does not overlap")
-ap.add_argument("--odstup", type=float, default=250, help="distance of the bypass from the city edge [m]")
+ap.add_argument("--odstup", type=float, default=None,
+                help="distance of the bypass / ring road from the city edge [m] (default 250 / city-center 200)")
 ap.add_argument("--v-mesto", type=float, default=13.89, help="city speed [m/s] (13.89 = 50 km/h)")
-ap.add_argument("--v-obchvat", type=float, default=25.0, help="bypass speed [m/s] (25 = 90 km/h)")
+ap.add_argument("--v-obchvat", type=float, default=None,
+                help="bypass / ring road speed [m/s] (default 25 = 90 km/h / city-center 13.89 = 50 km/h)")
 ap.add_argument("--v-privod", type=float, default=19.44,
                 help="speed on the roads joining the city to the bypass [m/s] (19.44 = 70 km/h)")
-ap.add_argument("--lanes-mesto", type=int, default=1, help="city lanes (per direction)")
-ap.add_argument("--lanes-obchvat", type=int, default=2, help="bypass lanes (per direction)")
+ap.add_argument("--lanes-mesto", type=int, default=None, help="city lanes per direction (default 1 / city-center 3)")
+ap.add_argument("--lanes-obchvat", type=int, default=None,
+                help="bypass / ring road lanes per direction (default 2 / city-center 3)")
 ap.add_argument("--zelena", type=float, default=30, help="green time of the fixed traffic light program [s]")
 ap.add_argument("--zlta", type=float, default=3, help="yellow time [s]")
 ap.add_argument("--kruh", type=int, default=10,
                 help="number of geometry points per 45 deg bypass segment; higher = smoother circle")
-ap.add_argument("--brany", default="right_before_left",
-                choices=["right_before_left", "priority", "allway_stop"],
-                help="junction type where the city connects to the bypass")
+ap.add_argument("--brany", default=None,
+                choices=["right_before_left", "priority", "allway_stop", "zipper"],
+                help="junction type where the city connects to the bypass / ring road "
+                     "(default right_before_left / city-center priority)")
 # traffic
-ap.add_argument("--vehicles", type=int, default=10, help="number of vehicles (all created at t=0)")
+ap.add_argument("--vehicles", type=int, default=None,
+                help="number of vehicles, all created at t=0 (default 10 / city-center 600)")
 ap.add_argument("--emergency", type=float, default=0.1, help="share of ambulances 0..1 (0.2 = every 5th)")
 ap.add_argument("--repeat", type=int, default=100, help="how many times a vehicle repeats its loop")
-ap.add_argument("--rsu", type=int, default=5, help="number of RSUs")
+ap.add_argument("--rsu", type=int, default=None, help="number of RSUs (default 5 / city-center 9)")
 # simulation
 ap.add_argument("--sim-time", type=float, default=120, help="simulation duration [s]")
 ap.add_argument("--baseline", type=float, default=100, help="reference distance for the PRR computation [m]")
@@ -107,6 +122,9 @@ ap.add_argument("--enb", type=int, default=1,
 ap.add_argument("--enb-isd", type=float, default=500, help="hybrid: LTE inter-site distance [m] (3GPP urban macro 500 m)")
 ap.add_argument("--lte-ue-power", type=float, default=10,
                 help="hybrid: LTE UE max tx power [dBm] (ns-3 default 10, real UE power class 3 = 23)")
+ap.add_argument("--load-stats", type=int, default=1, choices=[0, 1],
+                help="hybrid: measure the load of every technology (802.11p CBR per ETSI TS 102 687, LTE uplink PRB "
+                     "usage per 3GPP TS 36.314, NR SL-CBR = ESTIMATE from received PSCCH) and the performance per load level")
 ap.add_argument("--range-stats", type=int, default=0, choices=[0, 1],
                 help="hybrid: measure delivery vs. distance (50 m bins up to 1000 m), car->car and car->RSU")
 ap.add_argument("--nr-sensing", type=int, default=0, choices=[0, 1],
@@ -123,6 +141,13 @@ ap.add_argument("--gui", action="store_true", help="enable the SUMO GUI")
 ap.add_argument("--diag", action="store_true",
                 help="before ns-3, run plain SUMO and report how smoothly the traffic flows")
 a = ap.parse_args()
+# xgregorm: predvolene hodnoty podla mapy (default = povodna mapa xgregorm_mesto, bez zmeny)
+for k, d, c in (("name", "mesto", "city_center"), ("odstup", 250, 200), ("v_obchvat", 25.0, 13.89),
+                ("lanes_mesto", 1, 3), ("lanes_obchvat", 2, 3), ("brany", "right_before_left", "priority"), ("vehicles", 10, 600), ("rsu", 5, 9)):
+    if getattr(a, k) is None:
+        setattr(a, k, d if a.map == "default" else c)
+if a.map == "city-center" and a.grid != 3:
+    ap.error("--grid applies only to --map default (city-center has a fixed 3x3 layout)")
 TECH = [t.strip().lower() for t in a.tech.split(",") if t.strip()]
 if not TECH or any(t not in ("80211p", "lte", "nr") for t in TECH):
     ap.error("--tech must be a comma separated subset of 80211p,lte,nr")
@@ -138,20 +163,6 @@ cfg_f = os.path.join(out, f"{P}map.sumo.cfg")
 st_f = os.path.join(out, "stations.xml")  # fixed name, VaN3Twin has it hardcoded
 
 # =============================================================== 1) ROAD NETWORK
-MAXC = (a.grid - 1) * a.step
-MID = MAXC / 2
-R = MID + a.odstup
-g, m = a.grid - 1, a.grid // 2
-BRANY = {f"C{g}{m}": "B0", f"C{m}{g}": "B2", f"C0{m}": "B4", f"C{m}0": "B6"}
-
-stupen = {f"C{i}{j}": 0 for i in range(a.grid) for j in range(a.grid)}
-for i in range(a.grid):
-    for j in range(a.grid):
-        if i + 1 < a.grid: stupen[f"C{i}{j}"] += 1; stupen[f"C{i + 1}{j}"] += 1
-        if j + 1 < a.grid: stupen[f"C{i}{j}"] += 1; stupen[f"C{i}{j + 1}"] += 1
-for c in BRANY:
-    stupen[c] += 1
-
 nodes, edges = [], []
 
 
@@ -160,41 +171,165 @@ def edge(x, y, lanes, speed, prio, shape_ab="", shape_ba=""):
     edges.append((y, x, lanes, speed, prio, shape_ba))
 
 
-n_tls = 0
-for i in range(a.grid):
-    for j in range(a.grid):
-        n = f"C{i}{j}"
-        typ = "traffic_light" if stupen[n] == 4 else "priority"  # TM handles 4-arm junctions only
-        if typ == "traffic_light": n_tls += 1
-        nodes.append((n, i * a.step, j * a.step, typ))
-for i in range(a.grid):
-    for j in range(a.grid):
-        if i + 1 < a.grid: edge(f"C{i}{j}", f"C{i + 1}{j}", a.lanes_mesto, a.v_mesto, 2)
-        if j + 1 < a.grid: edge(f"C{i}{j}", f"C{i}{j + 1}", a.lanes_mesto, a.v_mesto, 2)
-
-napojene = set(BRANY.values())
-for k, ang in enumerate(range(0, 360, 45)):
-    # where the city joins the bypass, the bypass must not have absolute priority,
-    # otherwise vehicles from the city cannot merge (measured waits of up to 38 s)
-    typ = a.brany if f"B{k}" in napojene else "priority"
-    nodes.append((f"B{k}", round(MID + R * math.cos(math.radians(ang)), 1),
-                  round(MID + R * math.sin(math.radians(ang)), 1), typ))
-def oblouk(uhol_od, uhol_do, body):
-    """geometry of a circular arc - without it the bypass would be a straight-sided octagon"""
-    pts = []
-    for st in range(body + 1):
-        ang = uhol_od + (uhol_do - uhol_od) * st / body
-        pts.append(f"{MID + R * math.cos(math.radians(ang)):.2f},"
-                   f"{MID + R * math.sin(math.radians(ang)):.2f}")
-    return " ".join(pts)
+# xgregorm: --map city-center = centrum mesta, 9 krizovatiek so semaforom, 3 pruhy v kazdom smere.
+# Nie sachovnica: bloky 170-285 m, ulice nie su presne rovnobezne (posunute krizovatky), ako v starsej
+# zastavbe. Kazda krizovatka ma 4 ramena (trafficManager zvlada len 4): krajne ulice pokracuju o --odstup
+# von a napajaju sa na okruh (zvysok mesta), po ktorom sa auta vracaju - pocet aut v sieti ostava stale.
+CC_XY = {(0, 0): (0, 0), (1, 0): (270, 15), (2, 0): (520, -10),
+         (0, 1): (-20, 175), (1, 1): (255, 185), (2, 1): (540, 160),
+         (0, 2): (10, 390), (1, 2): (285, 370), (2, 2): (530, 400)}
 
 
-for k in range(8):
-    u1, u2 = k * 45, (k + 1) * 45
-    edge(f"B{k}", f"B{(k + 1) % 8}", a.lanes_obchvat, a.v_obchvat, 5,
-         oblouk(u1, u2, a.kruh), oblouk(u2, u1, a.kruh))
-for c, b in BRANY.items():
-    edge(c, b, a.lanes_mesto, a.v_privod, 4)
+def city_center():
+    global MID, n_tls, cc_brany, cc_okruhy, cc_spoje
+    cc_spoje = []
+    cx = sum(x for x, _ in CC_XY.values()) / 9
+    cy = sum(y for _, y in CC_XY.values()) / 9
+    MID = (cx, cy)
+    for (i, j), (x, y) in CC_XY.items():
+        nodes.append((f"C{i}{j}", x, y, "traffic_light"))
+    n_tls = 9
+    for i in range(3):
+        for j in range(3):
+            if i + 1 < 3: edge(f"C{i}{j}", f"C{i + 1}{j}", a.lanes_mesto, a.v_mesto, 3)
+            if j + 1 < 3: edge(f"C{i}{j}", f"C{i}{j + 1}", a.lanes_mesto, a.v_mesto, 3)
+    # vyjazdy z centra: krajna ulica pokracuje rovno von (smer od vnutorneho suseda)
+    konce = []
+    for (i, j) in CC_XY:
+        for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            if 0 <= i + di < 3 and 0 <= j + dj < 3:
+                continue
+            x, y = CC_XY[(i, j)]
+            sx, sy = CC_XY[(i - di, j - dj)]
+            d = math.hypot(x - sx, y - sy)
+            ex, ey = x + (x - sx) / d * a.odstup, y + (y - sy) / d * a.odstup
+            konce.append((math.atan2(ey - cy, ex - cx), f"C{i}{j}", round(ex, 1), round(ey, 1)))
+    konce.sort()
+    cc_brany = []
+    for k, (_, c, x, y) in enumerate(konce):
+        nodes.append((f"B{k}", x, y, a.brany))
+        edge(c, f"B{k}", a.lanes_mesto, a.v_mesto, 3)
+        cc_brany.append(c)
+    nb = len(konce)
+    # okruh je jednosmerny v smere hodinovych ruciciek: z vyjazdu sa nan odboci aj z neho zide vzdy doprava,
+    # prudy sa na napojeniach nekrizuju (obojsmerny okruh s prednostou sprava sa pri 400+ autach zablokoval)
+    for k in range(nb):
+        edges.append((f"B{(k + 1) % nb}", f"B{k}", a.lanes_obchvat, a.v_obchvat, 4, ""))
+
+    # okruhy: z kazdeho vjazdu do kazdeho ineho vyjazdu najkratsou cestou centrom (rovno, vlavo aj vpravo)
+    def dlzka(p, q):
+        return math.dist(CC_XY[(int(p[1]), int(p[2]))], CC_XY[(int(q[1]), int(q[2]))])
+
+    def najkratsia(p, q):
+        dist, prev, todo = {p: 0}, {}, {p}
+        while todo:
+            u = min(todo, key=dist.get)
+            todo.remove(u)
+            if u == q:
+                break
+            i, j = int(u[1]), int(u[2])
+            for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                if 0 <= i + di < 3 and 0 <= j + dj < 3:
+                    v = f"C{i + di}{j + dj}"
+                    if dist[u] + dlzka(u, v) < dist.get(v, 1e18):
+                        dist[v], prev[v] = dist[u] + dlzka(u, v), u
+                        todo.add(v)
+        cesta = [q]
+        while cesta[-1] != p:
+            cesta.append(prev[cesta[-1]])
+        cesta.reverse()
+        return [E(x, y) for x, y in zip(cesta, cesta[1:])]
+
+    # pruhy na krizovatkach: pravy = vpravo + rovno, stredne = rovno, lavy = len vlavo (bez neho lavo odbocujuci
+    # cakajuci na medzeru v 3 protismernych pruhoch blokoval aj auta rovno -> od 700 aut zablokovanie siete)
+    poz = {n: (x, y) for n, x, y, _ in nodes}
+    for c in (f"C{i}{j}" for i, j in CC_XY):
+        for u, c1, nl, *_ in edges:
+            if c1 != c:
+                continue
+            for c2, w, nl2, *_ in edges:
+                if c2 != c or w == u:
+                    continue
+                (ux, uy), (cx_, cy_), (wx, wy) = poz[u], poz[c], poz[w]
+                uhol = math.degrees(math.atan2((cx_ - ux) * (wy - cy_) - (cy_ - uy) * (wx - cx_),
+                                               (cx_ - ux) * (wx - cx_) + (cy_ - uy) * (wy - cy_)))
+                if uhol > 30:       # vlavo
+                    pary = [(nl - 1, nl2 - 1)] if nl > 1 else [(0, 0)]
+                elif uhol < -30:    # vpravo
+                    pary = [(0, 0)]
+                else:               # rovno
+                    pary = [(k, k) for k in range(max(1, nl - 1))]
+                for fl, tl in pary:
+                    cc_spoje.append((E(u, c), E(c, w), fl, tl))
+
+    def cez(e, x):
+        return ([E(f"B{e}", cc_brany[e])] + najkratsia(cc_brany[e], cc_brany[x]) + [E(cc_brany[x], f"B{x}")]
+                + [E(f"B{x}", f"B{(x - 1) % nb}")])
+
+    # okruh: vzdy len jeden usek k susednemu vjazdu (x -> x-1), nikto po nom nejde rovno -> zaradenie z vyjazdu
+    # nema s kym kolidovat (pri jazde po okruhu dalej sa vyjazdy pri 400+ autach zablokovali, vedlajsia cesta
+    # nedostala medzeru); okruh: vjazd e -> vyjazd x -> vjazd x-1 -> vyjazd e+1 -> vjazd e
+    cc_okruhy = []
+    for e in range(nb):
+        for x in range(nb):
+            if e == x or (x - 1) % nb == (e + 1) % nb:
+                continue
+            cc_okruhy.append(cez(e, x) + cez((x - 1) % nb, (e + 1) % nb))
+
+if a.map == "default":
+    MAXC = (a.grid - 1) * a.step
+    MID = MAXC / 2
+    R = MID + a.odstup
+    g, m = a.grid - 1, a.grid // 2
+    BRANY = {f"C{g}{m}": "B0", f"C{m}{g}": "B2", f"C0{m}": "B4", f"C{m}0": "B6"}
+
+    stupen = {f"C{i}{j}": 0 for i in range(a.grid) for j in range(a.grid)}
+    for i in range(a.grid):
+        for j in range(a.grid):
+            if i + 1 < a.grid: stupen[f"C{i}{j}"] += 1; stupen[f"C{i + 1}{j}"] += 1
+            if j + 1 < a.grid: stupen[f"C{i}{j}"] += 1; stupen[f"C{i}{j + 1}"] += 1
+    for c in BRANY:
+        stupen[c] += 1
+
+
+    n_tls = 0
+    for i in range(a.grid):
+        for j in range(a.grid):
+            n = f"C{i}{j}"
+            typ = "traffic_light" if stupen[n] == 4 else "priority"  # TM handles 4-arm junctions only
+            if typ == "traffic_light": n_tls += 1
+            nodes.append((n, i * a.step, j * a.step, typ))
+    for i in range(a.grid):
+        for j in range(a.grid):
+            if i + 1 < a.grid: edge(f"C{i}{j}", f"C{i + 1}{j}", a.lanes_mesto, a.v_mesto, 2)
+            if j + 1 < a.grid: edge(f"C{i}{j}", f"C{i}{j + 1}", a.lanes_mesto, a.v_mesto, 2)
+
+    napojene = set(BRANY.values())
+    for k, ang in enumerate(range(0, 360, 45)):
+        # where the city joins the bypass, the bypass must not have absolute priority,
+        # otherwise vehicles from the city cannot merge (measured waits of up to 38 s)
+        typ = a.brany if f"B{k}" in napojene else "priority"
+        nodes.append((f"B{k}", round(MID + R * math.cos(math.radians(ang)), 1),
+                      round(MID + R * math.sin(math.radians(ang)), 1), typ))
+    def oblouk(uhol_od, uhol_do, body):
+        """geometry of a circular arc - without it the bypass would be a straight-sided octagon"""
+        pts = []
+        for st in range(body + 1):
+            ang = uhol_od + (uhol_do - uhol_od) * st / body
+            pts.append(f"{MID + R * math.cos(math.radians(ang)):.2f},"
+                       f"{MID + R * math.sin(math.radians(ang)):.2f}")
+        return " ".join(pts)
+
+
+    for k in range(8):
+        u1, u2 = k * 45, (k + 1) * 45
+        edge(f"B{k}", f"B{(k + 1) % 8}", a.lanes_obchvat, a.v_obchvat, 5,
+             oblouk(u1, u2, a.kruh), oblouk(u2, u1, a.kruh))
+    for c, b in BRANY.items():
+        edge(c, b, a.lanes_mesto, a.v_privod, 4)
+else:
+    def E(x, y): return f"{x}_{y}"
+    city_center()
 
 with open(nod_f, "w") as f:
     f.write('<?xml version="1.0" encoding="UTF-8"?>\n<nodes>\n')
@@ -209,7 +344,17 @@ with open(edg_f, "w") as f:
                 f'speed="{speed}" priority="{prio}"{sh}/>\n')
     f.write('</edges>\n')
 
-r = subprocess.run(["netconvert", "-n", nod_f, "-e", edg_f, "-o", net_f,
+con_f = os.path.join(out, f"{P}map.con.xml")
+if a.map == "city-center":
+    with open(con_f, "w") as f:
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n<connections>\n')
+        for fr, to, fl, tl in cc_spoje:
+            f.write(f'    <connection from="{fr}" to="{to}" fromLane="{fl}" toLane="{tl}"/>\n')
+        f.write('</connections>\n')
+r = subprocess.run(["netconvert", "-n", nod_f, "-e", edg_f, "-o", net_f]
+                   # city-center: bez chranenych faz pre lavy pruh (trafficManager cakava 4 fazy: 0 zelena S-J, 1 zlta,
+                   # 2 zelena V-Z, 3 zlta), lave odbocenie s prednostou protismeru ako v beznom meste
+                   + (["-x", con_f, "--tls.left-green.time", "0"] if a.map == "city-center" else []) + [
                     "--offset.disable-normalization", "--tls.default-type", "static",
                     "--no-turnarounds.except-deadend",
                     "--tls.green.time", str(a.zelena), "--tls.yellow.time", str(a.zlta)],
@@ -230,27 +375,30 @@ if 'projParameter="!"' in _n:  # geo-reference needed for CAM, DENM and GeoArea
 def E(x, y): return f"{x}_{y}"
 
 
-okruhy = [[E(f"B{k}", f"B{(k + 1) % 8}") for k in range(8)],
-          [E(f"B{(k + 1) % 8}", f"B{k}") for k in range(7, -1, -1)]]
-# block loops run clockwise = right turns only
-for i in range(a.grid - 1):
-    for j in range(a.grid - 1):
-        okruhy.append([E(f"C{i}{j}", f"C{i}{j + 1}"), E(f"C{i}{j + 1}", f"C{i + 1}{j + 1}"),
-                       E(f"C{i + 1}{j + 1}", f"C{i + 1}{j}"), E(f"C{i + 1}{j}", f"C{i}{j}")])
-stred = f"C{m}{m}"
+if a.map == "default":
+    okruhy = [[E(f"B{k}", f"B{(k + 1) % 8}") for k in range(8)],
+              [E(f"B{(k + 1) % 8}", f"B{k}") for k in range(7, -1, -1)]]
+    # block loops run clockwise = right turns only
+    for i in range(a.grid - 1):
+        for j in range(a.grid - 1):
+            okruhy.append([E(f"C{i}{j}", f"C{i}{j + 1}"), E(f"C{i}{j + 1}", f"C{i + 1}{j + 1}"),
+                           E(f"C{i + 1}{j + 1}", f"C{i + 1}{j}"), E(f"C{i + 1}{j}", f"C{i}{j}")])
+    stred = f"C{m}{m}"
 
 
-def rovno(p, q):
-    """edges straight through the city from junction p to q (same row or column); with --grid 3 just one edge"""
-    (i1, j1), (i2, j2) = (int(p[1]), int(p[2])), (int(q[1]), int(q[2]))
-    di, dj = (i2 > i1) - (i2 < i1), (j2 > j1) - (j2 < j1)
-    body = [(i1 + k * di, j1 + k * dj) for k in range(max(abs(i2 - i1), abs(j2 - j1)) + 1)]
-    return [E(f"C{a}{b}", f"C{c}{d}") for (a, b), (c, d) in zip(body, body[1:])]
-for c1, b1, b2, b3, c2 in [(f"C{g}{m}", "B0", "B1", "B2", f"C{m}{g}"),
-                           (f"C{m}{g}", "B2", "B3", "B4", f"C0{m}"),
-                           (f"C0{m}", "B4", "B5", "B6", f"C{m}0"),
-                           (f"C{m}0", "B6", "B7", "B0", f"C{g}{m}")]:
-    okruhy.append([E(c1, b1), E(b1, b2), E(b2, b3), E(b3, c2)] + rovno(c2, stred) + rovno(stred, c1))
+    def rovno(p, q):
+        """edges straight through the city from junction p to q (same row or column); with --grid 3 just one edge"""
+        (i1, j1), (i2, j2) = (int(p[1]), int(p[2])), (int(q[1]), int(q[2]))
+        di, dj = (i2 > i1) - (i2 < i1), (j2 > j1) - (j2 < j1)
+        body = [(i1 + k * di, j1 + k * dj) for k in range(max(abs(i2 - i1), abs(j2 - j1)) + 1)]
+        return [E(f"C{a}{b}", f"C{c}{d}") for (a, b), (c, d) in zip(body, body[1:])]
+    for c1, b1, b2, b3, c2 in [(f"C{g}{m}", "B0", "B1", "B2", f"C{m}{g}"),
+                               (f"C{m}{g}", "B2", "B3", "B4", f"C0{m}"),
+                               (f"C0{m}", "B4", "B5", "B6", f"C{m}0"),
+                               (f"C{m}0", "B6", "B7", "B0", f"C{g}{m}")]:
+        okruhy.append([E(c1, b1), E(b1, b2), E(b2, b3), E(b3, c2)] + rovno(c2, stred) + rovno(stred, c1))
+else:
+    okruhy = cc_okruhy
 
 every = round(1 / a.emergency) if a.emergency > 0 else 0
 n_amb = 0
@@ -268,7 +416,10 @@ with open(rou_f, "w") as f:
         if every and k % every == 0:
             typ = "ambulance"
             n_amb += 1
-        f.write(f'    <vehicle id="veh{k}" type="{typ}" depart="0" departLane="best" departSpeed="max">\n')
+        # city-center: na okruh sa prvym krokom nezmesti 1000 aut na zaciatky hran -> nahodne volne miesto na hrane
+        dep = ('departLane="best" departSpeed="max"' if a.map == "default"
+               else 'departLane="free" departPos="random_free" departSpeed="0"')
+        f.write(f'    <vehicle id="veh{k}" type="{typ}" depart="0" {dep}>\n')
         f.write(f'        <route edges="{" ".join(trasa)}" repeat="{a.repeat}"/>\n    </vehicle>\n')
     f.write('</routes>\n')
 
@@ -335,13 +486,20 @@ with open(cfg_f, "w") as f:
 """)
 
 print(f"Scenario: {out}/")
-print(f"  map          : city {a.grid}x{a.grid} ({MAXC:.0f}x{MAXC:.0f} m, spacing {a.step:.0f} m), "
-      f"bypass radius {R:.0f} m")
+if a.map == "default":
+    print(f"  map          : city {a.grid}x{a.grid} ({MAXC:.0f}x{MAXC:.0f} m, spacing {a.step:.0f} m), "
+          f"bypass radius {R:.0f} m")
+else:
+    bloky = [math.dist(CC_XY[p], CC_XY[q]) for p in CC_XY for q in CC_XY
+             if abs(p[0] - q[0]) + abs(p[1] - q[1]) == 1 and p < q]
+    print(f"  map          : city center, 9 intersections, blocks {min(bloky):.0f}-{max(bloky):.0f} m, "
+          f"{a.lanes_mesto} lanes per direction, ring road {a.odstup:.0f} m out ({a.lanes_obchvat} lanes, "
+          f"{3.6 * a.v_obchvat:.0f} km/h)")
 print(f"  traffic light: {n_tls} (4-arm intersections only), green {a.zelena:.0f} s, yellow {a.zlta:.0f} s")
 print(f"  gates        : {a.brany} (city to bypass connection)")
 print(f"  traffic      : {a.vehicles} vehicles ({n_amb} ambulances), {len(okruhy)} loops, all start at t=0")
 print(f"  RSU          : {a.rsu}")
-if a.step < 100:
+if a.map == "default" and a.step < 100:
     print("  WARNING: spacing below 100 m - the intersections are almost longer than the streets "
           "between them, vehicles will block each other")
 print(f"  preview      : sumo-gui -c {cfg_f}")
@@ -355,14 +513,34 @@ def diagnostika(dlzka=600):
     r = subprocess.run(["sumo", "-c", cfg_f, "--fcd-output", fcd, "--end", str(dlzka)],
                        capture_output=True, text=True)
     tele = len(re.findall(r"teleport", r.stdout + r.stderr, re.I))
+    if r.returncode != 0:
+        print("   SUMO failed:", (r.stdout + r.stderr)[-500:])
+        return
     if not os.path.isfile(fcd):
         print("   SUMO failed:", (r.stdout + r.stderr)[-500:])
         return
     rychlosti, stoji, najdlhsie, hrana = {}, {}, {}, {}
+    # xgregorm: rady pred semaformi = stojace auta na hranach, ktore vchadzaju do krizovatky so semaforom
+    nroot = ET.parse(net_f).getroot()
+    tls_j = {j.get("id") for j in nroot.findall("junction") if j.get("type") == "traffic_light"}
+    prijazd = {e.get("id"): e.get("to") for e in nroot.findall("edge") if e.get("to") in tls_j}
+    rad, rad_t, kroky, t_akt = {}, {}, 0, None
+    def uzavri_krok():
+        for e, n in rad_t.items():
+            rad.setdefault(e, []).append(n)
     for _, el in ET.iterparse(fcd, events=("end",)):
+        if el.tag == "timestep":
+            uzavri_krok()
+            rad_t = {e: 0 for e in prijazd}
+            kroky += 1
+            el.clear()
+            continue
         if el.tag != "vehicle":
             continue
         i, v = el.get("id"), float(el.get("speed"))
+        e = el.get("lane", "").rsplit("_", 1)[0]
+        if v < 0.1 and e in rad_t:
+            rad_t[e] += 1
         rychlosti.setdefault(i, []).append(v)
         if v < 0.1:
             stoji[i] = stoji.get(i, 0) + 1
@@ -372,11 +550,25 @@ def diagnostika(dlzka=600):
         else:
             stoji[i] = 0
         el.clear()
+    uzavri_krok()
     os.remove(fcd)
     if not rychlosti:
         print("   No vehicles?")
         return
     vsetky = [x for v in rychlosti.values() for x in v]
+    if rad:
+        # po 100 s (rozbeh), na prijazd: priemer a 95. percentil poctu stojacich aut, na krizovatku spolu
+        zac = min(1000, len(next(iter(rad.values()))) // 2)
+        per_e = {e: sorted(v[zac:]) for e, v in rad.items()}
+        p95 = lambda v: v[int(0.95 * (len(v) - 1))] if v else 0
+        print(f"   vehicles in the network: {len(rychlosti)} of {a.vehicles} inserted")
+        print(f"   queues at traffic lights (standing vehicles per approach, all lanes, after {zac * 0.1:.0f} s):")
+        for j in sorted(tls_j):
+            ee = [e for e in prijazd if prijazd[e] == j]
+            spolu = [sum(rad[e][t] for e in ee) for t in range(zac, len(rad[ee[0]]))]
+            print(f"     {j}: per approach mean " + " / ".join(f"{sum(per_e[e]) / max(1, len(per_e[e])):4.1f}" for e in ee)
+                  + "  p95 " + " / ".join(f"{p95(per_e[e]):2d}" for e in ee)
+                  + f"  | whole junction mean {sum(spolu) / max(1, len(spolu)):5.1f}, max {max(spolu, default=0)}")
     priem = {k: sum(v) / len(v) for k, v in rychlosti.items()}
     najhorsie = sorted(najdlhsie.items(), key=lambda kv: -kv[1])[:5]
     print(f"   average speed of all vehicles: {sum(vsetky) / len(vsetky):.2f} m/s "
@@ -417,6 +609,7 @@ HYB = (f"{TM} --tls-radius={a.tls_radius}"
        f" --xg-relax={'true' if a.xg_relax else 'false'} --xg-relevance={a.xg_relevance}"
        f" --beacon-ms={a.beacon_ms} --nr-sensing={'true' if a.nr_sensing else 'false'}"
        f" --range-stats={'true' if a.range_stats else 'false'} --channel={a.channel}"
+       f" --load-stats={'true' if a.load_stats else 'false'}"
        f" --enb={a.enb} --enb-isd={a.enb_isd} --lte-ue-power={a.lte_ue_power}"
        + "".join(f" --use-{t}={'true' if t in TECH else 'false'}" for t in ("80211p", "lte", "nr"))
        + f" --policy={a.policy}"
@@ -758,6 +951,38 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
                        or (l[4] - l[5] and l[6] / 1000 / (l[4] - l[5]) > 1.5)]
                 print(f"    seconds with uplink or car->car < 90 % or RSU info older than 1.5 s: "
                       f"{', '.join(map(str, bad)) if bad else 'none'}")
+            loads = {m.group(1): dict((k, float(v)) for k, v in re.findall(r"([A-Z_0-9]+):([\d.eE+-]+|nan)", m.group(2)))
+                     for m in re.finditer(r"XGREGORM-LOAD,TECH:(\w+),(.*)", vystup)}
+            if loads:
+                nazov = {"W": "802.11p", "LTE": "LTE", "NR": "NR-V2X"}
+                print("    LOAD per technology (one sample = one station (802.11p, NR) or one cell (LTE) per 100 ms):")
+                print("      802.11p = CBR, ETSI TS 102 687 (share of time rx power > -85 dBm, own tx included) - MEASURED")
+                print("      LTE     = uplink PRB usage of the cell, 3GPP TS 36.314 (granted PRB / available PRB) - MEASURED")
+                print("      NR-V2X  = SL-CBR, 3GPP TS 38.215 - ESTIMATE from decoded PSCCH (lower bound, ns-3 has no S-RSSI)")
+                print("      tech     samples   mean    p50    p95    p99    max   >=0.3 %  >=0.6 %")
+                for t, d in loads.items():
+                    n = max(d.get("N", 0), 1)
+                    print(f"      {nazov[t]:<8} {d.get('N', 0):8.0f} {d.get('MEAN', 0):6.3f} {d.get('P50', 0):6.2f} "
+                          f"{d.get('P95', 0):6.2f} {d.get('P99', 0):6.2f} {d.get('MAX', 0):6.3f} "
+                          f"{100 * d.get('GE30', 0) / n:8.2f} {100 * d.get('GE60', 0) / n:8.2f}"
+                          + (f"   ({d['CELLS']:.0f} cell(s), {d['ULRB']:.0f} UL PRB)" if t == "LTE" else "")
+                          + (f"   ({d['SUBCH']:.0f} subchannels x {d['SLOTS_S']:.0f} slots/s)" if t == "NR" else ""))
+                kose = ["<0.1", "0.1-0.2", "0.2-0.3", "0.3-0.6", ">=0.6"]
+                print("    PERFORMANCE per load of the sender at tx time (802.11p / NR: car->car <100 m, every technology")
+                print("    counted on its own; LTE: car->RSU, delivered = at least one RSU got it; latency per copy):")
+                print("      tech     load      CAMs   expected  delivered   PRR      lat mean   p50     p95     p99     max [ms]")
+                for m in re.finditer(r"XGREGORM-PERF,TECH:(\w+),(.*)", vystup):
+                    d = dict((k, float(v)) for k, v in re.findall(r"([A-Z_0-9]+):([\d.eE+-]+|nan)", m.group(2)))
+                    prr = d["RX"] / d["EXP"] if d["EXP"] else float("nan")
+                    print(f"      {nazov[m.group(1)]:<8} {kose[int(d['BIN'])]:<8} {d['CAM']:7.0f} {d['EXP']:9.0f} {d['RX']:9.0f}   "
+                          f"{prr:.4f}  {d['LAT_MEAN_MS']:8.2f} {d['LAT_P50_MS']:7.2f} {d['LAT_P95_MS']:7.2f} "
+                          f"{d['LAT_P99_MS']:7.2f} {d['LAT_MAX_MS']:7.2f}")
+                pr = re.search(r"XGREGORM-PIR,(.*)", vystup)
+                if pr:
+                    d = dict((k, float(v)) for k, v in re.findall(r"([A-Z_0-9]+):([\d.eE+-]+|nan)", pr.group(1)))
+                    print(f"    PIR car->car <100 m (time between two received CAMs of the same sender, 3GPP TR 37.885): "
+                          f"{d['N']:.0f} gaps, mean {d['MEAN_MS']:.0f} ms, p50 {d['P50_MS']:.0f}, p95 {d['P95_MS']:.0f}, "
+                          f"p99 {d['P99_MS']:.0f}, max {d['MAX_MS']:.0f} ms")
             rg = re.search(r"XGREGORM-RANGE,(.*)", vystup)
             if rg:
                 # delivery vs. distance: share of CAMs received (first copy) by vehicles / RSUs at that distance

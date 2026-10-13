@@ -33,9 +33,102 @@
 #include "ns3/mobility-module.h"
 #include "ns3/sumo_xml_parser.h"
 #include "ns3/vehicle-visualizer-module.h"
+#include "ns3/wifi-module.h"
 #include <unistd.h>
+#include <deque>
+#include <set>
 
 using namespace ns3;
+
+// xgregorm: meranie zataze technologii (len meranie, do siete nic neposiela; definicie v xgregorm-stats.h)
+//  802.11p: CBR (ETSI TS 102 687) - pri kazdom vyslani sa pre kazdu stanicu vypocita prijaty vykon tym istym modelom
+//           sirenia ako kanal; > -85 dBm = kanal obsadeny po dobu ramca; vlastne vysielanie sa pocita ako obsadene
+//  LTE:     vyuzitie PRB uplinku bunky (3GPP TS 36.314) - PRB z pridelenia (UL DCI) kazdeho UE / (PRB bunky x 100 TTI)
+//  NR-V2X:  ODHAD SL-CBR z prijatych PSCCH (ns-3 S-RSSI po subkanaloch nevypisuje)
+namespace xgload {
+std::set<uint32_t> active;                                               // uzly v mape (auta po vstupe, RSU)
+std::vector<std::pair<uint32_t, Ptr<MobilityModel>>> wifiNodes;          // vsetky 802.11p stanice v poradi kanala
+Ptr<PropagationLossModel> wLoss;                                         // ten isty model ako kanal 802.11p
+std::map<uint32_t, std::vector<std::pair<double, double>>> busyW;        // obsadene intervaly [s]
+std::map<uint32_t, double> curW, curN;                                   // posledne okno 100 ms
+std::map<uint32_t, std::deque<std::pair<double, int>>> nrRx;             // PSCCH: cas, pocet subkanalov
+int nrSubch = 0;
+double nrSlotsPerSec = 0;
+std::map<uint16_t, uint64_t> lteRb;                                      // PRB pridelene v okne, podla bunky
+std::map<uint16_t, double> curL;
+std::map<uint32_t, Ptr<LteUeNetDevice>> ueOf;
+std::vector<uint16_t> cells;
+int lteUlRb = 0;
+bool useW = false, useL = false, useN = false;
+
+void
+onWifiTx (uint32_t s, Ptr<MobilityModel> mob, Ptr<WifiPhy> phy, WifiConstPsduMap psdus, WifiTxVector txv, double txW)
+{
+  if (!active.count (s))
+    return;
+  double now = Simulator::Now ().GetSeconds ();
+  double end = now + WifiPhy::CalculateTxDuration (psdus, txv, phy->GetPhyBand ()).GetSeconds ();
+  busyW[s].push_back ({now, end});
+  double txDbm = 10 * std::log10 (txW) + 30;
+  // vsetky stanice v poradi kanala (aj neaktivne): model 3GPP losuje stav kanala dvojice pri prvom vypocte,
+  // rovnake poradie = rovnake losovanie ako bez merania
+  for (auto &w : wifiNodes)
+    {
+      if (w.first == s)
+        continue;
+      double rx = wLoss->CalcRxPower (txDbm, mob, w.second);
+      if (rx > xgstats::kCbrThrDbm && active.count (w.first))
+        busyW[w.first].push_back ({now, end});
+    }
+}
+
+void
+tick ()
+{
+  double T = Simulator::Now ().GetSeconds () - 0.002; // okno [T - 100 ms, T], ramce uz skoncili
+  for (uint32_t n : active)
+    {
+      if (useW)
+        {
+          std::vector<std::pair<double, double>> &v = busyW[n];
+          std::sort (v.begin (), v.end ());
+          double busy = 0, cur = T - 0.1;
+          for (auto &iv : v)
+            {
+              double a = std::max (iv.first, cur), b = std::min (iv.second, T);
+              if (b > a)
+                {
+                  busy += b - a;
+                  cur = b;
+                }
+            }
+          v.erase (std::remove_if (v.begin (), v.end (), [T] (const std::pair<double, double> &iv) { return iv.second <= T; }), v.end ());
+          curW[n] = std::min (1.0, busy / 0.1);
+          xgstats::loadDist ()[0].add (curW[n]);
+        }
+      if (useN && nrSubch > 0)
+        {
+          std::deque<std::pair<double, int>> &d = nrRx[n];
+          while (!d.empty () && d.front ().first < T - 0.1)
+            d.pop_front ();
+          double used = 0;
+          for (auto &e : d)
+            if (e.first <= T)
+              used += e.second;
+          curN[n] = std::min (1.0, used / (nrSubch * nrSlotsPerSec * 0.1));
+          xgstats::loadDist ()[2].add (curN[n]);
+        }
+    }
+  if (useL)
+    for (uint16_t c : cells)
+      {
+        curL[c] = std::min (1.0, lteRb[c] / (lteUlRb * 100.0));
+        lteRb[c] = 0;
+        xgstats::loadDist ()[1].add (curL[c]);
+      }
+  Simulator::Schedule (MilliSeconds (100), &tick);
+}
+} // namespace xgload
 
 NS_LOG_COMPONENT_DEFINE ("xgregorm-hybrid");
 
@@ -155,6 +248,9 @@ main (int argc, char *argv[])
   cmd.AddValue ("datarate", "802.11p channel data rate [Mbit/s]", datarate);
   cmd.AddValue ("sim-time", "Total duration of the simulation [s]", simTime);
   bool range_stats = false;
+  bool load_stats = true;
+  cmd.AddValue ("load-stats","Measure the load of every technology (802.11p CBR, LTE UL PRB usage, NR SL-CBR estimate) "
+                "and the performance per load level (measurement only)",load_stats);
   std::string channel_model = "authors";
   uint32_t n_enb = 1;
   double enb_isd = 500;
@@ -252,6 +348,7 @@ main (int argc, char *argv[])
       channel = CreateObject<YansWifiChannel> ();
       channel->SetPropagationDelayModel (CreateObject<ConstantSpeedPropagationDelayModel> ());
       channel->SetPropagationLossModel (loss);
+      xgload::wLoss = loss;
     }
   else if (channel_model != "authors")
     NS_FATAL_ERROR ("--channel must be authors or 3gpp");
@@ -262,6 +359,23 @@ main (int argc, char *argv[])
   wifi80211p.SetRemoteStationManager ("ns3::ConstantRateWifiManager", "DataMode", StringValue (datarate_config), "ControlMode", StringValue (datarate_config));
   wifi80211p.Install (wifiPhy, wifi80211pMac, obuNodes);
   wifi80211p.Install (wifiPhy, wifi80211pMac, rsuNodes);
+  // xgregorm: meranie CBR 802.11p - kanal autorov = YansWifiChannelHelper::Default (LogDistance s predvolenymi
+  // parametrami, deterministicky), pre meranie rovnaky model; pri 3gpp ten isty objekt ako kanal
+  if (!xgload::wLoss)
+    xgload::wLoss = CreateObject<LogDistancePropagationLossModel> ();
+  xgload::useW = use_80211p && load_stats;
+  for (NodeContainer *nc : {&obuNodes, &rsuNodes})
+    for (uint32_t n = 0; n < nc->GetN (); ++n)
+      {
+        Ptr<Node> node = nc->Get (n);
+        Ptr<MobilityModel> mob = node->GetObject<MobilityModel> ();
+        xgload::wifiNodes.push_back ({node->GetId (), mob});
+        Ptr<WifiPhy> phy = DynamicCast<WifiNetDevice> (node->GetDevice (0))->GetPhy ();
+        if (xgload::useW)
+          phy->TraceConnectWithoutContext ("PhyTxPsduBegin", MakeBoundCallback (&xgload::onWifiTx, node->GetId (), mob, phy));
+      }
+  for (uint32_t n = 0; n < rsuNodes.GetN (); ++n)
+    xgload::active.insert (rsuNodes.Get (n)->GetId ());
 
   /*** 3. IP (InternetStackHelper pridava aj PacketSocketFactory pre 802.11p) ***/
   InternetStackHelper internet;
@@ -330,6 +444,24 @@ main (int argc, char *argv[])
       NetDeviceContainer enbDevs = lteHelper->InstallEnbDevice (enbNodes);
       NetDeviceContainer ueDevs = lteHelper->InstallUeDevice (obuNodes);
       lteUeDevs = ueDevs;
+      // xgregorm: meranie vyuzitia PRB uplinku po bunkach
+      xgload::useL = load_stats;
+      for (uint32_t e = 0; e < enbDevs.GetN (); ++e)
+        {
+          Ptr<LteEnbNetDevice> enb = DynamicCast<LteEnbNetDevice> (enbDevs.Get (e));
+          xgload::cells.push_back (enb->GetCellId ());
+          xgload::lteUlRb = enb->GetUlBandwidth ();
+        }
+      for (uint32_t u = 0; u < ueDevs.GetN (); ++u)
+        {
+          Ptr<LteUeNetDevice> ue = DynamicCast<LteUeNetDevice> (ueDevs.Get (u));
+          xgload::ueOf[obuNodes.Get (u)->GetId ()] = ue;
+          if (xgload::useL)
+            ue->GetPhy ()->TraceConnectWithoutContext (
+              "ReportUlPhyResourceBlocks", MakeBoundCallback (+[] (Ptr<LteUeNetDevice> d, uint16_t, const std::vector<int> &rbs) {
+                xgload::lteRb[d->GetRrc ()->GetCellId ()] += rbs.size ();
+              }, ue));
+        }
       epcHelper->AssignUeIpv4Address (ueDevs);
       for (uint32_t u = 0; u < obuNodes.GetN (); ++u)
         {
@@ -458,6 +590,17 @@ main (int argc, char *argv[])
       preconfig.slUeSelectedPreConfig = ueSelected;
       preconfig.slPreconfigFreqInfoList[0] = freqConfig;
       nrSlHelper->InstallNrSlPreConfiguration (slDevs, preconfig);
+      // xgregorm: ODHAD obsadenosti NR kanala (SL-CBR) - kazdy prijaty PSCCH = obsadene subkanaly v jednom slote;
+      // subkanaly poolu = RB sirky pasma / velkost subkanala (SetSlSubchannelSize (10) vyssie)
+      xgload::useN = load_stats;
+      xgstats::nrFrom () = nr_bearer_time.GetSeconds ();
+      xgload::nrSlotsPerSec = 1000.0 * (1 << nr_numerology);
+      xgload::nrSubch = DynamicCast<NrUeNetDevice> (slDevs.Get (0))->GetPhy (0)->GetRbNum () / 10;
+      for (uint32_t n = 0; n < slDevs.GetN () && xgload::useN; ++n)
+        DynamicCast<NrUeNetDevice> (slDevs.Get (n))->GetPhy (0)->GetSpectrumPhy ()->TraceConnectWithoutContext (
+            "RxPscchTraceUe", MakeBoundCallback (+[] (uint32_t nd, const SlRxCtrlPacketTraceParams p) {
+              xgload::nrRx[nd].push_back ({Simulator::Now ().GetSeconds (), (int) p.m_lengthSubChannel});
+            }, slDevs.Get (n)->GetNode ()->GetId ()));
 
       int64_t stream = 1000;
       stream += nrHelper->AssignStreams (slDevs, stream);
@@ -586,6 +729,7 @@ main (int argc, char *argv[])
           Simulator::Schedule (MilliSeconds (10), [lteHelper, ue] () { lteHelper->Attach (ue); });
         }
       ++nodeCounter;
+      xgload::active.insert (includedNode->GetId ());
       ApplicationContainer ClientApp = clientHelper.Install (includedNode);
       ClientApp.Start (Seconds (0.0));
       ClientApp.Stop (simulationTime - Simulator::Now () - Seconds (0.1));
@@ -594,6 +738,7 @@ main (int argc, char *argv[])
 
   SHUTDOWN_FCN shutdownNode = [] (Ptr<Node> exNode,std::string vehicleID)
     {
+      xgload::active.erase (exNode->GetId ());
       Ptr<trafficManagerClient80211p> app = exNode->GetApplication(0)->GetObject<trafficManagerClient80211p>();
       if(app)
         app->StopApplicationNow ();
@@ -603,8 +748,22 @@ main (int argc, char *argv[])
 
   sumoClient->SumoSetup (setupNewNode, shutdownNode);
 
+  // xgregorm: zataz technologii kazdych 100 ms; vykonnost podla zataze odosielatela v case vyslania CAM
+  if (xgload::useW)
+    xgstats::loadFn ()[0] = [] (uint32_t n) { return xgload::curW[n]; };
+  if (xgload::useL)
+    xgstats::loadFn ()[1] = [] (uint32_t n) {
+      auto ue = xgload::ueOf.find (n);
+      return ue == xgload::ueOf.end () ? 0.0 : xgload::curL[ue->second->GetRrc ()->GetCellId ()];
+    };
+  if (xgload::useN)
+    xgstats::loadFn ()[2] = [] (uint32_t n) { return xgload::curN[n]; };
+  if (load_stats)
+    Simulator::Schedule (MilliSeconds (102), &xgload::tick);
+
   Simulator::Stop (simulationTime);
   Simulator::Run ();
+  xgstats::finishAllTx ();
   Simulator::Destroy ();
 
   std::cout << "XGREGORM-RELAY,CAM:" << g_relay_n << std::endl;
@@ -630,6 +789,37 @@ main (int argc, char *argv[])
   // oneskorenie auto -> auto: W = 802.11p, NR = NR-V2X (prva kopia kazdej CAM)
   std::cout << "XGREGORM-V2VLAT,W_SUM:" << xgstats::v2vLatSum ()[0] << ",W_N:" << xgstats::v2vLatN ()[0]
             << ",NR_SUM:" << xgstats::v2vLatSum ()[2] << ",NR_N:" << xgstats::v2vLatN ()[2] << std::endl;
+  // zataz: rozdelenie (vzorka = stanica/bunka za 100 ms) a vykonnost podla kosa zataze odosielatela
+  const char *techName[3] = {"W", "LTE", "NR"};
+  for (int k = 0; k < 3; k++)
+    {
+      if (!xgstats::loadFn ()[k])
+        continue;
+      const xgstats::LoadHist &h = xgstats::loadDist ()[k];
+      std::cout << "XGREGORM-LOAD,TECH:" << techName[k] << ",N:" << h.n << ",MEAN:" << (h.n ? h.sum / h.n : 0)
+                << ",P50:" << h.pct (0.5) << ",P95:" << h.pct (0.95) << ",P99:" << h.pct (0.99) << ",MAX:" << h.max
+                << ",GE30:" << h.atLeast (0.3) << ",GE60:" << h.atLeast (0.6);
+      if (k == 1)
+        std::cout << ",CELLS:" << xgload::cells.size () << ",ULRB:" << xgload::lteUlRb;
+      if (k == 2)
+        std::cout << ",SUBCH:" << xgload::nrSubch << ",SLOTS_S:" << xgload::nrSlotsPerSec << ",ESTIMATE:1";
+      std::cout << std::endl;
+      for (int b = 0; b < xgstats::kLoadBins; b++)
+        {
+          const xgstats::Perf &p = xgstats::perf ()[k][b];
+          if (!p.cam)
+            continue;
+          std::cout << "XGREGORM-PERF,TECH:" << techName[k] << ",BIN:" << b << ",CAM:" << p.cam << ",EXP:" << p.exp
+                    << ",RX:" << p.rx << ",LAT_N:" << p.lat.n << ",LAT_MEAN_MS:" << (p.lat.n ? 1000 * p.lat.sum / p.lat.n : 0)
+                    << ",LAT_P50_MS:" << 1000 * p.lat.pct (0.5) << ",LAT_P95_MS:" << 1000 * p.lat.pct (0.95)
+                    << ",LAT_P99_MS:" << 1000 * p.lat.pct (0.99) << ",LAT_MAX_MS:" << 1000 * p.lat.max << std::endl;
+        }
+    }
+  {
+    const xgstats::Hist &h = xgstats::pir ();
+    std::cout << "XGREGORM-PIR,N:" << h.n << ",MEAN_MS:" << (h.n ? 1000 * h.sum / h.n : 0) << ",P50_MS:" << 1000 * h.pct (0.5)
+              << ",P95_MS:" << 1000 * h.pct (0.95) << ",P99_MS:" << 1000 * h.pct (0.99) << ",MAX_MS:" << 1000 * h.max << std::endl;
+  }
   // dorucenie podla vzdialenosti (po 50 m): B<index>:v2v_exp/v2v_rx/ul_exp/ul_rx
   if (range_stats)
     {

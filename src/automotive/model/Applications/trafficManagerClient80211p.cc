@@ -207,7 +207,7 @@ namespace ns3
           m_hyb_cnt[sent]++;
           xghyb::timeline ()[(int) t][sent]++;
         }
-      xgstats::onCamTx (m_sid, p.x, p.y, gdt, sent & (xghyb::WIFI | xghyb::NR));
+      xgstats::onCamTx (m_sid, p.x, p.y, gdt, sent & (xghyb::WIFI | xghyb::NR), sent, GetNode ()->GetId ());
       if (m_last_tx >= 0)
         {
           // kontrola ETSI EN 302 637-2: odstup dvoch CAM 100 ms .. 1000 ms

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nodes>
+    <node id="C00" x="0" y="0" type="traffic_light"/>
+    <node id="C10" x="270" y="15" type="traffic_light"/>
+    <node id="C20" x="520" y="-10" type="traffic_light"/>
+    <node id="C01" x="-20" y="175" type="traffic_light"/>
+    <node id="C11" x="255" y="185" type="traffic_light"/>
+    <node id="C21" x="540" y="160" type="traffic_light"/>
+    <node id="C02" x="10" y="390" type="traffic_light"/>
+    <node id="C12" x="285" y="370" type="traffic_light"/>
+    <node id="C22" x="530" y="400" type="traffic_light"/>
+    <node id="B0" x="-219.9" y="167.7" type="priority"/>
+    <node id="B1" x="-199.7" y="-11.1" type="priority"/>
+    <node id="B2" x="22.7" y="-198.7" type="priority"/>
+    <node id="B3" x="287.6" y="-184.2" type="priority"/>
+    <node id="B4" x="496.6" y="-208.6" type="priority"/>
+    <node id="B5" x="719.0" y="-29.9" type="priority"/>
+    <node id="B6" x="739.2" y="142.5" type="priority"/>
+    <node id="B7" x="728.5" y="424.3" type="priority"/>
+    <node id="B8" x="521.7" y="599.8" type="priority"/>
+    <node id="B9" x="317.0" y="567.4" type="priority"/>
+    <node id="B10" x="37.6" y="588.1" type="priority"/>
+    <node id="B11" x="-189.5" y="404.5" type="priority"/>
+</nodes>

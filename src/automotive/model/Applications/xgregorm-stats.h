@@ -6,6 +6,14 @@
 //  - hybrid (802.11p + LTE + NR-V2X): CAM sa paruju podla generationDeltaTime, meria sa oneskorenie po kazdej ceste,
 //    vek informacie RSU a presnost aj na celom prijazde (nielen do 100 m)
 //  - dorucenie podla vzdialenosti (--range-stats): auto-auto aj auto-RSU po 50 m do 1000 m (overenie dosahu technologii)
+//  - zataz technologii (kazdych 100 ms) a vykonnost kazdej technologie podla zataze v case vyslania CAM:
+//      802.11p: CBR podla ETSI TS 102 687 = podiel casu, ked je prijaty vykon > -85 dBm, okno 100 ms (MERANIE)
+//      LTE:     vyuzitie PRB uplinku bunky podla 3GPP TS 36.314 = pridelene PRB / dostupne PRB, okno 100 ms (MERANIE)
+//      NR-V2X:  SL-CBR podla 3GPP TS 38.215 je podiel subkanalov so S-RSSI nad prahom; ns-3 (5G-LENA) S-RSSI po
+//               subkanaloch nevypisuje, preto len ODHAD z prijatych (dekodovanych) PSCCH = obsadene subkanaly v slote.
+//               Je to dolny odhad (prenosy, ktorych PSCCH sa nedekodoval - slabe/kolizne - chybaju). Presne meranie by
+//               vyzadovalo zasah do NR modulu (trace v NrSpectrumPhy::StartRx), zamerne nerobene.
+//    vyplna xgregorm-hybrid.cc (loadFn, loadDist), vykonnost: PRR auto-auto po technologiach, oneskorenie, PIR
 #ifndef XGREGORM_STATS_H
 #define XGREGORM_STATS_H
 
@@ -18,6 +26,7 @@
 #include <deque>
 #include <array>
 #include <cmath>
+#include <functional>
 
 namespace ns3 {
 namespace xgstats {
@@ -52,6 +61,85 @@ struct Rsu
   uint64_t latN[3] = {0, 0, 0};
 };
 
+// ---------------------------------------------------------------- zataz a vykonnost podla zataze
+const double kCbrThrDbm = -85;  // ETSI TS 102 687: prah obsadenosti kanala 802.11p
+const int kLoadBins = 5;        // kose zataze: < 0.1, 0.1-0.2, 0.2-0.3, 0.3-0.6, >= 0.6 (ETSI DCC: 0.3 / 0.6)
+inline int loadBin (double c) { return c < 0.1 ? 0 : c < 0.2 ? 1 : c < 0.3 ? 2 : c < 0.6 ? 3 : 4; }
+
+// logaritmicky histogram casov (0.1 us .. 1000 s, krok ~6 %) - percentily bez ukladania vzoriek
+struct Hist
+{
+  std::array<uint64_t, 400> b {};
+  uint64_t n = 0;
+  double sum = 0, max = 0;
+  void add (double s)
+  {
+    int i = s <= 1e-7 ? 0 : std::min (399, std::max (0, (int) std::floor ((std::log10 (s * 1e6) + 1) * 40)));
+    b[i]++;
+    n++;
+    sum += s;
+    max = std::max (max, s);
+  }
+  double pct (double q) const
+  {
+    if (!n)
+      return NAN;
+    uint64_t k = (uint64_t) std::ceil (q * n), c = 0;
+    for (int i = 0; i < 400; i++)
+      if ((c += b[i]) >= k)
+        return std::min (max, std::pow (10, (i + 0.5) / 40.0 - 1) * 1e-6);
+    return max;
+  }
+};
+
+// rozdelenie zataze (0..1 po 0.01), jedna vzorka = jedna stanica (802.11p, NR) / bunka (LTE) za 100 ms
+struct LoadHist
+{
+  std::array<uint64_t, 101> b {};
+  uint64_t n = 0;
+  double sum = 0, max = 0;
+  void add (double c)
+  {
+    c = std::min (1.0, std::max (0.0, c));
+    b[(int) std::lround (c * 100)]++;
+    n++;
+    sum += c;
+    max = std::max (max, c);
+  }
+  double pct (double q) const
+  {
+    uint64_t k = (uint64_t) std::ceil (q * n), c = 0;
+    for (int i = 0; i <= 100; i++)
+      if ((c += b[i]) >= k)
+        return i / 100.0;
+    return max;
+  }
+  uint64_t atLeast (double t) const
+  {
+    uint64_t c = 0;
+    for (int i = (int) std::lround (t * 100); i <= 100; i++)
+      c += b[i];
+    return c;
+  }
+};
+
+// technologia: 0 = 802.11p, 1 = LTE, 2 = NR-V2X (bity cesty 1, 2, 4 ako xghyb::WIFI/LTE/NR)
+inline std::array<LoadHist, 3> &loadDist () { static std::array<LoadHist, 3> a; return a; }
+// aktualna zataz, ktoru vidi uzol (posledne okno 100 ms); nastavuje xgregorm-hybrid.cc, inak sa nemeria
+inline std::array<std::function<double (uint32_t)>, 3> &loadFn () { static std::array<std::function<double (uint32_t)>, 3> a; return a; }
+// vykonnost podla zataze odosielatela v case vyslania: 802.11p a NR = auto-auto do 100 m (kazda technologia zvlast,
+// aj druha kopia), LTE = auto -> RSU (exp = CAM poslane cez LTE, rx = dostala ju aspon jedna RSU)
+struct Perf
+{
+  uint64_t cam = 0, exp = 0, rx = 0;
+  Hist lat;
+};
+inline std::array<std::array<Perf, kLoadBins>, 3> &perf () { static std::array<std::array<Perf, kLoadBins>, 3> a; return a; }
+// PIR (3GPP TR 37.885): cas medzi dvoma prijatymi CAM od toho isteho auta (auto-auto do 100 m, prva kopia);
+// medzery > 5 s sa nepocitaju (auto bolo medzitym mimo dosahu)
+inline Hist &pir () { static Hist h; return h; }
+inline std::map<std::pair<unsigned long, unsigned long>, double> &lastRxT () { static std::map<std::pair<unsigned long, unsigned long>, double> m; return m; }
+
 struct Tx
 {
   double t, x, y;
@@ -62,7 +150,42 @@ struct Tx
   std::set<const Rsu *> got;          // RSU, ktore ju uz prijali (prva kopia)
   std::map<unsigned long, int> farV;  // --range-stats: auta do 1000 m -> index vzdialenosti (este neprijate)
   std::map<const Rsu *, int> farR;    // --range-stats: RSU do 1000 m -> index vzdialenosti
+  int paths = 0;                      // cesty, ktorymi CAM odisla (1 802.11p, 2 LTE, 4 NR)
+  std::array<int, 3> lbin {{-1, -1, -1}}; // kos zataze odosielatela pri vyslani (-1 = nemerane)
+  std::set<unsigned long> gotW, gotN; // auta v dosahu, ktore ju dostali cez 802.11p / NR
+  bool gotL = false;                  // aspon jedna RSU ju dostala cez LTE
 };
+
+// NR sidelink bearer vznika az v case nrFrom (autori: 2 s) - CAM poslane cez NR skor sa nemohli dorucit (artefakt
+// nastavenia simulacie, nie vlastnost technologie), do vykonnosti NR podla zataze sa nepocitaju
+inline double &nrFrom () { static double t = 0; return t; }
+
+// vykonnost podla zataze sa zapocita, ked CAM vypadne z evidencie (2 s) alebo na konci behu
+inline void
+finishTx (const Tx &tx)
+{
+  if (tx.lbin[0] >= 0 && (tx.paths & 1))
+    {
+      Perf &p = perf ()[0][tx.lbin[0]];
+      p.cam++;
+      p.exp += tx.inRange.size ();
+      p.rx += tx.gotW.size ();
+    }
+  if (tx.lbin[2] >= 0 && (tx.paths & 4) && tx.t >= nrFrom ())
+    {
+      Perf &p = perf ()[2][tx.lbin[2]];
+      p.cam++;
+      p.exp += tx.inRange.size ();
+      p.rx += tx.gotN.size ();
+    }
+  if (tx.lbin[1] >= 0 && (tx.paths & 2))
+    {
+      Perf &p = perf ()[1][tx.lbin[1]];
+      p.cam++;
+      p.exp++;
+      p.rx += tx.gotL;
+    }
+}
 
 // dorucenie podla vzdialenosti [index po 50 m]: [0] auto-auto ocakavane, [1] prijate, [2] auto-RSU ocakavane, [3] prijate
 inline bool &rangeOn () { static bool b = false; return b; }
@@ -98,10 +221,14 @@ bucket (const Rsu *r, double t)
 }
 
 inline void
-onCamTx (unsigned long sid, double x, double y, long gdt, bool direct = true)
+onCamTx (unsigned long sid, double x, double y, long gdt, bool direct = true, int paths = 0, uint32_t node = UINT32_MAX)
 {
   double t = Simulator::Now ().GetSeconds ();
   Tx tx {t, x, y, gdt, direct, {}, {}, {}};
+  tx.paths = paths;
+  for (int k = 0; k < 3; k++)
+    if (node != UINT32_MAX && loadFn ()[k] && (paths & (1 << k)))
+      tx.lbin[k] = loadBin (loadFn ()[k] (node));
   // susedia do 100 m maju CAM dostat vzdy; ak odisla len cez LTE (direct = false), nedostanu ju -> strata
   (void) direct;
   for (auto &v : vehPos ())
@@ -134,7 +261,10 @@ onCamTx (unsigned long sid, double x, double y, long gdt, bool direct = true)
   std::deque<Tx> &d = lastTx ()[sid];
   d.push_back (tx);
   while (d.size () > 1 && t - d.front ().t > 2.0)
-    d.pop_front ();
+    {
+      finishTx (d.front ());
+      d.pop_front ();
+    }
   for (Rsu *r : rsus ())
     if (std::hypot (x - r->x, y - r->y) <= kRange)
       {
@@ -157,6 +287,12 @@ onCamRx (Rsu *r, unsigned long sid, long gdt, int path = 0)
       double now = Simulator::Now ().GetSeconds ();
       r->latSum[path] += now - tx->t;
       r->latN[path]++;
+      if (path == 1)
+        {
+          tx->gotL = true;
+          if (tx->lbin[1] >= 0)
+            perf ()[1][tx->lbin[1]].lat.add (now - tx->t);
+        }
       if (!tx->got.insert (r).second)
         return; // druha kopia tej istej CAM (DUAL)
       auto fr = tx->farR.find (r);
@@ -194,12 +330,26 @@ onVehCamRx (unsigned long receiver, unsigned long sender, long gdt, int path = 0
           rangeBins ()[1][fv->second]++;
           tx->farV.erase (fv);
         }
+      double now = Simulator::Now ().GetSeconds ();
+      // vykonnost po technologiach: kazda kopia svojou technologiou (prva kopia kazdou)
+      if (tx->inRange.count (receiver))
+        {
+          int k = path == 2 ? 2 : 0;
+          std::set<unsigned long> &got = k == 2 ? tx->gotN : tx->gotW;
+          if (got.insert (receiver).second && tx->lbin[k] >= 0)
+            perf ()[k][tx->lbin[k]].lat.add (now - tx->t);
+        }
       if (tx->pending.erase (receiver))
         {
           v2vRx ()++;
           timeline ()[(int) tx->t][3]++;
-          v2vLatSum ()[path] += Simulator::Now ().GetSeconds () - tx->t;
+          v2vLatSum ()[path] += now - tx->t;
           v2vLatN ()[path]++;
+          auto key = std::make_pair (receiver, sender);
+          auto lr = lastRxT ().find (key);
+          if (lr != lastRxT ().end () && now - lr->second <= 5.0)
+            pir ().add (now - lr->second);
+          lastRxT ()[key] = now;
         }
       return;
     }
@@ -289,6 +439,18 @@ sample ()
         }
     }
   Simulator::Schedule (Seconds (kPeriod), &sample);
+}
+
+// na konci behu: zapocita CAM, ktore este su v evidencii
+inline void
+finishAllTx ()
+{
+  for (auto &e : lastTx ())
+    {
+      for (const Tx &tx : e.second)
+        finishTx (tx);
+      e.second.clear ();
+    }
 }
 
 inline void
