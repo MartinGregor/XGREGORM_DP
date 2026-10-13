@@ -101,7 +101,6 @@ main (int argc, char *argv[])
   std::string policy = "adaptive";
   std::string fail_80211p, fail_lte, fail_nr;
   double hyb_range = 250, hyb_qmin = 0.9, hyb_dwell = 1.0;
-  bool density = true;
   double core_delay_ms = 5; // PGW -> server, ako autori v v2i-trafficManager-LTE
   // NR-V2X (hodnoty z v2v-emergencyVehicleAlert-nrv2x autorov)
   double nr_freq = 5.89e9;
@@ -147,7 +146,6 @@ main (int argc, char *argv[])
   cmd.AddValue ("fail-nr","NR-V2X outage during the run, \"from:to\" [s]",fail_nr);
   cmd.AddValue ("hyb-range","Adaptive: distance to the next traffic light where its controller needs the vehicle [m]",hyb_range);
   cmd.AddValue ("hyb-qmin","Adaptive: lowest share of CAMs confirmed by the RSU to rely on one direct technology",hyb_qmin);
-  cmd.AddValue ("density","Adaptive: density rule P1 - a vehicle without 802.11p neighbours sends also on NR-V2X",density);
   cmd.AddValue ("hyb-dwell","Adaptive: the direct link must be good this long before the backup is switched off [s]",hyb_dwell);
   cmd.AddValue ("core-delay","One-way delay PGW -> server [ms]",core_delay_ms);
   cmd.AddValue ("nr-tx-power","NR-V2X tx power [dBm]",nr_tx_power);
@@ -575,7 +573,6 @@ main (int argc, char *argv[])
   clientHelper.SetAttribute ("XgHybRange", DoubleValue (hyb_range));
   clientHelper.SetAttribute ("XgHybQmin", DoubleValue (hyb_qmin));
   clientHelper.SetAttribute ("XgHybDwell", DoubleValue (hyb_dwell));
-  clientHelper.SetAttribute ("XgDensity", BooleanValue (density));
 
   STARTUP_FCN setupNewNode = [&] (std::string vehicleID,TraciClient::StationTypeTraCI_t stationType) -> Ptr<Node>
     {
@@ -633,15 +630,6 @@ main (int argc, char *argv[])
   // oneskorenie auto -> auto: W = 802.11p, NR = NR-V2X (prva kopia kazdej CAM)
   std::cout << "XGREGORM-V2VLAT,W_SUM:" << xgstats::v2vLatSum ()[0] << ",W_N:" << xgstats::v2vLatN ()[0]
             << ",NR_SUM:" << xgstats::v2vLatSum ()[2] << ",NR_N:" << xgstats::v2vLatN ()[2] << std::endl;
-  // hustota po 1 s: T<s>:vzorky/sum_cbr_e4/max_cbr_e4/sum_nb_w/sum_nb_nr/izolovane/cbr>0.3/cbr>0.6
-  std::cout << "XGREGORM-DENS";
-  for (auto &e : xgstats::densT ())
-    {
-      std::cout << ",T" << e.first << ":";
-      for (int k = 0; k < 8; k++)
-        std::cout << (k ? "/" : "") << e.second[k];
-    }
-  std::cout << std::endl;
   // dorucenie podla vzdialenosti (po 50 m): B<index>:v2v_exp/v2v_rx/ul_exp/ul_rx
   if (range_stats)
     {

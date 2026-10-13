@@ -81,24 +81,6 @@ inline uint64_t *v2vLatN () { static uint64_t n[3] = {0, 0, 0}; return n; }
 // [6] sucet veku informacie RSU [ms], [7] chyba polohy > 10 m
 inline std::map<int, std::array<uint64_t, 8>> &timeline () { static std::map<int, std::array<uint64_t, 8>> m; return m; }
 
-// hustota po 1 s (vzorka = auto kazdych 100 ms): [0] vzorky, [1] sucet CBR x 1e4, [2] max CBR x 1e4,
-// [3] sucet susedov 802.11p, [4] sucet susedov NR, [5] izolovane (0 susedov 802.11p), [6] CBR > 0.3, [7] CBR > 0.6
-inline std::map<int, std::array<uint64_t, 8>> &densT () { static std::map<int, std::array<uint64_t, 8>> m; return m; }
-inline void
-onDensity (double cbr, int nW, int nNr)
-{
-  std::array<uint64_t, 8> &d = densT ()[(int) Simulator::Now ().GetSeconds ()];
-  uint64_t c = (uint64_t) std::lround (cbr * 1e4);
-  d[0]++;
-  d[1] += c;
-  d[2] = std::max (d[2], c);
-  d[3] += nW;
-  d[4] += nNr;
-  d[5] += nW == 0;
-  d[6] += cbr > 0.3;
-  d[7] += cbr > 0.6;
-}
-
 inline std::vector<Rsu *> &rsus () { static std::vector<Rsu *> v; return v; }
 inline std::map<unsigned long, std::deque<Tx>> &lastTx () { static std::map<unsigned long, std::deque<Tx>> m; return m; }
 inline Ptr<TraciClient> &client () { static Ptr<TraciClient> c; return c; }

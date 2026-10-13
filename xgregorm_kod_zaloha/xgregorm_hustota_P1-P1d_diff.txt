@@ -1,0 +1,398 @@
+--- a/src/automotive/examples/xgregorm-hybrid.cc
++++ b/src/automotive/examples/xgregorm-hybrid.cc
+@@ -101,6 +101,7 @@
+   std::string policy = "adaptive";
+   std::string fail_80211p, fail_lte, fail_nr;
+   double hyb_range = 250, hyb_qmin = 0.9, hyb_dwell = 1.0;
++  uint32_t density = 1;
+   double core_delay_ms = 5; // PGW -> server, ako autori v v2i-trafficManager-LTE
+   // NR-V2X (hodnoty z v2v-emergencyVehicleAlert-nrv2x autorov)
+   double nr_freq = 5.89e9;
+@@ -146,10 +147,15 @@
+   cmd.AddValue ("fail-nr","NR-V2X outage during the run, \"from:to\" [s]",fail_nr);
+   cmd.AddValue ("hyb-range","Adaptive: distance to the next traffic light where its controller needs the vehicle [m]",hyb_range);
+   cmd.AddValue ("hyb-qmin","Adaptive: lowest share of CAMs confirmed by the RSU to rely on one direct technology",hyb_qmin);
++  cmd.AddValue ("density","Adaptive density rule: 0 off, 1 P1 (isolated -> +NR), 2 P1b (any vehicle heard only on NR), "
++                "3 P1c (more vehicles heard only on NR than on 802.11p), 4 P1d (P1b while NR channel busy < 0.3)",density);
+   cmd.AddValue ("hyb-dwell","Adaptive: the direct link must be good this long before the backup is switched off [s]",hyb_dwell);
+   cmd.AddValue ("core-delay","One-way delay PGW -> server [ms]",core_delay_ms);
+   cmd.AddValue ("nr-tx-power","NR-V2X tx power [dBm]",nr_tx_power);
+   cmd.AddValue ("nr-mcs","NR-V2X sidelink MCS",nr_mcs);
++  double nr_bw_mhz = 40;
++  cmd.AddValue ("nr-bw","NR-V2X sidelink bandwidth [MHz] (authors 40; band n47 allows 10/20/30/40)",nr_bw_mhz);
++  cmd.AddValue ("nr-numerology","NR-V2X numerology (2 = 60 kHz subcarriers, authors; 1 = 30 kHz)",nr_numerology);
+   cmd.AddValue ("nr-sensing","NR-V2X mode 2: sensing-based resource selection (authors: false)",nr_sensing);
+   cmd.AddValue ("tx-power", "802.11p transmission power [dBm]", txPower);
+   cmd.AddValue ("datarate", "802.11p channel data rate [Mbit/s]", datarate);
+@@ -168,6 +174,7 @@
+                 channel_model);
+   cmd.AddValue ("range-stats","Measure delivery vs. distance (50 m bins up to 1000 m), car-car and car-RSU",range_stats);
+   cmd.Parse (argc, argv);
++  nr_bandwidth = (uint16_t) std::lround (nr_bw_mhz * 10); // jednotky 100 kHz
+   xgstats::rangeOn () = range_stats;
+ 
+   uint32_t paths = (use_80211p ? xghyb::WIFI : 0) | (use_lte ? xghyb::LTE : 0) | (use_nr ? xghyb::NR : 0);
+@@ -458,6 +465,18 @@
+       preconfig.slUeSelectedPreConfig = ueSelected;
+       preconfig.slPreconfigFreqInfoList[0] = freqConfig;
+       nrSlHelper->InstallNrSlPreConfiguration (slDevs, preconfig);
++      // xgregorm: odhad obsadenosti NR kanala (SL-CBR) - kazdy prijaty PSCCH = obsadene subkanaly v jednom slote
++      xghyb::nrSlotsPerSec () = 1000.0 * (1 << nr_numerology);
++      // pocet subkanalov poolu = RB sirky pasma / velkost subkanala (SetSlSubchannelSize (10) nizsie v konfiguracii poolu)
++      xghyb::nrSubch () = DynamicCast<NrUeNetDevice> (slDevs.Get (0))->GetPhy (0)->GetRbNum () / 10;
++      for (uint32_t n = 0; n < slDevs.GetN (); ++n)
++        {
++          uint32_t node = slDevs.Get (n)->GetNode ()->GetId ();
++          DynamicCast<NrUeNetDevice> (slDevs.Get (n))->GetPhy (0)->GetSpectrumPhy ()->TraceConnectWithoutContext (
++              "RxPscchTraceUe", MakeBoundCallback (+[] (uint32_t nd, const SlRxCtrlPacketTraceParams p) {
++                xghyb::nrRx ()[nd].push_back ({Simulator::Now ().GetSeconds (), (int) p.m_lengthSubChannel});
++              }, node));
++        }
+ 
+       int64_t stream = 1000;
+       stream += nrHelper->AssignStreams (slDevs, stream);
+@@ -573,6 +592,7 @@
+   clientHelper.SetAttribute ("XgHybRange", DoubleValue (hyb_range));
+   clientHelper.SetAttribute ("XgHybQmin", DoubleValue (hyb_qmin));
+   clientHelper.SetAttribute ("XgHybDwell", DoubleValue (hyb_dwell));
++  clientHelper.SetAttribute ("XgDensity", UintegerValue (density));
+ 
+   STARTUP_FCN setupNewNode = [&] (std::string vehicleID,TraciClient::StationTypeTraCI_t stationType) -> Ptr<Node>
+     {
+@@ -630,6 +650,19 @@
+   // oneskorenie auto -> auto: W = 802.11p, NR = NR-V2X (prva kopia kazdej CAM)
+   std::cout << "XGREGORM-V2VLAT,W_SUM:" << xgstats::v2vLatSum ()[0] << ",W_N:" << xgstats::v2vLatN ()[0]
+             << ",NR_SUM:" << xgstats::v2vLatSum ()[2] << ",NR_N:" << xgstats::v2vLatN ()[2] << std::endl;
++  // hustota po 1 s: T<s>:vzorky/sum_cbr_e4/max_cbr_e4/sum_nb_w/sum_nb_nr/izolovane/cbr>0.3/cbr>0.6
++  std::cout << "XGREGORM-DENS2,NR_SUBCH:" << xghyb::nrSubch () << ",NR_SLOTS_S:" << xghyb::nrSlotsPerSec ();
++  for (auto &e : xgstats::densT2 ())
++    std::cout << ",T" << e.first << ":" << e.second[0] << "/" << e.second[1] << "/" << e.second[2] << "/" << e.second[3];
++  std::cout << std::endl;
++  std::cout << "XGREGORM-DENS";
++  for (auto &e : xgstats::densT ())
++    {
++      std::cout << ",T" << e.first << ":";
++      for (int k = 0; k < 8; k++)
++        std::cout << (k ? "/" : "") << e.second[k];
++    }
++  std::cout << std::endl;
+   // dorucenie podla vzdialenosti (po 50 m): B<index>:v2v_exp/v2v_rx/ul_exp/ul_rx
+   if (range_stats)
+     {
+--- a/src/automotive/model/Applications/trafficManagerClient80211p.cc
++++ b/src/automotive/model/Applications/trafficManagerClient80211p.cc
+@@ -12,6 +12,9 @@
+ #include "ns3/udp-socket-factory.h" // xgregorm
+ #include "ns3/inet-socket-address.h" // xgregorm
+ #include <sstream> // xgregorm
++#include "ns3/wifi-net-device.h" // xgregorm
++#include "ns3/wifi-phy.h" // xgregorm
++#include "ns3/wifi-phy-state-helper.h" // xgregorm
+ #define XG_ETHERTYPE 0x88B5 // xgregorm: beacon RSU
+ 
+ namespace ns3
+@@ -93,6 +96,13 @@
+             DoubleValue (0.9),
+             MakeDoubleAccessor (&trafficManagerClient80211p::m_hyb_qmin),
+             MakeDoubleChecker<double> (0, 1))
++        .AddAttribute ("XgDensity",
++            "Adaptive hybrid, density rule: 0 off; 1 = P1, a vehicle with no 802.11p neighbour sends its CAMs also on NR-V2X "
++            "(longer range); 2 = P1b, also when it hears a vehicle only on NR (out of 802.11p range); 3 = P1c, also when it "
++            "hears more vehicles only on NR than on 802.11p; 4 = P1d, like P1b while the NR channel busy ratio is below 0.3",
++            UintegerValue (0),
++            MakeUintegerAccessor (&trafficManagerClient80211p::m_xg_density),
++            MakeUintegerChecker<uint32_t> (0, 4))
+         .AddAttribute ("XgHybDwell",
+             "Adaptive hybrid: the direct link must be good this long before the backup path is switched off again [s] (hysteresis)",
+             DoubleValue (1.0),
+@@ -251,6 +261,11 @@
+                 m_nr_beacon_socket->SetRecvCallback (MakeCallback (&trafficManagerClient80211p::xgReceiveBeacon, this));
+               }
+           }
++        // hustota: obsadenost kanala 802.11p z PHY (ako CBR v ETSI DCC: podiel casu, ked je kanal obsadeny)
++        Ptr<WifiNetDevice> wdev = DynamicCast<WifiNetDevice> (GetNode ()->GetDevice (0));
++        if (wdev)
++          wdev->GetPhy ()->GetState ()->TraceConnectWithoutContext (
++              "State", MakeCallback (&trafficManagerClient80211p::xgPhyState, this));
+         // zaciatok: vsetky dostupne cesty (adaptivny rezim to po prvom ticku zuzi)
+         m_hyb_path = m_hyb_base = m_hyb_mask;
+         m_caService.setSocketTx (Create<XgHybridSocket> (m_socket, lte, nr, [this] () { return xgEffectivePath (); }));
+@@ -361,10 +376,61 @@
+           }
+       }
+     if (m_xg_hybrid == 2)
+-      xgHybridDecide ();
++      {
++        xgDensityUpdate ();
++        xgHybridDecide ();
++      }
+     m_xg_tick_ev = Simulator::Schedule (MilliSeconds (100), &trafficManagerClient80211p::xgTick, this);
+   }
+ 
++  void
++  trafficManagerClient80211p::xgPhyState (Time start, Time duration, WifiPhyState state)
++  {
++    // PHY hlasi kazdy ukonceny usek stavu; obsadeny kanal = prijem, vysielanie alebo CCA busy
++    if (state == WifiPhyState::RX || state == WifiPhyState::TX || state == WifiPhyState::CCA_BUSY)
++      m_busy.push_back ({start.GetSeconds (), (start + duration).GetSeconds ()});
++  }
++
++  void
++  trafficManagerClient80211p::xgDensityUpdate ()
++  {
++    // lokalna hustota, ktoru auto samo pozna: susedia, od ktorych za poslednu 1 s prisla CAM (zvlast 802.11p a NR),
++    // a CBR 802.11p za poslednych 100 ms
++    double now = Simulator::Now ().GetSeconds ();
++    for (int k = 0; k < 2; k++)
++      {
++        m_nb_n[k] = 0;
++        for (auto it = m_nb_last[k].begin (); it != m_nb_last[k].end ();)
++          {
++            if (now - it->second > 2.0)
++              {
++                it = m_nb_last[k].erase (it);
++                continue;
++              }
++            m_nb_n[k] += now - it->second <= 1.0;
++            ++it;
++          }
++      }
++    // izolacia pre P1: ziadny sused na 802.11p za 2 s (= 2 x T_GenCamMax: jedna stratena CAM suseda este nie je izolacia)
++    m_nb_isolated = m_nb_last[0].empty ();
++    // susedia, ktorych za 2 s pocujem len cez NR (su mimo dosahu 802.11p)
++    m_nb_nronly = 0;
++    for (const auto &n : m_nb_last[1])
++      m_nb_nronly += m_nb_last[0].find (n.first) == m_nb_last[0].end ();
++    double from = now - 0.1, busy = 0;
++    while (!m_busy.empty () && m_busy.front ().second < from)
++      m_busy.pop_front ();
++    for (const auto &b : m_busy)
++      busy += std::max (0.0, std::min (b.second, now) - std::max (b.first, from));
++    m_cbr = std::min (1.0, busy / 0.1);
++    xgstats::onDensity (m_cbr, m_nb_n[0], m_nb_n[1]);
++    if (m_hyb_mask & xghyb::NR)
++      {
++        m_nr_cbr = xghyb::nrCbr (GetNode ()->GetId ());
++        xgstats::onNrDensity (m_nr_cbr);
++      }
++  }
++
+   int
+   trafficManagerClient80211p::xgEffectivePath ()
+   {
+@@ -455,6 +521,20 @@
+       m_hyb_ok_since = now;
+     if (need && direct && confirmed && (m_hyb_path & xghyb::LTE) && now - m_hyb_ok_since < m_hyb_dwell)
+       path |= avail & xghyb::LTE; // hysterezia: LTE drzime este XgHybDwell s po potvrdeni
++    // P1 (hustota - riedko): auto bez suseda na 802.11p posiela aj cez NR-V2X (dosah ~3x vacsi), aby ho videli
++    // aj vzdialenejsie auta; hned ako sa sused na 802.11p objavi, NR sa prestane pridavat
++    m_ticks++;
++    // P1b: aj ked pocujem aspon jedno auto len cez NR; P1c: ked takych je viac nez susedov na 802.11p
++    bool sparse = m_nb_isolated || (m_xg_density == 2 && m_nb_nronly > 0)
++                  || (m_xg_density == 3 && m_nb_nronly > (int) m_nb_last[0].size ())
++                  // P1d (kompromis): ako P1b, ale len kym NR kanal nie je zatazeny (prah 0.3 = hranica ETSI DCC
++                  // relaxed/active, TS 102 687); pri zatazeni ostava len P1 (izolovane auto)
++                  || (m_xg_density == 4 && m_nb_nronly > 0 && m_nr_cbr < 0.3);
++    if (m_xg_density && (path & xghyb::WIFI) && (avail & xghyb::NR) && sparse)
++      {
++        path |= xghyb::NR;
++        m_p1_ticks++;
++      }
+     // prepnutie = zmena zvolenych technologii (skuska 802.11p sa za prepnutie nepocita)
+     if (path != m_hyb_base)
+       m_hyb_switch++;
+@@ -537,7 +617,8 @@
+           std::cout << "XGREGORM-HYB," << m_id;
+           for (int m = 0; m < 8; m++)
+             std::cout << ",P" << m << ":" << m_hyb_cnt[m];
+-          std::cout << ",SWITCH:" << m_hyb_switch << ",PROBE:" << m_hyb_probes << std::endl;
++          std::cout << ",SWITCH:" << m_hyb_switch << ",PROBE:" << m_hyb_probes << ",TICKS:" << m_ticks
++                    << ",ISO:" << m_p1_ticks << std::endl;
+         }
+       std::cout << "XGREGORM-GAP," << m_id << ",MIN:" << (m_gap_min < 1e8 ? m_gap_min * 1000 : -1)
+                 << ",MAX:" << m_gap_max * 1000 << ",LT100:" << m_gap_low << ",GT1000:" << m_gap_high << std::endl;
+@@ -569,6 +650,8 @@
+     // xgregorm: skutocne PRR medzi autami (len meranie)
+     unsigned long sender = asn1cpp::getField (cam->header.stationId, unsigned long);
+     if (sender < 1000000)
++      m_nb_last[InetSocketAddress::IsMatchingType (from) ? 1 : 0][sender] = Simulator::Now ().GetSeconds ();
++    if (sender < 1000000)
+       xgstats::onVehCamRx (m_sid, sender, asn1cpp::getField (cam->cam.generationDeltaTime, long),
+                            InetSocketAddress::IsMatchingType (from) ? 2 : 0); // UDP = NR-V2X
+   }
+--- a/src/automotive/model/Applications/trafficManagerClient80211p.h
++++ b/src/automotive/model/Applications/trafficManagerClient80211p.h
+@@ -14,6 +14,8 @@
+ #include <map> // xgregorm
+ #include <array> // xgregorm
+ #include <set> // xgregorm
++#include <deque> // xgregorm
++#include "ns3/wifi-phy-state.h" // xgregorm
+ 
+ namespace ns3 {
+ 
+@@ -74,6 +76,8 @@
+   bool xgRelevant ();
+   void xgHybridDecide ();
+   int xgEffectivePath ();
++  void xgPhyState (Time start, Time duration, WifiPhyState state);
++  void xgDensityUpdate ();
+   void xgCount (uint64_t &counter);
+   unsigned long m_sid = 0;
+   bool m_xg_relax = false;
+@@ -93,6 +97,16 @@
+   bool m_on_approach = false;          //!< auto je na ceste, ktoru riadi najblizsi semafor
+   std::map<std::string, std::set<std::string>> m_tls_approach; //!< semafor -> jeho prijazdove cesty
+   int m_hyb_path = 1;                  //!< maska ciest aktualnej CAM (xghyb::Path)
++  // hustota (bod 3): susedia podla technologie a zataz kanala 802.11p (CBR podla ETSI TS 102 687)
++  std::map<unsigned long, double> m_nb_last[2]; //!< [0] 802.11p, [1] NR-V2X: sused -> cas poslednej prijatej CAM
++  std::deque<std::pair<double, double>> m_busy; //!< obsadene intervaly kanala 802.11p (RX, TX, CCA) [s]
++  double m_cbr = 0;                    //!< CBR 802.11p za poslednych 100 ms
++  double m_nr_cbr = 0;                 //!< odhad SL-CBR NR-V2X za poslednych 100 ms
++  int m_nb_n[2] = {0, 0};              //!< pocet susedov za poslednu 1 s: [0] 802.11p, [1] NR
++  bool m_nb_isolated = true;           //!< ziadny sused na 802.11p za 2 s (P1)
++  uint32_t m_xg_density = 0;           //!< pravidlo hustoty: 0 vyp., 1 P1 (izolovane), 2 P1b, 3 P1c
++  int m_nb_nronly = 0;                 //!< susedia za 2 s pocuti len cez NR (mimo dosahu 802.11p)
++  uint64_t m_ticks = 0, m_p1_ticks = 0; //!< rozhodnutia spolu / s pridanym NR kvoli izolacii (P1)
+   double m_hyb_need_t = -10;           //!< kedy auto naposledy potreboval radic (dobeh LTE po opusteni prijazdu)
+   int m_hyb_base = 1;                  //!< zvolena kombinacia bez skusky 802.11p (pocitanie prepnuti)
+   struct HybLink { double last = -10, q = 1.0, eval = -1; };
+--- a/src/automotive/model/Applications/xgregorm-stats.h
++++ b/src/automotive/model/Applications/xgregorm-stats.h
+@@ -81,6 +81,37 @@
+ // [6] sucet veku informacie RSU [ms], [7] chyba polohy > 10 m
+ inline std::map<int, std::array<uint64_t, 8>> &timeline () { static std::map<int, std::array<uint64_t, 8>> m; return m; }
+ 
++// hustota po 1 s (vzorka = auto kazdych 100 ms): [0] vzorky, [1] sucet CBR x 1e4, [2] max CBR x 1e4,
++// [3] sucet susedov 802.11p, [4] sucet susedov NR, [5] izolovane (0 susedov 802.11p), [6] CBR > 0.3, [7] CBR > 0.6
++inline std::map<int, std::array<uint64_t, 8>> &densT () { static std::map<int, std::array<uint64_t, 8>> m; return m; }
++inline void
++onDensity (double cbr, int nW, int nNr)
++{
++  std::array<uint64_t, 8> &d = densT ()[(int) Simulator::Now ().GetSeconds ()];
++  uint64_t c = (uint64_t) std::lround (cbr * 1e4);
++  d[0]++;
++  d[1] += c;
++  d[2] = std::max (d[2], c);
++  d[3] += nW;
++  d[4] += nNr;
++  d[5] += nW == 0;
++  d[6] += cbr > 0.3;
++  d[7] += cbr > 0.6;
++}
++
++// obsadenost NR po 1 s: [0] vzorky, [1] sucet NR-CBR x 1e4, [2] max x 1e4, [3] NR-CBR > 0.3
++inline std::map<int, std::array<uint64_t, 4>> &densT2 () { static std::map<int, std::array<uint64_t, 4>> m; return m; }
++inline void
++onNrDensity (double cbr)
++{
++  std::array<uint64_t, 4> &d = densT2 ()[(int) Simulator::Now ().GetSeconds ()];
++  uint64_t c = (uint64_t) std::lround (cbr * 1e4);
++  d[0]++;
++  d[1] += c;
++  d[2] = std::max (d[2], c);
++  d[3] += cbr > 0.3;
++}
++
+ inline std::vector<Rsu *> &rsus () { static std::vector<Rsu *> v; return v; }
+ inline std::map<unsigned long, std::deque<Tx>> &lastTx () { static std::map<unsigned long, std::deque<Tx>> m; return m; }
+ inline Ptr<TraciClient> &client () { static Ptr<TraciClient> c; return c; }
+--- a/src/automotive/model/Applications/xgregorm-hybrid-socket.h
++++ b/src/automotive/model/Applications/xgregorm-hybrid-socket.h
+@@ -19,6 +19,7 @@
+ #include <array>
+ #include <vector>
+ #include <sstream>
++#include <deque>
+ 
+ namespace ns3 {
+ 
+@@ -58,6 +59,27 @@
+ // casova os: pocet CAM za sekundu podla kombinacie ciest, ktorymi naozaj odisli (index = maska 0..7)
+ inline std::map<int, std::array<uint64_t, 8>> &timeline () { static std::map<int, std::array<uint64_t, 8>> m; return m; }
+ 
++// obsadenost NR-V2X kanala (odhad SL-CBR podla 3GPP: podiel obsadenych subkanalov x slotov za 100 ms): pre kazdy uzol
++// zaznam prijatych riadiacich prenosov (PSCCH) - cas [s] a pocet obsadenych subkanalov; plni xgregorm-hybrid.cc z NR PHY
++inline std::map<uint32_t, std::deque<std::pair<double, int>>> &nrRx () { static std::map<uint32_t, std::deque<std::pair<double, int>>> m; return m; }
++inline int &nrSubch () { static int n = 0; return n; }             // subkanaly v poole
++inline double &nrSlotsPerSec () { static double n = 0; return n; } // sidelink sloty za sekundu
++inline double
++nrCbr (uint32_t node)
++{
++  auto it = nrRx ().find (node);
++  if (it == nrRx ().end () || nrSubch () == 0 || nrSlotsPerSec () == 0)
++    return 0;
++  double now = Simulator::Now ().GetSeconds ();
++  std::deque<std::pair<double, int>> &d = it->second;
++  while (!d.empty () && d.front ().first < now - 0.1)
++    d.pop_front ();
++  double used = 0;
++  for (const auto &e : d)
++    used += e.second;
++  return std::min (1.0, used / (nrSubch () * nrSlotsPerSec () * 0.1));
++}
++
+ // zariadenie daneho typu na uzle (napr. "ns3::NrUeNetDevice"), bez zavislosti modulu automotive na nr
+ inline Ptr<NetDevice>
+ findDevice (Ptr<Node> node, const std::string &type)
+--- a/xgregorm_gen_scenario.py
++++ b/xgregorm_gen_scenario.py
+@@ -107,6 +107,13 @@
+ ap.add_argument("--enb-isd", type=float, default=500, help="hybrid: LTE inter-site distance [m] (3GPP urban macro 500 m)")
+ ap.add_argument("--lte-ue-power", type=float, default=10,
+                 help="hybrid: LTE UE max tx power [dBm] (ns-3 default 10, real UE power class 3 = 23)")
++ap.add_argument("--density", type=int, default=1, choices=[0, 1, 2, 3, 4],
++                help="hybrid adaptive density rule: 1 = P1, a vehicle with no 802.11p neighbour sends its CAMs also on NR-V2X; "
++                     "2 = P1b, also when it hears any vehicle only on NR; 3 = P1c, when it hears more vehicles only on NR "
++                     "than on 802.11p; 4 = P1d, like P1b while the NR channel busy ratio is below 0.3; 0 = off")
++ap.add_argument("--nr-bw", type=float, default=40, help="hybrid: NR-V2X sidelink bandwidth [MHz] (authors 40)")
++ap.add_argument("--nr-numerology", type=int, default=2, choices=[0, 1, 2],
++                help="hybrid: NR-V2X numerology (2 = 60 kHz, authors; 1 = 30 kHz)")
+ ap.add_argument("--range-stats", type=int, default=0, choices=[0, 1],
+                 help="hybrid: measure delivery vs. distance (50 m bins up to 1000 m), car->car and car->RSU")
+ ap.add_argument("--nr-sensing", type=int, default=0, choices=[0, 1],
+@@ -418,6 +425,7 @@
+        f" --beacon-ms={a.beacon_ms} --nr-sensing={'true' if a.nr_sensing else 'false'}"
+        f" --range-stats={'true' if a.range_stats else 'false'} --channel={a.channel}"
+        f" --enb={a.enb} --enb-isd={a.enb_isd} --lte-ue-power={a.lte_ue_power}"
++       f" --density={a.density} --nr-bw={a.nr_bw} --nr-numerology={a.nr_numerology}"
+        + "".join(f" --use-{t}={'true' if t in TECH else 'false'}" for t in ("80211p", "lte", "nr"))
+        + f" --policy={a.policy}"
+        + "".join(f" --fail-{t}={v}" for t, v in (("80211p", a.fail_80211p), ("lte", a.fail_lte), ("nr", a.fail_nr)) if v)
+@@ -717,6 +725,9 @@
+                 f"{combo(m)} {100 * H(f'P{m}') / ht:.1f} %" for m in range(8) if H(f"P{m}")))
+             print(f"    CAMs per technology        : 802.11p {on(1)}, LTE {on(2)} ({on(2) / max(a.sim_time, 1):.1f}/s "
+                   f"cellular uplink), NR {on(4)}; path switches {H('SWITCH')}, probes of 802.11p {H('PROBE')}")
++            if H("TICKS"):
++                print(f"    density rule P1            : NR added for isolation in {100 * H('ISO') / H('TICKS'):.1f} % of decisions"
++                      f"{'' if a.density else ' (P1 off)'}")
+             print(f"    relayed by the server      : {relay.group(1) if relay else 'n/a'} CAMs to the RSUs over the backhaul")
+             print(f"    latency vehicle -> RSU     : 802.11p {lat[0]:.2f} ms ({S_('LAT_W_N'):.0f}), LTE + core + backhaul "
+                   f"{lat[1]:.2f} ms ({S_('LAT_L_N'):.0f}, every RSU gets each relayed CAM), NR {lat[2]:.2f} ms ({S_('LAT_N_N'):.0f})")
+@@ -758,6 +769,26 @@
+                        or (l[4] - l[5] and l[6] / 1000 / (l[4] - l[5]) > 1.5)]
+                 print(f"    seconds with uplink or car->car < 90 % or RSU info older than 1.5 s: "
+                       f"{', '.join(map(str, bad)) if bad else 'none'}")
++            dn = re.search(r"XGREGORM-DENS,(.*)", vystup)
++            if dn:
++                # local density as every vehicle sees it (every 100 ms): neighbours heard in the last 1 s and the
++                # 802.11p channel busy ratio (CBR, ETSI TS 102 687 DCC: > 0.3 active, > 0.6 restrictive)
++                dd = [[int(x) for x in c.split("/")] for _, c in re.findall(r"T(\d+):([\d/]+)", dn.group(1))]
++                n = max(sum(d[0] for d in dd), 1)
++                per_s = [d[1] / 1e4 / d[0] for d in dd if d[0]]
++                print(f"    density (per vehicle)      : neighbours heard 802.11p {sum(d[3] for d in dd) / n:.1f}, NR "
++                      f"{sum(d[4] for d in dd) / n:.1f}; isolated (no 802.11p neighbour) {100 * sum(d[5] for d in dd) / n:.1f} %")
++                print(f"    802.11p CBR                : mean {sum(d[1] for d in dd) / 1e4 / n:.3f}, worst second "
++                      f"{max(per_s or [0]):.3f}, max sample {max([d[2] for d in dd] or [0]) / 1e4:.3f}; samples > 0.3: "
++                      f"{100 * sum(d[6] for d in dd) / n:.2f} %, > 0.6: {100 * sum(d[7] for d in dd) / n:.2f} %")
++            d2 = re.search(r"XGREGORM-DENS2,NR_SUBCH:(\d+),NR_SLOTS_S:([\d.]+)(.*)", vystup)
++            if d2:
++                dd = [[int(x) for x in c.split("/")] for _, c in re.findall(r"T(\d+):([\d/]+)", d2.group(3))]
++                n = max(sum(d[0] for d in dd), 1)
++                per_s = [d[1] / 1e4 / d[0] for d in dd if d[0]]
++                print(f"    NR-V2X channel busy (est.) : mean {sum(d[1] for d in dd) / 1e4 / n:.3f}, worst second "
++                      f"{max(per_s or [0]):.3f}, max sample {max([d[2] for d in dd] or [0]) / 1e4:.3f}; samples > 0.3: "
++                      f"{100 * sum(d[3] for d in dd) / n:.2f} % (pool {d2.group(1)} subchannels x {float(d2.group(2)):.0f} slots/s)")
+             rg = re.search(r"XGREGORM-RANGE,(.*)", vystup)
+             if rg:
+                 # delivery vs. distance: share of CAMs received (first copy) by vehicles / RSUs at that distance

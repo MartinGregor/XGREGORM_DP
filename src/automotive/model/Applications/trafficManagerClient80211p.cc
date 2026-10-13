@@ -12,9 +12,6 @@
 #include "ns3/udp-socket-factory.h" // xgregorm
 #include "ns3/inet-socket-address.h" // xgregorm
 #include <sstream> // xgregorm
-#include "ns3/wifi-net-device.h" // xgregorm
-#include "ns3/wifi-phy.h" // xgregorm
-#include "ns3/wifi-phy-state-helper.h" // xgregorm
 #define XG_ETHERTYPE 0x88B5 // xgregorm: beacon RSU
 
 namespace ns3
@@ -96,11 +93,6 @@ namespace ns3
             DoubleValue (0.9),
             MakeDoubleAccessor (&trafficManagerClient80211p::m_hyb_qmin),
             MakeDoubleChecker<double> (0, 1))
-        .AddAttribute ("XgDensity",
-            "Adaptive hybrid, density rule P1: a vehicle with no 802.11p neighbour sends its CAMs also on NR-V2X (longer range)",
-            BooleanValue (false),
-            MakeBooleanAccessor (&trafficManagerClient80211p::m_xg_density),
-            MakeBooleanChecker ())
         .AddAttribute ("XgHybDwell",
             "Adaptive hybrid: the direct link must be good this long before the backup path is switched off again [s] (hysteresis)",
             DoubleValue (1.0),
@@ -259,11 +251,6 @@ namespace ns3
                 m_nr_beacon_socket->SetRecvCallback (MakeCallback (&trafficManagerClient80211p::xgReceiveBeacon, this));
               }
           }
-        // hustota: obsadenost kanala 802.11p z PHY (ako CBR v ETSI DCC: podiel casu, ked je kanal obsadeny)
-        Ptr<WifiNetDevice> wdev = DynamicCast<WifiNetDevice> (GetNode ()->GetDevice (0));
-        if (wdev)
-          wdev->GetPhy ()->GetState ()->TraceConnectWithoutContext (
-              "State", MakeCallback (&trafficManagerClient80211p::xgPhyState, this));
         // zaciatok: vsetky dostupne cesty (adaptivny rezim to po prvom ticku zuzi)
         m_hyb_path = m_hyb_base = m_hyb_mask;
         m_caService.setSocketTx (Create<XgHybridSocket> (m_socket, lte, nr, [this] () { return xgEffectivePath (); }));
@@ -374,50 +361,8 @@ namespace ns3
           }
       }
     if (m_xg_hybrid == 2)
-      {
-        xgDensityUpdate ();
-        xgHybridDecide ();
-      }
+      xgHybridDecide ();
     m_xg_tick_ev = Simulator::Schedule (MilliSeconds (100), &trafficManagerClient80211p::xgTick, this);
-  }
-
-  void
-  trafficManagerClient80211p::xgPhyState (Time start, Time duration, WifiPhyState state)
-  {
-    // PHY hlasi kazdy ukonceny usek stavu; obsadeny kanal = prijem, vysielanie alebo CCA busy
-    if (state == WifiPhyState::RX || state == WifiPhyState::TX || state == WifiPhyState::CCA_BUSY)
-      m_busy.push_back ({start.GetSeconds (), (start + duration).GetSeconds ()});
-  }
-
-  void
-  trafficManagerClient80211p::xgDensityUpdate ()
-  {
-    // lokalna hustota, ktoru auto samo pozna: susedia, od ktorych za poslednu 1 s prisla CAM (zvlast 802.11p a NR),
-    // a CBR 802.11p za poslednych 100 ms
-    double now = Simulator::Now ().GetSeconds ();
-    for (int k = 0; k < 2; k++)
-      {
-        m_nb_n[k] = 0;
-        for (auto it = m_nb_last[k].begin (); it != m_nb_last[k].end ();)
-          {
-            if (now - it->second > 2.0)
-              {
-                it = m_nb_last[k].erase (it);
-                continue;
-              }
-            m_nb_n[k] += now - it->second <= 1.0;
-            ++it;
-          }
-      }
-    // izolacia pre P1: ziadny sused na 802.11p za 2 s (= 2 x T_GenCamMax: jedna stratena CAM suseda este nie je izolacia)
-    m_nb_isolated = m_nb_last[0].empty ();
-    double from = now - 0.1, busy = 0;
-    while (!m_busy.empty () && m_busy.front ().second < from)
-      m_busy.pop_front ();
-    for (const auto &b : m_busy)
-      busy += std::max (0.0, std::min (b.second, now) - std::max (b.first, from));
-    m_cbr = std::min (1.0, busy / 0.1);
-    xgstats::onDensity (m_cbr, m_nb_n[0], m_nb_n[1]);
   }
 
   int
@@ -510,14 +455,6 @@ namespace ns3
       m_hyb_ok_since = now;
     if (need && direct && confirmed && (m_hyb_path & xghyb::LTE) && now - m_hyb_ok_since < m_hyb_dwell)
       path |= avail & xghyb::LTE; // hysterezia: LTE drzime este XgHybDwell s po potvrdeni
-    // P1 (hustota - riedko): auto bez suseda na 802.11p posiela aj cez NR-V2X (dosah ~3x vacsi), aby ho videli
-    // aj vzdialenejsie auta; hned ako sa sused na 802.11p objavi, NR sa prestane pridavat
-    m_ticks++;
-    if (m_xg_density && (path & xghyb::WIFI) && (avail & xghyb::NR) && m_nb_isolated)
-      {
-        path |= xghyb::NR;
-        m_p1_ticks++;
-      }
     // prepnutie = zmena zvolenych technologii (skuska 802.11p sa za prepnutie nepocita)
     if (path != m_hyb_base)
       m_hyb_switch++;
@@ -600,8 +537,7 @@ namespace ns3
           std::cout << "XGREGORM-HYB," << m_id;
           for (int m = 0; m < 8; m++)
             std::cout << ",P" << m << ":" << m_hyb_cnt[m];
-          std::cout << ",SWITCH:" << m_hyb_switch << ",PROBE:" << m_hyb_probes << ",TICKS:" << m_ticks
-                    << ",ISO:" << m_p1_ticks << std::endl;
+          std::cout << ",SWITCH:" << m_hyb_switch << ",PROBE:" << m_hyb_probes << std::endl;
         }
       std::cout << "XGREGORM-GAP," << m_id << ",MIN:" << (m_gap_min < 1e8 ? m_gap_min * 1000 : -1)
                 << ",MAX:" << m_gap_max * 1000 << ",LT100:" << m_gap_low << ",GT1000:" << m_gap_high << std::endl;
@@ -632,8 +568,6 @@ namespace ns3
     (void) from; // Contains the address from which the CAM has been received
     // xgregorm: skutocne PRR medzi autami (len meranie)
     unsigned long sender = asn1cpp::getField (cam->header.stationId, unsigned long);
-    if (sender < 1000000)
-      m_nb_last[InetSocketAddress::IsMatchingType (from) ? 1 : 0][sender] = Simulator::Now ().GetSeconds ();
     if (sender < 1000000)
       xgstats::onVehCamRx (m_sid, sender, asn1cpp::getField (cam->cam.generationDeltaTime, long),
                            InetSocketAddress::IsMatchingType (from) ? 2 : 0); // UDP = NR-V2X

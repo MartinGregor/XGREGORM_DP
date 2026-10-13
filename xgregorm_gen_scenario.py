@@ -107,9 +107,6 @@ ap.add_argument("--enb", type=int, default=1,
 ap.add_argument("--enb-isd", type=float, default=500, help="hybrid: LTE inter-site distance [m] (3GPP urban macro 500 m)")
 ap.add_argument("--lte-ue-power", type=float, default=10,
                 help="hybrid: LTE UE max tx power [dBm] (ns-3 default 10, real UE power class 3 = 23)")
-ap.add_argument("--density", type=int, default=1, choices=[0, 1],
-                help="hybrid adaptive: density rule P1 - a vehicle with no 802.11p neighbour sends its CAMs also on NR-V2X "
-                     "(0 = off, for comparison)")
 ap.add_argument("--range-stats", type=int, default=0, choices=[0, 1],
                 help="hybrid: measure delivery vs. distance (50 m bins up to 1000 m), car->car and car->RSU")
 ap.add_argument("--nr-sensing", type=int, default=0, choices=[0, 1],
@@ -421,7 +418,6 @@ HYB = (f"{TM} --tls-radius={a.tls_radius}"
        f" --beacon-ms={a.beacon_ms} --nr-sensing={'true' if a.nr_sensing else 'false'}"
        f" --range-stats={'true' if a.range_stats else 'false'} --channel={a.channel}"
        f" --enb={a.enb} --enb-isd={a.enb_isd} --lte-ue-power={a.lte_ue_power}"
-       f" --density={'true' if a.density else 'false'}"
        + "".join(f" --use-{t}={'true' if t in TECH else 'false'}" for t in ("80211p", "lte", "nr"))
        + f" --policy={a.policy}"
        + "".join(f" --fail-{t}={v}" for t, v in (("80211p", a.fail_80211p), ("lte", a.fail_lte), ("nr", a.fail_nr)) if v)
@@ -721,9 +717,6 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
                 f"{combo(m)} {100 * H(f'P{m}') / ht:.1f} %" for m in range(8) if H(f"P{m}")))
             print(f"    CAMs per technology        : 802.11p {on(1)}, LTE {on(2)} ({on(2) / max(a.sim_time, 1):.1f}/s "
                   f"cellular uplink), NR {on(4)}; path switches {H('SWITCH')}, probes of 802.11p {H('PROBE')}")
-            if H("TICKS"):
-                print(f"    density rule P1            : NR added for isolation in {100 * H('ISO') / H('TICKS'):.1f} % of decisions"
-                      f"{'' if a.density else ' (P1 off)'}")
             print(f"    relayed by the server      : {relay.group(1) if relay else 'n/a'} CAMs to the RSUs over the backhaul")
             print(f"    latency vehicle -> RSU     : 802.11p {lat[0]:.2f} ms ({S_('LAT_W_N'):.0f}), LTE + core + backhaul "
                   f"{lat[1]:.2f} ms ({S_('LAT_L_N'):.0f}, every RSU gets each relayed CAM), NR {lat[2]:.2f} ms ({S_('LAT_N_N'):.0f})")
@@ -765,18 +758,6 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
                        or (l[4] - l[5] and l[6] / 1000 / (l[4] - l[5]) > 1.5)]
                 print(f"    seconds with uplink or car->car < 90 % or RSU info older than 1.5 s: "
                       f"{', '.join(map(str, bad)) if bad else 'none'}")
-            dn = re.search(r"XGREGORM-DENS,(.*)", vystup)
-            if dn:
-                # local density as every vehicle sees it (every 100 ms): neighbours heard in the last 1 s and the
-                # 802.11p channel busy ratio (CBR, ETSI TS 102 687 DCC: > 0.3 active, > 0.6 restrictive)
-                dd = [[int(x) for x in c.split("/")] for _, c in re.findall(r"T(\d+):([\d/]+)", dn.group(1))]
-                n = max(sum(d[0] for d in dd), 1)
-                per_s = [d[1] / 1e4 / d[0] for d in dd if d[0]]
-                print(f"    density (per vehicle)      : neighbours heard 802.11p {sum(d[3] for d in dd) / n:.1f}, NR "
-                      f"{sum(d[4] for d in dd) / n:.1f}; isolated (no 802.11p neighbour) {100 * sum(d[5] for d in dd) / n:.1f} %")
-                print(f"    802.11p CBR                : mean {sum(d[1] for d in dd) / 1e4 / n:.3f}, worst second "
-                      f"{max(per_s or [0]):.3f}, max sample {max([d[2] for d in dd] or [0]) / 1e4:.3f}; samples > 0.3: "
-                      f"{100 * sum(d[6] for d in dd) / n:.2f} %, > 0.6: {100 * sum(d[7] for d in dd) / n:.2f} %")
             rg = re.search(r"XGREGORM-RANGE,(.*)", vystup)
             if rg:
                 # delivery vs. distance: share of CAMs received (first copy) by vehicles / RSUs at that distance

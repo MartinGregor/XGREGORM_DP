@@ -14,8 +14,6 @@
 #include <map> // xgregorm
 #include <array> // xgregorm
 #include <set> // xgregorm
-#include <deque> // xgregorm
-#include "ns3/wifi-phy-state.h" // xgregorm
 
 namespace ns3 {
 
@@ -76,8 +74,6 @@ private:
   bool xgRelevant ();
   void xgHybridDecide ();
   int xgEffectivePath ();
-  void xgPhyState (Time start, Time duration, WifiPhyState state);
-  void xgDensityUpdate ();
   void xgCount (uint64_t &counter);
   unsigned long m_sid = 0;
   bool m_xg_relax = false;
@@ -97,14 +93,6 @@ private:
   bool m_on_approach = false;          //!< auto je na ceste, ktoru riadi najblizsi semafor
   std::map<std::string, std::set<std::string>> m_tls_approach; //!< semafor -> jeho prijazdove cesty
   int m_hyb_path = 1;                  //!< maska ciest aktualnej CAM (xghyb::Path)
-  // hustota (bod 3): susedia podla technologie a zataz kanala 802.11p (CBR podla ETSI TS 102 687)
-  std::map<unsigned long, double> m_nb_last[2]; //!< [0] 802.11p, [1] NR-V2X: sused -> cas poslednej prijatej CAM
-  std::deque<std::pair<double, double>> m_busy; //!< obsadene intervaly kanala 802.11p (RX, TX, CCA) [s]
-  double m_cbr = 0;                    //!< CBR 802.11p za poslednych 100 ms
-  int m_nb_n[2] = {0, 0};              //!< pocet susedov za poslednu 1 s: [0] 802.11p, [1] NR
-  bool m_nb_isolated = true;           //!< ziadny sused na 802.11p za 2 s (P1)
-  bool m_xg_density = false;           //!< P1: izolovane auto posiela aj cez NR
-  uint64_t m_ticks = 0, m_p1_ticks = 0; //!< rozhodnutia spolu / s pridanym NR kvoli izolacii (P1)
   double m_hyb_need_t = -10;           //!< kedy auto naposledy potreboval radic (dobeh LTE po opusteni prijazdu)
   int m_hyb_base = 1;                  //!< zvolena kombinacia bez skusky 802.11p (pocitanie prepnuti)
   struct HybLink { double last = -10, q = 1.0, eval = -1; };
