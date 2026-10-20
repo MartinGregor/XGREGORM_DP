@@ -44,11 +44,37 @@
 #include "ns3/lte-rlc-tag.h"
 #include <algorithm>
 #include <bitset>
+#include <limits>
+#include <ns3/tag.h>
 
 namespace ns3 {
 
 NS_LOG_COMPONENT_DEFINE ("NrUeMac");
 NS_OBJECT_ENSURE_REGISTERED (NrUeMac);
+
+// xgregorm: SCI stage 2 nesie zo zdrojoveho L2 ID len 8 bitov (3GPP TS 38.212); zvysnych 16 bitov je v realite
+// v MAC hlavicke SL-SCH, ktoru model nema. Pri > 255 NR zariadeniach sa ID opakovali (IMSI 256 -> 0 -> NS_ABORT
+// v LteUeRrc::AddNrSlDrb; IMSI 1 a 257 zdielali prijimaciu RLC entitu -> zle poskladane pakety). Plne 24-bitove ID
+// sa preto prenasa ako znacka paketu SCI (namiesto chybajucej MAC hlavicky) - velkost ani obsah vysielania sa nemeni.
+class XgSlSrcL2IdTag : public Tag
+{
+public:
+  XgSlSrcL2IdTag (uint32_t id = 0) : m_id (id) {}
+  static TypeId GetTypeId (void)
+  {
+    static TypeId tid = TypeId ("ns3::XgSlSrcL2IdTag").SetParent<Tag> ().SetGroupName ("Nr").AddConstructor<XgSlSrcL2IdTag> ();
+    return tid;
+  }
+  TypeId GetInstanceTypeId (void) const override { return GetTypeId (); }
+  uint32_t GetSerializedSize (void) const override { return 4; }
+  void Serialize (TagBuffer i) const override { i.WriteU32 (m_id); }
+  void Deserialize (TagBuffer i) override { m_id = i.ReadU32 (); }
+  void Print (std::ostream &os) const override { os << "srcL2Id=" << m_id; }
+  uint32_t Get () const { return m_id; }
+private:
+  uint32_t m_id;
+};
+NS_OBJECT_ENSURE_REGISTERED (XgSlSrcL2IdTag);
 
 uint8_t NrUeMac::g_raPreambleId = 0;
 
@@ -1557,6 +1583,7 @@ NrUeMac::DoReceivePsschPhyPdu (Ptr<PacketBurst> pdu)
   //Separate SCI stage 2 packet from data packets
   std::list <Ptr<Packet> > dataPkts;
   bool foundSci2 = false;
+  uint32_t xgFullSrcL2Id = std::numeric_limits<uint32_t>::max (); // xgregorm
   for (auto packet : pdu->GetPackets ())
     {
       LteRadioBearerTag tag;
@@ -1566,6 +1593,9 @@ NrUeMac::DoReceivePsschPhyPdu (Ptr<PacketBurst> pdu)
           //not have the tag
           packet->RemoveHeader (sciF2a);
           foundSci2 = true;
+          XgSlSrcL2IdTag xgSrc; // xgregorm: plne zdrojove L2 ID (viz XgSlSrcL2IdTag)
+          if (packet->PeekPacketTag (xgSrc))
+            xgFullSrcL2Id = xgSrc.Get ();
         }
       else
         {
@@ -1596,7 +1626,8 @@ NrUeMac::DoReceivePsschPhyPdu (Ptr<PacketBurst> pdu)
       //packet.
       SidelinkLcIdentifier identifier;
       identifier.lcId = tag.GetLcid ();
-      identifier.srcL2Id = sciF2a.GetSrcId ();
+      // xgregorm: plne 24-bitove ID odosielatela (inak len 8 bitov zo SCI 2)
+      identifier.srcL2Id = xgFullSrcL2Id != std::numeric_limits<uint32_t>::max () ? xgFullSrcL2Id : sciF2a.GetSrcId ();
       identifier.dstL2Id = sciF2a.GetDstId ();
 
       std::map <SidelinkLcIdentifier, SlLcInfoUeMac>::iterator it = m_nrSlLcInfoMap.find (identifier);
@@ -1843,6 +1874,7 @@ NrUeMac::DoNrSlSlotIndication (const SfnSf& sfn)
           sciF2a.SetCastType (NrSlSciF2aHeader::Broadcast);
           Ptr<Packet> pktSciF02 = Create<Packet> ();
           pktSciF02->AddHeader (sciF2a);
+          pktSciF02->AddPacketTag (XgSlSrcL2IdTag (m_srcL2Id)); // xgregorm: plne zdrojove L2 ID
           //put SCI stage 2 in PSSCH queue
           m_nrSlUePhySapProvider->SendPsschMacPdu (pktSciF02);
 

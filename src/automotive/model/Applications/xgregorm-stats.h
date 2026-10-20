@@ -135,6 +135,12 @@ struct Perf
   Hist lat;
 };
 inline std::array<std::array<Perf, kLoadBins>, 3> &perf () { static std::array<std::array<Perf, kLoadBins>, 3> a; return a; }
+// priebezny vypis hybridu: uzol auta -> funkcia vracajuca masku ciest, ktorymi by prave odisla CAM (bez skusky 802.11p)
+inline std::map<uint32_t, std::function<int ()>> &pathNow () { static std::map<uint32_t, std::function<int ()>> m; return m; }
+// uzol auta -> maska priamych technologii, ktorymi je auto "pripojene" k infrastrukture (pocul RSU za poslednu 1 s);
+// pripojenie k LTE (RRC CONNECTED) urcuje xgregorm-hybrid.cc
+inline std::map<uint32_t, std::function<int ()>> &connNow () { static std::map<uint32_t, std::function<int ()>> m; return m; }
+
 // PIR (3GPP TR 37.885): cas medzi dvoma prijatymi CAM od toho isteho auta (auto-auto do 100 m, prva kopia);
 // medzery > 5 s sa nepocitaju (auto bolo medzitym mimo dosahu)
 inline Hist &pir () { static Hist h; return h; }

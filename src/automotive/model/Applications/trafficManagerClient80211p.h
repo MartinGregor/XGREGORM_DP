@@ -74,6 +74,10 @@ private:
   bool xgRelevant ();
   void xgHybridDecide ();
   int xgEffectivePath ();
+  int xgPathNow ();
+  int xgConnNow ();                    //!< xgregorm: priame technologie s kontaktom s RSU za poslednu 1 s (priebezny vypis)
+  double m_rsu_heard[3] = {-10, -10, -10}; //!< kedy auto naposledy pocul RSU cez 802.11p / - / NR                    //!< xgregorm: cesty CAM prave teraz bez skusky 802.11p (farba, priebezny vypis)
+  void xgColorTick ();                 //!< xgregorm: farba auta v SUMO podla technologie (vizualizacia)
   void xgCount (uint64_t &counter);
   unsigned long m_sid = 0;
   bool m_xg_relax = false;
@@ -103,6 +107,9 @@ private:
   uint64_t m_hyb_cnt[8] = {0, 0, 0, 0, 0, 0, 0, 0}, m_hyb_switch = 0;
   double m_last_gate_count = -1;
   uint64_t m_xg_relaxed = 0, m_xg_force = 0, m_xg_beacons = 0;
+  bool m_xg_color = false;             //!< farbit auto podla technologie
+  int m_xg_color_last = -1;
+  EventId m_xg_color_ev;
 };
 }
 #endif // trafficManagerClient80211p_H

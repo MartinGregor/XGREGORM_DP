@@ -42,8 +42,11 @@ prepnutia medzi RSU) oproti pôvodným aplikáciám autorov.
 | `areaSpeedAdvisorClient80211p.cc`, `areaSpeedAdvisorServer80211p.cc`, `trafficManagerClient80211p.cc`, `trafficManagerServer80211p.cc`, `emergencyVehicleWarningClient80211p.cc`, `emergencyVehicleWarningServer80211p.cc`, `areaSpeedAdvisorClientLTE.cc`, `trafficManagerClientLTE.cc` | **oprava A – desynchronizácia CAM**: `std::srand(Now)` + `rand()` nahradené `UniformRandomVariable` (rovnako ako autori v `emergencyVehicleAlert.cc`). Neprepínateľné – stará referencia „s chybou“ je len v Denníku (alebo zo záloh). `simpleCAMSender-gps-tc`, `simpleVAMSender-gps-tc`, `v2xEmulator` nechané (nepoužívame). | `xgregorm_kod_zaloha/` |
 | `caBasicService.cc/.h` (jadro CAM, používajú ho všetky príklady) | **háčiky pre moje algoritmy CAM**: `setCamGate()` (pred CAM spustenou v `checkCamConditions` sa opýta, či ju poslať; `dynamic` = trigger poloha/smer/rýchlosť, inak časový), `addCamTxCallback()` (po každej odoslanej CAM), `forceCam()` (pošli CAM hneď; zachová T_GenCam a reštartuje 100 ms kontrolu, aby ďalšia CAM prišla najneskôr po T_GenCam). Bez nastavenia = pôvodné ETSI správanie, overené bit po bite | `xgregorm_kod_zaloha/` |
 | `trafficManagerClient80211p.cc/.h`, `trafficManagerServer80211p.cc/.h`, `v2i-trafficManager-80211p.cc` | **algoritmus CAM podľa relevancie** (atribúty klienta `XgRelax`, `XgRelevance`; CLI `--xg-relax`, `--xg-relevance`): ďalej než 250 m pred ďalším semaforom na trase (z mapy) najviac 1 CAM/s, pri vstupe/odchode z oblasti CAM hneď; dodržiava ETSI EN 302 637-2 (odstup 100-1000 ms). Algoritmy 1 (SPaT) a 2 (potvrdenie + opakovanie) **odstránené 2026-10-12** (výsledky ostávajú v Denníku). Merania `XGREGORM-AW/-V2V/-VEH/-GAP/-PRR(V)`; viď Denník 2026-10-12 | `xgregorm_kod_zaloha/` |
-| `trafficManagerClient80211p.cc/.h`, `trafficManagerServer80211p.cc/.h` | **hybrid 802.11p + LTE + NR-V2X**: klient atribúty `XgHybrid` (0 = vypnuté/pôvodné, 1 = každá CAM všetkými technológiami, 2 = adaptívne), `XgPaths` (maska 1 = 802.11p, 2 = LTE na `ServerAddr` UDP 9, 4 = NR-V2X multicast 225.0.0.0:19), `XgHybRange`, `XgHybQmin`, `XgHybDwell`; server `XgHybrid` (1 = prijíma CAM z kábla UDP 9, 2 = aj beacon s potvrdeniami cez 802.11p aj NR), `XgNr` (NR sidelink na RSU), zahadzuje staršie kópie (generationDeltaTime, od 2026-10-13 len do 10 s od posledného príjmu – oprava pretečenia), vlastné CAM RSU idú cez prepínač (pri výpadku 802.11p nevysiela); od 2026-10-13 bez priamej technológie posiela cez LTE len auto, ktoré radič potrebuje (+1 s po opustení príjazdu); výpisy `XGREGORM-HYB` (P0..P7 = CAM podľa kombinácie ciest), rozšírené `XGREGORM-AW`. Pri 0 bez zmeny (overené bit po bite pred pridaním NR) | `xgregorm_kod_zaloha/` |
+| `trafficManagerClient80211p.cc/.h`, `trafficManagerServer80211p.cc/.h` | **hybrid 802.11p + LTE + NR-V2X**: klient atribúty `XgHybrid` (0 = vypnuté/pôvodné, 1 = každá CAM všetkými technológiami, 2 = adaptívne), `XgPaths` (maska 1 = 802.11p, 2 = LTE na `ServerAddr` UDP 9, 4 = NR-V2X multicast 225.0.0.0:19), `XgHybRange`, `XgHybQmin`, `XgHybDwell`; server `XgHybrid` (1 = prijíma CAM z kábla UDP 9, 2 = aj beacon s potvrdeniami cez 802.11p aj NR), `XgNr` (NR sidelink na RSU), zahadzuje staršie kópie (generationDeltaTime, od 2026-10-13 len do 10 s od posledného príjmu – oprava pretečenia), vlastné CAM RSU idú cez prepínač (pri výpadku 802.11p nevysiela); od 2026-10-13 bez priamej technológie posiela cez LTE len auto, ktoré radič potrebuje (+1 s po opustení príjazdu); výpisy `XGREGORM-HYB` (P0..P7 = CAM podľa kombinácie ciest), rozšírené `XGREGORM-AW`; od 2026-10-19 atribút `XgColor` (farba auta v SUMO podľa technológie, len vizualizácia). Pri 0 bez zmeny (overené bit po bite pred pridaním NR) | `xgregorm_kod_zaloha/` |
 | `xgregorm-hybrid-socket.h` (nový), `xgregorm-hybrid.cc` (nový príklad), `src/automotive/CMakeLists.txt`, `src/automotive/examples/CMakeLists.txt` | prepínač ciest CAM pod GeoNet (Socket, ktorý posiela cez 802.11p / LTE / NR-V2X), výpadky technológií počas behu (`xghyb::up`, aj viac intervalov) a hybridný scenár (viď Denník 2026-10-12); od 2026-10-13 `--channel authors/3gpp`, `--enb`/`--enb-isd` (viac LTE buniek s odovzdávaním X2), `--lte-ue-power`, `--range-stats`, výpis `XGREGORM-LTEHO`; meranie hustoty a pravidlá P1-P1d (2026-10-13) **odstránené**, kód v `xgregorm_kod_zaloha/xgregorm_hustota_P1-P1d_diff.txt` | `xgregorm_kod_zaloha/` |
+| `src/nr/model/nr-net-device.cc/.h` (5G-LENA) | **oprava pádu pri veľkej záťaži NR sidelinku**: `NrNetDevice::Receive` pri pakete bez platnej IP hlavičky ukončil celú simuláciu (`NS_ABORT_MSG "Unknown IP type"`, 500 áut na city-center v 3. s); teraz paket zahodí a započíta (`NrNetDevice::m_xgUnknownIpDrops`, výpis `XGREGORM-NRDROP`). Príčina (pravdepodobne skladanie segmentov RLC pri záťaži) nevyriešená; v overovacom behu (500 áut, 6 s) 2 zahodené pakety | `xgregorm_kod_zaloha/nr-net-device.cc/.h` |
+| `src/nr/model/nr-ue-mac.cc` (5G-LENA) | **> 255 NR zariadení**: SCI stage 2 nesie zo zdrojového L2 ID len 8 bitov (3GPP; zvyšných 16 je v realite v MAC hlavičke SL-SCH, ktorú model nemá) -> ID sa opakovali (IMSI 256 -> 0 -> `NS_ABORT` „Layer 2 source ... shouldn't be 0“, IMSI 1 a 257 zdieľali prijímaciu RLC -> zle poskladané pakety „Unknown IP type“). Plné 24-bitové ID ide ako značka paketu `XgSlSrcL2IdTag` pri SCI 2 (veľkosť vysielania sa nemení); pri < 256 zariadeniach bit po bite bez zmeny | `xgregorm_kod_zaloha/nr-ue-mac.cc` |
+| `src/lte/model/nr-sl-ue-rrc.cc` (5G-LENA; `src/lte/` je v `.gitignore`, zmena je v repozitári len ako `xgregorm_kod_zaloha/nr-sl-ue-rrc_xgregorm_diff.txt`) | **chyba autorov 5G-LENA**: `DoAddNrSlRxDataRadioBearer` hľadal prijímací bearer v `m_slRxDrbMap`, ale vkladal do `m_slDrbMap` (vysielacie bearery podľa cieľa); pri zdroji s L2 ID = cieľu vlastného vysielania (255) sa vloženie neurobilo, RLC/PDCP zaniklo a MAC držal neplatný ukazovateľ -> SIGSEGV v `NrSlBwpManagerUe::DoReceiveNrSlRlcPdu` (500 áut pri výpadku 802.11p). Opravené vkladanie do `m_slRxDrbMap`; pri < 255 zariadeniach bez zmeny | `xgregorm_kod_zaloha/nr-sl-ue-rrc.cc` |
 | `xgregorm-stats.h` (nový, `model/Applications/`), `src/automotive/CMakeLists.txt` | merania (len čítanie zo SUMO): presnosť informácie RSU, uplink do RSU, skutočné PRR auto-auto; hlavička zaradená do zoznamu hlavičiek modulu; od 2026-10-14 záťaž technológií a výkonnosť podľa záťaže (`trafficManagerClient80211p.cc` posiela do `onCamTx` cesty CAM a ID uzla) | `xgregorm_kod_zaloha/automotive_CMakeLists.txt` |
 
 **Pravidlo riadenia semaforov:** 802.11p = každá RSU riadi len semafor svojej križovatky (ako
@@ -202,6 +205,8 @@ python3 xgregorm_gen_scenario.py --run hybrid --channel 3gpp --tx-power 23     #
 python3 xgregorm_gen_scenario.py --run hybrid --tech nr --policy all --range-stats 1   # doručenie podľa vzdialenosti
 python3 xgregorm_gen_scenario.py --name velke --grid 5 --step 250 --rsu 13 --vehicles 250 --run hybrid   # veľké mesto
 python3 xgregorm_gen_scenario.py --map city-center --diag          # druhá mapa: centrum, 9 semaforov, 3 pruhy, 600 áut
+python3 xgregorm_gen_scenario.py --vehicles 30 --run hybrid --fail-80211p 40:70 --gui --colorful   # autá farebne podľa technológie
+python3 xgregorm_gen_scenario.py --vehicles 30 --sim-time 60 --run hybrid --fail-80211p 20:40 --live 1   # každú 1 s: % áut na technológiách + ich záťaž
 ./ns3 build                                                 # len po zmene C++ kódu
 ```
 
@@ -691,6 +696,44 @@ python3 xgregorm_gen_scenario.py --map city-center --diag          # druhá mapa
   Výpisy `XGREGORM-LOAD`, `XGREGORM-PERF`, `XGREGORM-PIR`. Test (pôvodná mapa, 15 áut, 40 s, adaptívne): CBR 802.11p priemer
   0.002 / max 0.011, PRB LTE 0.004 / 0.100, NR (odhad) 0.002 / 0.009 – všetko v koši < 0.1; PRR 802.11p 1.0000 (646),
   NR 1.0000 (80), LTE 1.0000 (169); oneskorenie 0.27 / 6.3 / 18.4 ms; PIR p50 205 ms, p95 410 ms, max 1000 ms (= interval CAM).
+- **2026-10-19** – **Farba áut podľa technológie** (v skripte `--colorful`, v príklade `--color-tech`; predvolene vypnuté; atribút
+  klienta `XgColor`, predvolene false). Každých 100 ms klient nastaví autu v SUMO farbu podľa **hlavnej** technológie, ktorou by
+  práve odišla CAM (`xgEffectivePath`, bez skúšky 802.11p z NR, aby auto neblikalo): modrá 802.11p, zelená NR, červená
+  LTE (len keď nie je priama technológia), sivá žiadna. Záložná kópia tej istej CAM inou technológiou sa nezobrazuje
+  (prvá verzia s 8 farbami pre kombinácie bola neprehľadná). Len vizualizácia: výpisy
+  behu s farbením a bez neho bit po bite zhodné (10 áut, 20 s, výpadok 802.11p 8-14 s). Prepíše aj červenú farbu sanitiek.
+  Test zahltenia (2026-10-19, samostatná kópia v `scratch/`, 15 s na technológiu) bol na želanie odstránený, nezapísaný.
+- **2026-10-19** – **Farba zjednodušená na hlavnú technológiu** (4 farby: modrá 802.11p, zelená NR, červená LTE len bez
+  priamej technológie, sivá žiadna; záložná kópia sa nezobrazuje) a **priebežný výpis hybridu** `XGREGORM-LIVE`
+  (`--live X`, predvolene každú 1 s; 0 = vypnuté): podiel áut podľa hlavnej technológie (802.11p > NR > LTE > žiadna),
+  podiel áut so záložnou kópiou (+LTE/NR) a priemerná/max záťaž každej technológie za periódu (CBR 802.11p, odhad SL-CBR
+  NR, PRB LTE; vzorka sa berie, len kým technológia nemá výpadok). Klient registruje `xgstats::pathNow()` (nová metóda
+  `xgPathNow()` = cesty CAM bez skúšky 802.11p). Test (pôvodná mapa, 30 áut, 60 s, výpadok 802.11p 20-40 s, beh 209 s):
+  mimo výpadku 67-100 % áut na 802.11p, zvyšok na NR (autá 150-250 m pred semaforom, kam 802.11p RSU nedosiahne -
+  pravidlo 2 adaptívneho prepínača), počas výpadku 100 % NR; záťaž 802.11p 0.2-0.6 %, NR 0.3-0.8 % (výpadok 1.3-1.8 %),
+  LTE 0.1-5 %; PRR auto-auto 0.995, uplink 0.998.
+  Doplnené: aj podiel áut so **záložnou kópiou** po technológiách (NR, LTE) a **používaných vôbec** (hlavná + záloha;
+  súčet môže byť > 100 %). Test výpadok 802.11p 15-35 s + NR 22-28 s: 22 s 100 % LTE (okamžitá náhrada), od 23 s LTE len
+  47-50 % áut (tie, ktoré radič potrebuje), zvyšok žiadna; po návrate NR 1-2 s LTE ako záloha 60 % (dobeh 1 s).
+- **2026-10-19** – **Hybrid na mape city-center, 500 áut.** Bez NR (`--tech 80211p,lte`, `--enb 4 --enb-isd 300`, 60 s,
+  výpadok 802.11p 35-45 s, beh 65 min): prístup k RSU cez 802.11p 80-86 % áut, CBR 802.11p priemer 3-5 % (max 12 %),
+  PRR 802.11p 0.993 (CBR < 0.1) / 0.984 (0.1-0.2); pri výpadku 83-84 % áut na LTE, PRB LTE 45-49 % (max 78 %), LTE so
+  záťažou: PRR 0.94 -> 0.76, p50 oneskorenia 19 -> 205 ms (časť je artefakt viacerých buniek: 13 RLF, po výpadku PRB
+  ostane ~38 %). S NR model 5G-LENA padal v 3. s (`Unknown IP type`) -> oprava v Moje zmeny; overenie 500 áut / 6 s:
+  2 zahodené pakety, PRR auto-auto 0.990, ~3 min behu na 1 s simulácie.
+- **2026-10-20** – **NR pri > 255 zariadeniach: dve chyby 5G-LENA opravené** (viď Moje zmeny: `nr-ue-mac.cc` – 8-bitové
+  zdrojové ID v SCI 2; `nr-sl-ue-rrc.cc` – prijímací bearer vkladaný do zlej mapy). Nájdené cez gdb (`LteUeRrc::AddNrSlDrb`
+  NS_ABORT, `NrSlBwpManagerUe::DoReceiveNrSlRlcPdu` SIGSEGV). Overenie: 30 áut bit po bite zhodné s behom pred opravami,
+  0 zahodených NR paketov; 500 áut s výpadkom 802.11p (100 % áut na NR) už nepadá, ale je **výpočtovo nepoužiteľné**
+  (> 1 h na 1 s simulácie). Bežná prevádzka 500 áut (~15 % na NR) ~3-4 min na 1 s.
+- **2026-10-20** – **Test 3 technológií na city-center (po opravách NR).** A: 500 áut, 15 s, `--enb 4`, výpadok NR 6-9 s
+  a LTE 10-12 s (29 min): bez pádu, 0 zahodených NR paketov; hlavná technológia 85-88 % 802.11p / 12-16 % NR, prístup k RSU
+  cez 802.11p 80-86 %; záťaž 802.11p 3-5 % (max 11 %), NR 3-5 %, LTE 0-27 %; PRR auto-auto 0.993, uplink 0.996, vek RSU
+  0.23 s; PRR podľa technológie 802.11p 0.992, NR 0.997, LTE 0.87-0.98 (LTE oneskorenie priemer 242 ms – štart a viac buniek).
+  Výpadok NR: 100 % áut na 802.11p, LTE záloha 13 -> 26 %; výpadok LTE: zálohy 0 %, nič sa nestratilo.
+  B: 200 áut, 30 s, 1 bunka, výpadok 802.11p 10-20 s + NR 15-17 s (18 min): pri výpadku 802.11p 100 % na NR (záťaž NR
+  2 -> 7 %, LTE záloha 32-44 %), pri dvojitom výpadku 94-100 % na LTE (PRB 22-39 %), po návrate do 1 s späť; PRR 802.11p
+  0.997, NR 0.992, LTE 0.955-1.0 (18-31 ms); auto-auto 0.925 (vrátane 2 s bez priamej technológie), uplink 0.994.
 - Pozn.: v sekcii „Tok komunikácie“ je prehľad, čo ide cez ns-3 (CAM, kábel RSU-RSU) a čo cez
   TraCI (RSU -> semafor, mapa).
 

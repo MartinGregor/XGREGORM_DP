@@ -97,7 +97,12 @@ namespace ns3
             "Adaptive hybrid: the direct link must be good this long before the backup path is switched off again [s] (hysteresis)",
             DoubleValue (1.0),
             MakeDoubleAccessor (&trafficManagerClient80211p::m_hyb_dwell),
-            MakeDoubleChecker<double> (0));
+            MakeDoubleChecker<double> (0))
+        .AddAttribute ("XgColor",
+            "Hybrid: colour the vehicle in SUMO by the technology its CAMs currently use (visualisation only)",
+            BooleanValue (false),
+            MakeBooleanAccessor (&trafficManagerClient80211p::m_xg_color),
+            MakeBooleanChecker ());
         return tid;
   }
 
@@ -283,6 +288,13 @@ namespace ns3
       m_caService.startCamDissemination(desync);
       if (m_xg_relax || m_xg_hybrid == 2)
         m_xg_tick_ev = Simulator::Schedule (Seconds (desync), &trafficManagerClient80211p::xgTick, this);
+      if (m_xg_color && m_xg_hybrid)
+        m_xg_color_ev = Simulator::ScheduleNow (&trafficManagerClient80211p::xgColorTick, this);
+      if (m_xg_hybrid)
+        {
+          xgstats::pathNow ()[GetNode ()->GetId ()] = [this] () { return xgPathNow (); };
+          xgstats::connNow ()[GetNode ()->GetId ()] = [this] () { return xgConnNow (); };
+        }
     }
   }
 
@@ -363,6 +375,52 @@ namespace ns3
     if (m_xg_hybrid == 2)
       xgHybridDecide ();
     m_xg_tick_ev = Simulator::Schedule (MilliSeconds (100), &trafficManagerClient80211p::xgTick, this);
+  }
+
+  void
+  trafficManagerClient80211p::xgColorTick ()
+  {
+    // xgregorm: farba auta v SUMO podla hlavnej technologie, ktorou by prave odisla CAM (len vizualizacia, na siet
+    // nema vplyv). Pri viacerych naraz ide ta ista CAM ako kopia; hlavna = priama technologia pre susedov (802.11p,
+    // inak NR), LTE len ak priama nie je. Skuska 802.11p z NR (raz za 1 s, jedna CAM) sa nezobrazuje, auto by blikalo.
+    int p = xgPathNow ();
+    int prim = (p & xghyb::WIFI) ? 1 : (p & xghyb::NR) ? 2 : (p & xghyb::LTE) ? 3 : 0;
+    if (prim != m_xg_color_last)
+      {
+        // siva = nic, modra = 802.11p, zelena = NR-V2X, cervena = LTE
+        static const unsigned char rgb[4][3] = {{128, 128, 128}, {0, 90, 255}, {0, 200, 0}, {255, 0, 0}};
+        libsumo::TraCIColor c;
+        c.r = rgb[prim][0];
+        c.g = rgb[prim][1];
+        c.b = rgb[prim][2];
+        c.a = 255;
+        m_client->TraCIAPI::vehicle.setColor (m_id, c);
+        m_xg_color_last = prim;
+      }
+    m_xg_color_ev = Simulator::Schedule (MilliSeconds (100), &trafficManagerClient80211p::xgColorTick, this);
+  }
+
+  int
+  trafficManagerClient80211p::xgConnNow ()
+  {
+    // priama technologia je "pripojena", ak ju auto ma, nema vypadok a za poslednu 1 s pocul RSU (beacon alebo CAM RSU)
+    double now = Simulator::Now ().GetSeconds ();
+    int c = 0;
+    if ((m_hyb_mask & xghyb::WIFI) && xghyb::up (xghyb::WIFI) && now - m_rsu_heard[0] < 1.0)
+      c |= xghyb::WIFI;
+    if ((m_hyb_mask & xghyb::NR) && xghyb::up (xghyb::NR) && now - m_rsu_heard[2] < 1.0)
+      c |= xghyb::NR;
+    return c;
+  }
+
+  int
+  trafficManagerClient80211p::xgPathNow ()
+  {
+    // cesty, ktorymi by prave odisla CAM, bez skusky 802.11p z NR (raz za 1 s jedna CAM) - pre farbu a priebezny vypis
+    int p = xgEffectivePath ();
+    if (m_xg_hybrid == 2 && (p & xghyb::NR) && !(m_hyb_base & xghyb::WIFI))
+      p &= ~xghyb::WIFI;
+    return p;
   }
 
   int
@@ -485,6 +543,10 @@ namespace ns3
         m_xg_beacons++;
         double now = Simulator::Now ().GetSeconds ();
         const std::string &tls = f[1];
+        // pripojenie k infrastrukture (priebezny vypis): auto pocul nejaku RSU touto technologiou
+        int tc = socket == m_nr_beacon_socket ? xghyb::idx (xghyb::NR) : xghyb::idx (xghyb::WIFI);
+        if (xghyb::up (tc == 0 ? xghyb::WIFI : xghyb::NR))
+          m_rsu_heard[tc] = now;
         if (tls.empty () || tls != m_next_tls)
           continue; // beacon inej krizovatky, nez ku ktorej idem
         // kvalita priameho spojenia k RSU, ku ktorej idem = podiel mojich CAM poslanych touto technologiou,
@@ -519,6 +581,9 @@ namespace ns3
     uint64_t cam_sent;
     cam_sent = m_caService.terminateDissemination ();
     Simulator::Cancel (m_xg_tick_ev);
+    Simulator::Cancel (m_xg_color_ev);
+    xgstats::pathNow ().erase (GetNode ()->GetId ());
+    xgstats::connNow ().erase (GetNode ()->GetId ());
     m_denService.cleanup();
 
     if (m_print_summary && !m_already_print)
@@ -568,6 +633,8 @@ namespace ns3
     (void) from; // Contains the address from which the CAM has been received
     // xgregorm: skutocne PRR medzi autami (len meranie)
     unsigned long sender = asn1cpp::getField (cam->header.stationId, unsigned long);
+    if (sender >= 1000000)
+      m_rsu_heard[InetSocketAddress::IsMatchingType (from) ? 2 : 0] = Simulator::Now ().GetSeconds (); // CAM RSU
     if (sender < 1000000)
       xgstats::onVehCamRx (m_sid, sender, asn1cpp::getField (cam->cam.generationDeltaTime, long),
                            InetSocketAddress::IsMatchingType (from) ? 2 : 0); // UDP = NR-V2X

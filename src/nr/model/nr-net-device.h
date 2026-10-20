@@ -81,6 +81,10 @@ public:
   virtual bool Send (Ptr<Packet> packet, const Address& dest, uint16_t protocolNumber);
   void Receive (Ptr<Packet> p);
 
+  // xgregorm: pocet prijatych paketov bez platnej IP hlavicky, ktore sa zahodili (povodne NS_ABORT_MSG - pad
+  // simulacie pri velkej zatazi sidelinku, napr. 500 aut); vsetky zariadenia spolu
+  static uint64_t m_xgUnknownIpDrops;
+
 protected:
   virtual void DoDispose (void);
 

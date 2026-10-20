@@ -193,6 +193,8 @@ NrNetDevice::SupportsSendFrom (void) const
   return false;
 }
 
+uint64_t NrNetDevice::m_xgUnknownIpDrops = 0; // xgregorm
+
 void
 NrNetDevice::Receive (Ptr<Packet> p)
 {
@@ -213,7 +215,9 @@ NrNetDevice::Receive (Ptr<Packet> p)
     }
   else
     {
-      NS_ABORT_MSG ("NrNetDevice::Receive - Unknown IP type...");
+      // xgregorm: povodne NS_ABORT_MSG ("NrNetDevice::Receive - Unknown IP type...") ukoncilo celu simulaciu;
+      // poskodeny paket sa zahodi (ako v skutocnom zariadeni) a zapocita (vypis XGREGORM-NRDROP v xgregorm-hybrid)
+      m_xgUnknownIpDrops++;
     }
 }
 

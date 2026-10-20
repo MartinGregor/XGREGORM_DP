@@ -1,0 +1,14 @@
+--- a/src/lte/model/nr-sl-ue-rrc.cc
++++ b/src/lte/model/nr-sl-ue-rrc.cc
+@@ -287,7 +287,10 @@
+       NS_LOG_LOGIC ("First SL RX DRB for remote UE with source L2 id " << slRxDrb->m_sourceL2Id);
+       NrSlDrbMapPerLcId mapPerRxLcId;
+       mapPerRxLcId.insert (std::pair<uint8_t, Ptr<NrSlDataRadioBearerInfo> > (slRxDrb->m_logicalChannelIdentity, slRxDrb));
+-      m_slDrbMap.insert (std::pair<uint32_t, NrSlDrbMapPerLcId> (slRxDrb->m_sourceL2Id, mapPerRxLcId));
++      // xgregorm: povodne m_slDrbMap (mapa VYSIELACICH bearerov podla ciela) - pri zdroji s rovnakym L2 ID ako ciel
++      // vlastneho vysielania (napr. 255 pri >= 255 NR zariadeniach) sa vlozenie potichu neurobilo, bearer (RLC/PDCP)
++      // zanikol a MAC drzal neplatny ukazovatel -> SIGSEGV v NrSlBwpManagerUe::DoReceiveNrSlRlcPdu
++      m_slRxDrbMap.insert (std::pair<uint32_t, NrSlDrbMapPerLcId> (slRxDrb->m_sourceL2Id, mapPerRxLcId));
+     }
+   else
+     {

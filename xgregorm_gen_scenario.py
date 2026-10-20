@@ -122,6 +122,12 @@ ap.add_argument("--enb", type=int, default=1,
 ap.add_argument("--enb-isd", type=float, default=500, help="hybrid: LTE inter-site distance [m] (3GPP urban macro 500 m)")
 ap.add_argument("--lte-ue-power", type=float, default=10,
                 help="hybrid: LTE UE max tx power [dBm] (ns-3 default 10, real UE power class 3 = 23)")
+ap.add_argument("--colorful", action="store_true",
+                help="hybrid: colour vehicles in SUMO by the main technology of their CAMs: blue 802.11p, green NR-V2X, "
+                     "red LTE (only when no direct technology), grey none; a backup copy on another technology is not shown; use with --gui")
+ap.add_argument("--live", type=float, default=1,
+                help="hybrid: every X s during the run print the share of vehicles per main technology and the load of "
+                     "each technology (0 = off)")
 ap.add_argument("--load-stats", type=int, default=1, choices=[0, 1],
                 help="hybrid: measure the load of every technology (802.11p CBR per ETSI TS 102 687, LTE uplink PRB "
                      "usage per 3GPP TS 36.314, NR SL-CBR = ESTIMATE from received PSCCH) and the performance per load level")
@@ -610,6 +616,7 @@ HYB = (f"{TM} --tls-radius={a.tls_radius}"
        f" --beacon-ms={a.beacon_ms} --nr-sensing={'true' if a.nr_sensing else 'false'}"
        f" --range-stats={'true' if a.range_stats else 'false'} --channel={a.channel}"
        f" --load-stats={'true' if a.load_stats else 'false'}"
+       f" --color-tech={'true' if a.colorful else 'false'} --live-period={a.live}"
        f" --enb={a.enb} --enb-isd={a.enb_isd} --lte-ue-power={a.lte_ue_power}"
        + "".join(f" --use-{t}={'true' if t in TECH else 'false'}" for t in ("80211p", "lte", "nr"))
        + f" --policy={a.policy}"
@@ -646,9 +653,24 @@ def spusti(kluc):
     proc = subprocess.Popen(["./ns3", "run", f"{program} {args}"],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     vystup = []
+    hlavicka = False
     for riadok in proc.stdout:
-        print(riadok, end="")
         vystup.append(riadok)
+        if riadok.startswith("XGREGORM-LIVE,"):
+            # hybrid: priebezne - podiel aut podla hlavnej technologie a zataz kazdej technologie za poslednu periodu
+            d = dict((k, float(v)) for k, v in re.findall(r"([A-Z_]+):([\d.eE+-]+)", riadok))
+            if not hlavicka:
+                print("  LIVE  time | veh | CONNECTED to infrastructure:   | main technology (sum 100 %):     | as backup:      |"
+                      " load mean (max): 802.11p CBR    NR SL-CBR (est.)  LTE UL PRB")
+                print("             |     | 802.11p    NR      LTE         | 802.11p   NR     LTE    none    |  NR     LTE     |")
+                hlavicka = True
+            print(f"  LIVE {d['T']:5.0f} s | {d['VEH']:3.0f} | {d['CONN_W']:5.1f} % {d['CONN_NR']:5.1f} % {d['CONN_LTE']:5.1f} %"
+                  f"       | {d['W']:5.1f} % {d['NR']:5.1f} % {d['LTE']:5.1f} % {d['NONE']:5.1f} % |"
+                  f" {d['BK_NR']:5.1f} % {d['BK_LTE']:5.1f} % |"
+                  f"     {d['LOAD_W']:5.2f} % ({d['MAX_W']:5.2f})  {d['LOAD_NR']:5.2f} % ({d['MAX_NR']:5.2f})"
+                  f"  {d['LOAD_LTE']:5.2f} % ({d['MAX_LTE']:5.2f})", flush=True)
+            continue
+        print(riadok, end="")
     proc.wait()
     suhrn(program, "".join(vystup), ma_csv, time.time() - t0, proc.returncode)
     shutil.rmtree(TMP, ignore_errors=True)
@@ -898,6 +920,7 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
             on = lambda bit: sum(H(f"P{m}") for m in range(8) if m & bit)
             combo = lambda m: "+".join(n for b, n in ((1, "802.11p"), (2, "LTE"), (4, "NR")) if m & b) or "none (outage / LTE not needed)"
             relay = re.search(r"XGREGORM-RELAY,CAM:(\d+)", vystup)
+            nrdrop = re.search(r"XGREGORM-NRDROP,N:(\d+)", vystup)
             lat = [1000 * S_(f"LAT_{k}_SUM") / max(S_(f"LAT_{k}_N"), 1) for k in ("W", "L", "N")]
             vl = dict((k, float(v)) for k, v in re.findall(r"([A-Z_]+):([\d.eE+-]+)",
                       (re.search(r"XGREGORM-V2VLAT,(.*)", vystup) or re.search("()", "")).group(1)))
@@ -911,6 +934,8 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
             print(f"    CAMs per technology        : 802.11p {on(1)}, LTE {on(2)} ({on(2) / max(a.sim_time, 1):.1f}/s "
                   f"cellular uplink), NR {on(4)}; path switches {H('SWITCH')}, probes of 802.11p {H('PROBE')}")
             print(f"    relayed by the server      : {relay.group(1) if relay else 'n/a'} CAMs to the RSUs over the backhaul")
+            if nrdrop:
+                print(f"    NR packets without a valid IP header dropped (5G-LENA, originally aborted the run): {nrdrop.group(1)}")
             print(f"    latency vehicle -> RSU     : 802.11p {lat[0]:.2f} ms ({S_('LAT_W_N'):.0f}), LTE + core + backhaul "
                   f"{lat[1]:.2f} ms ({S_('LAT_L_N'):.0f}, every RSU gets each relayed CAM), NR {lat[2]:.2f} ms ({S_('LAT_N_N'):.0f})")
             print(f"    latency vehicle -> vehicle : 802.11p {1000 * vl.get('W_SUM', 0) / max(vl.get('W_N', 0), 1):.2f} ms "

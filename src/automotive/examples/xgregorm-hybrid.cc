@@ -60,6 +60,57 @@ std::map<uint32_t, Ptr<LteUeNetDevice>> ueOf;
 std::vector<uint16_t> cells;
 int lteUlRb = 0;
 bool useW = false, useL = false, useN = false;
+// priebezny vypis (kazdych livePeriod s): podiel aut podla hlavnej technologie a priemerna zataz za to obdobie
+double livePeriod = 1;
+double liveSum[3] = {0, 0, 0}, liveMax[3] = {0, 0, 0};
+uint64_t liveN[3] = {0, 0, 0};
+int liveTicks = 0;
+
+void
+liveAdd (int k, double v)
+{
+  liveSum[k] += v;
+  liveN[k]++;
+  liveMax[k] = std::max (liveMax[k], v);
+}
+
+void
+livePrint ()
+{
+  // hlavna technologia auta = priama pre susedov (802.11p, inak NR), LTE len bez priamej; zalohu cez LTE/NR pocitame zvlast
+  int cnt[4] = {0, 0, 0, 0}, backup = 0, bkNr = 0, bkLte = 0, n = 0, conn[3] = {0, 0, 0};
+  for (auto &e : xgstats::pathNow ())
+    {
+      int p = e.second ();
+      int prim = (p & xghyb::WIFI) ? 0 : (p & xghyb::NR) ? 1 : (p & xghyb::LTE) ? 2 : 3;
+      cnt[prim]++;
+      backup += (prim == 0 && (p & (xghyb::NR | xghyb::LTE))) || (prim == 1 && (p & xghyb::LTE));
+      // zaloha = technologia, ktorou ide kopia CAM, hoci hlavna je ina (802.11p je vzdy hlavna, ak je v ceste)
+      bkNr += prim == 0 && (p & xghyb::NR);
+      bkLte += prim < 2 && (p & xghyb::LTE);
+      // pripojenie: 802.11p / NR = pocul RSU za 1 s, LTE = UE v stave RRC CONNECTED (aj pocas odovzdania) a bez vypadku
+      auto cf = xgstats::connNow ().find (e.first);
+      int cm = cf == xgstats::connNow ().end () ? 0 : cf->second ();
+      conn[0] += (cm & xghyb::WIFI) != 0;
+      conn[2] += (cm & xghyb::NR) != 0;
+      auto ue = ueOf.find (e.first);
+      if (ue != ueOf.end () && xghyb::up (xghyb::LTE))
+        {
+          LteUeRrc::State st = ue->second->GetRrc ()->GetState ();
+          conn[1] += st == LteUeRrc::CONNECTED_NORMALLY || st == LteUeRrc::CONNECTED_HANDOVER;
+        }
+      n++;
+    }
+  auto pct = [n] (int c) { return n ? 100.0 * c / n : 0.0; };
+  auto load = [] (int k) { return liveN[k] ? 100.0 * liveSum[k] / liveN[k] : 0.0; };
+  std::cout << "XGREGORM-LIVE,T:" << Simulator::Now ().GetSeconds () << ",VEH:" << n << ",W:" << pct (cnt[0])
+            << ",NR:" << pct (cnt[1]) << ",LTE:" << pct (cnt[2]) << ",NONE:" << pct (cnt[3]) << ",BACKUP:" << pct (backup) << ",BK_NR:" << pct (bkNr) << ",BK_LTE:" << pct (bkLte)
+            << ",CONN_W:" << pct (conn[0]) << ",CONN_NR:" << pct (conn[2]) << ",CONN_LTE:" << pct (conn[1])
+            << ",LOAD_W:" << load (0) << ",LOAD_NR:" << load (2) << ",LOAD_LTE:" << load (1)
+            << ",MAX_W:" << 100 * liveMax[0] << ",MAX_NR:" << 100 * liveMax[2] << ",MAX_LTE:" << 100 * liveMax[1] << std::endl;
+  for (int k = 0; k < 3; k++)
+    liveSum[k] = liveMax[k] = 0, liveN[k] = 0;
+}
 
 void
 onWifiTx (uint32_t s, Ptr<MobilityModel> mob, Ptr<WifiPhy> phy, WifiConstPsduMap psdus, WifiTxVector txv, double txW)
@@ -105,6 +156,7 @@ tick ()
           v.erase (std::remove_if (v.begin (), v.end (), [T] (const std::pair<double, double> &iv) { return iv.second <= T; }), v.end ());
           curW[n] = std::min (1.0, busy / 0.1);
           xgstats::loadDist ()[0].add (curW[n]);
+          liveAdd (0, curW[n]);
         }
       if (useN && nrSubch > 0)
         {
@@ -117,6 +169,7 @@ tick ()
               used += e.second;
           curN[n] = std::min (1.0, used / (nrSubch * nrSlotsPerSec * 0.1));
           xgstats::loadDist ()[2].add (curN[n]);
+          liveAdd (2, curN[n]);
         }
     }
   if (useL)
@@ -125,7 +178,13 @@ tick ()
         curL[c] = std::min (1.0, lteRb[c] / (lteUlRb * 100.0));
         lteRb[c] = 0;
         xgstats::loadDist ()[1].add (curL[c]);
+        liveAdd (1, curL[c]);
       }
+  if (livePeriod > 0 && ++liveTicks >= (int) std::lround (livePeriod * 10))
+    {
+      liveTicks = 0;
+      livePrint ();
+    }
   Simulator::Schedule (MilliSeconds (100), &tick);
 }
 } // namespace xgload
@@ -249,6 +308,11 @@ main (int argc, char *argv[])
   cmd.AddValue ("sim-time", "Total duration of the simulation [s]", simTime);
   bool range_stats = false;
   bool load_stats = true;
+  bool color_tech = false;
+  cmd.AddValue ("live-period","Print every X s during the run: share of vehicles per main technology and the load of "
+                "each technology (needs --load-stats; 0 = off)",xgload::livePeriod);
+  cmd.AddValue ("color-tech","Colour vehicles in SUMO by the main technology of their CAMs: blue 802.11p, green NR, "
+                "red LTE (no direct technology), grey = none (visualisation only)",color_tech);
   cmd.AddValue ("load-stats","Measure the load of every technology (802.11p CBR, LTE UL PRB usage, NR SL-CBR estimate) "
                 "and the performance per load level (measurement only)",load_stats);
   std::string channel_model = "authors";
@@ -716,6 +780,7 @@ main (int argc, char *argv[])
   clientHelper.SetAttribute ("XgHybRange", DoubleValue (hyb_range));
   clientHelper.SetAttribute ("XgHybQmin", DoubleValue (hyb_qmin));
   clientHelper.SetAttribute ("XgHybDwell", DoubleValue (hyb_dwell));
+  clientHelper.SetAttribute ("XgColor", BooleanValue (color_tech));
 
   STARTUP_FCN setupNewNode = [&] (std::string vehicleID,TraciClient::StationTypeTraCI_t stationType) -> Ptr<Node>
     {
@@ -767,6 +832,7 @@ main (int argc, char *argv[])
   Simulator::Destroy ();
 
   std::cout << "XGREGORM-RELAY,CAM:" << g_relay_n << std::endl;
+  std::cout << "XGREGORM-NRDROP,N:" << NrNetDevice::m_xgUnknownIpDrops << std::endl;
   std::cout << "XGREGORM-LTEHO,START:" << g_ho[0] << ",OK:" << g_ho[1] << ",ERR:" << g_ho[2] << ",RLF:" << g_ho[3] << std::endl;
   // casova os po 1 s: T<sekunda>:pocet CAM pre masku 0..7 (oddelene /)
   std::cout << "XGREGORM-HYBT";
