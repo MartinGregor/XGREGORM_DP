@@ -13,6 +13,7 @@
 #include "ns3/node.h"
 #include "ns3/net-device.h"
 #include "ns3/simulator.h"
+#include "ns3/header.h"
 #include <functional>
 #include <string>
 #include <map>
@@ -75,6 +76,68 @@ findDevice (Ptr<Node> node, const std::string &type)
 
 } // namespace xghyb
 
+// xgregorm: zakladna hlavicka GeoNet (ETSI EN 302 636-4-1, 4 B) ako surove bajty - prepinac do jej pola Reserved
+// (bajt 1, GeoNet autorov ho pise 0 a pri prijme ignoruje) zapise znacku pre vyber technologie podla kvality
+// (XgQosRat): bit 7 = CAM ide aj cez 802.11p, bit 6 = aj cez NR-V2X, bity 0-5 = poradove cislo CAM (mod 64)
+class XgGnBasicRaw : public Header
+{
+public:
+  uint8_t b[4] = {0, 0, 0, 0};
+  static TypeId
+  GetTypeId (void)
+  {
+    static TypeId tid = TypeId ("ns3::XgGnBasicRaw").SetParent<Header> ().SetGroupName ("Automotive");
+    return tid;
+  }
+  TypeId GetInstanceTypeId (void) const override { return GetTypeId (); }
+  uint32_t GetSerializedSize (void) const override { return 4; }
+  void Serialize (Buffer::Iterator i) const override { for (int k = 0; k < 4; k++) i.WriteU8 (b[k]); }
+  uint32_t Deserialize (Buffer::Iterator i) override { for (int k = 0; k < 4; k++) b[k] = i.ReadU8 (); return 4; }
+  void Print (std::ostream &os) const override { os << (int) b[1]; }
+};
+
+// xgregorm: socket, ktory GeoNet podstrcime pri prijme - klient paket precita sam (znacka v hlavicke), potom ho
+// cez tento socket odovzda GeoNet::receiveGN (ten zavola RecvFrom prave raz)
+class XgRxProxySocket : public Socket
+{
+public:
+  explicit XgRxProxySocket (Ptr<Node> node) : m_node (node) {}
+  void Set (Ptr<Packet> p, const Address &from) { m_p = p; m_from = from; }
+  Ptr<Packet>
+  RecvFrom (uint32_t, uint32_t, Address &from) override
+  {
+    from = m_from;
+    Ptr<Packet> p = m_p;
+    m_p = nullptr;
+    return p;
+  }
+  Ptr<Packet> Recv (uint32_t, uint32_t) override { Ptr<Packet> p = m_p; m_p = nullptr; return p; }
+  Ptr<Node> GetNode (void) const override { return m_node; }
+  enum SocketErrno GetErrno (void) const override { return ERROR_NOTERROR; }
+  enum SocketType GetSocketType (void) const override { return NS3_SOCK_DGRAM; }
+  int Bind (const Address &) override { return 0; }
+  int Bind () override { return 0; }
+  int Bind6 () override { return 0; }
+  int Close (void) override { return 0; }
+  int ShutdownSend (void) override { return 0; }
+  int ShutdownRecv (void) override { return 0; }
+  int Connect (const Address &) override { return 0; }
+  int Listen (void) override { return -1; }
+  uint32_t GetTxAvailable (void) const override { return 0; }
+  int Send (Ptr<Packet>, uint32_t) override { return -1; }
+  int SendTo (Ptr<Packet>, uint32_t, const Address &) override { return -1; }
+  uint32_t GetRxAvailable (void) const override { return m_p ? m_p->GetSize () : 0; }
+  int GetSockName (Address &) const override { return -1; }
+  int GetPeerName (Address &) const override { return -1; }
+  bool SetAllowBroadcast (bool) override { return true; }
+  bool GetAllowBroadcast () const override { return true; }
+
+private:
+  Ptr<Node> m_node;
+  Ptr<Packet> m_p;
+  Address m_from;
+};
+
 class XgHybridSocket : public Socket
 {
 public:
@@ -97,6 +160,25 @@ public:
         p = p->Copy ();
         p->AddPaddingAtEnd (cert ? xghyb::secCert () : xghyb::secDigest ());
       }
+    // xgregorm: znacka do pola Reserved zakladnej hlavicky GeoNet (len CAM a ine spravy, nie beacon GeoNet: ten
+    // nema poradove cislo CAM; len bez skutocnej kryptografie - pri --security 2 nasleduje zabezpecena hlavicka)
+    if (m_mark && p->GetSize () >= 6)
+      {
+        uint8_t h[6];
+        p->CopyData (h, 6);
+        if ((h[0] & 0x0f) == 1 && (h[5] >> 4) != 1)
+          {
+            int m = m_mark ();
+            if (m >= 0)
+              {
+                p = p->Copy ();
+                XgGnBasicRaw raw;
+                p->RemoveHeader (raw);
+                raw.b[1] = (uint8_t) m;
+                p->AddHeader (raw);
+              }
+          }
+      }
     Ptr<Socket> s[3] = {m_wifi, m_lte, m_nr};
     for (int b : {xghyb::WIFI, xghyb::LTE, xghyb::NR})
       if ((path & b) && s[xghyb::idx (b)] && xghyb::up (b))
@@ -104,6 +186,8 @@ public:
     // vsetky zvolene cesty vypadnute: CAM sa stratila, pre CA sluzbu je vsak odoslana (ako pri chybe radia)
     return ret == -1 ? (int) p->GetSize () : ret;
   }
+
+  void SetMark (std::function<int ()> mark) { m_mark = mark; }
 
   // GeoNet z tohto socketu cita len uzol (adresa GN = zariadenie 0 = 802.11p), ostatne len deleguje
   Ptr<Node> GetNode (void) const override { return m_wifi->GetNode (); }
@@ -130,6 +214,7 @@ public:
 private:
   Ptr<Socket> m_wifi, m_lte, m_nr;
   std::function<int ()> m_select;
+  std::function<int ()> m_mark;
   double m_lastCert = -10;
 };
 

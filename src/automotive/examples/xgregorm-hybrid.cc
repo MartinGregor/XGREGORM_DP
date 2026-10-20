@@ -420,6 +420,31 @@ print ()
 }
 } // namespace xgbg
 
+// xgregorm: ina prevadzka v bunke LTE (smartfony, kamery... - bunka nie je len pre V2X). Kazde UE pozadia
+// zastupuje skupinu pouzivatelov: uplink v davkach ON/OFF (exponencialne, priemer 0.5 s / 0.5 s), pocas ON
+// 2x priemerna rychlost, pakety 1000 B na server za PGW. Meria sa len to, kolko PRB zaberie (vytazenie bunky).
+namespace xglbg {
+uint32_t pkt = 1000;
+double kbps = 500;
+uint64_t txN = 0;
+Ptr<ExponentialRandomVariable> onT, offT;
+
+void
+burst (Ptr<Socket> s, double until)
+{
+  if (Simulator::Now ().GetSeconds () >= until)
+    {
+      Simulator::Schedule (Seconds (offT->GetValue ()), +[] (Ptr<Socket> s) {
+        burst (s, Simulator::Now ().GetSeconds () + onT->GetValue ());
+      }, s);
+      return;
+    }
+  s->Send (Create<Packet> (pkt));
+  txN++;
+  Simulator::Schedule (Seconds (pkt * 8.0 / (2 * kbps * 1000)), &burst, s, until);
+}
+} // namespace xglbg
+
 NS_LOG_COMPONENT_DEFINE ("xgregorm-hybrid");
 
 namespace {
@@ -484,6 +509,11 @@ main (int argc, char *argv[])
   std::string policy = "adaptive";
   std::string fail_80211p, fail_lte, fail_nr;
   double hyb_range = 250, hyb_qmin = 0.9, hyb_dwell = 1.0;
+  bool load_rat = false;                                     // xgregorm: vyber technologie podla zataze
+  uint32_t lte_bg_ue = 0;                                    // xgregorm: ina prevadzka v bunke LTE
+  double cbr_high = 0.3, cbr_low = 0.2, lte_high = 0.6, load_period = 1.0;
+  bool qos_rat = false;                                      // xgregorm: vyber technologie podla namerannej kvality
+  double qos_margin = 0.05, lat_budget = 0.1;
   double core_delay_ms = 5; // PGW -> server, ako autori v v2i-trafficManager-LTE
   // NR-V2X (hodnoty z v2v-emergencyVehicleAlert-nrv2x autorov)
   double nr_freq = 5.89e9;
@@ -530,6 +560,18 @@ main (int argc, char *argv[])
   cmd.AddValue ("hyb-range","Adaptive: distance to the next traffic light where its controller needs the vehicle [m]",hyb_range);
   cmd.AddValue ("hyb-qmin","Adaptive: lowest share of CAMs confirmed by the RSU to rely on one direct technology",hyb_qmin);
   cmd.AddValue ("hyb-dwell","Adaptive: the direct link must be good this long before the backup is switched off [s]",hyb_dwell);
+  cmd.AddValue ("load-rat","Adaptive: choose the main direct technology by load (802.11p -> NR-V2X under congestion, "
+                "LTE backup only when the cell is not overloaded); needs --load-stats",load_rat);
+  cmd.AddValue ("cbr-high","Load rule: CBR from which a direct channel is congested (ETSI DCC 0.3)",cbr_high);
+  cmd.AddValue ("cbr-low","Load rule: CBR of 802.11p below which vehicles return from NR-V2X",cbr_low);
+  cmd.AddValue ("lte-high","Load rule: LTE cell UL PRB usage above which LTE is not used as a backup",lte_high);
+  cmd.AddValue ("load-period","Load rule: re-evaluation period of the main technology [s]",load_period);
+  cmd.AddValue ("qos-rat","Quality rule: main direct technology by the measured reliability of the neighbours' CAMs "
+                "(delivered within --lat-budget, per technology); needs --load-stats",qos_rat);
+  cmd.AddValue ("qos-margin","Quality rule: required reliability advantage of the other technology",qos_margin);
+  cmd.AddValue ("lat-budget","Quality rule: CAM latency budget [s] (later = lost)",lat_budget);
+  cmd.AddValue ("lte-bg-ue","Other (non-V2X) LTE users: number of static UEs, each a group of phones with bursty uplink",lte_bg_ue);
+  cmd.AddValue ("lte-bg-kbps","Mean uplink rate of one background LTE UE [kbit/s] (ON/OFF 0.5 s / 0.5 s, 2x during ON)",xglbg::kbps);
   cmd.AddValue ("core-delay","One-way delay PGW -> server [ms]",core_delay_ms);
   cmd.AddValue ("nr-tx-power","NR-V2X tx power [dBm]",nr_tx_power);
   cmd.AddValue ("nr-mcs","NR-V2X sidelink MCS",nr_mcs);
@@ -808,6 +850,34 @@ main (int argc, char *argv[])
       NetDeviceContainer enbDevs = lteHelper->InstallEnbDevice (enbNodes);
       NetDeviceContainer ueDevs = lteHelper->InstallUeDevice (obuNodes);
       lteUeDevs = ueDevs;
+      // xgregorm: UE pozadia (--lte-bg-ue) - staticke, nahodne v oblasti RSU +-100 m, 1.5 m
+      NodeContainer bgNodes;
+      NetDeviceContainer bgDevs;
+      Ptr<UniformRandomVariable> pr; // len pri pozadi (inak by posunul automaticke cisla prudov)
+      if (lte_bg_ue > 0)
+        {
+          bgNodes.Create (lte_bg_ue);
+          pr = CreateObject<UniformRandomVariable> ();
+          pr->SetStream (3100);
+          double x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+          for (auto &r : rsuData)
+            {
+              x0 = std::min<double> (x0, std::get<1> (r) - 100);
+              x1 = std::max<double> (x1, std::get<1> (r) + 100);
+              y0 = std::min<double> (y0, std::get<2> (r) - 100);
+              y1 = std::max<double> (y1, std::get<2> (r) + 100);
+            }
+          Ptr<ListPositionAllocator> bgPos = CreateObject<ListPositionAllocator> ();
+          for (uint32_t i = 0; i < lte_bg_ue; i++)
+            bgPos->Add (Vector (pr->GetValue (x0, x1), pr->GetValue (y0, y1), 1.5));
+          MobilityHelper bgMob;
+          bgMob.SetPositionAllocator (bgPos);
+          bgMob.Install (bgNodes);
+          if (urban)
+            BuildingsHelper::Install (bgNodes);
+          internet.Install (bgNodes);
+          bgDevs = lteHelper->InstallUeDevice (bgNodes);
+        }
       // xgregorm: meranie vyuzitia PRB uplinku po bunkach
       xgload::useL = load_stats;
       for (uint32_t e = 0; e < enbDevs.GetN (); ++e)
@@ -827,6 +897,37 @@ main (int argc, char *argv[])
               }, ue));
         }
       epcHelper->AssignUeIpv4Address (ueDevs);
+      if (lte_bg_ue > 0)
+        {
+          epcHelper->AssignUeIpv4Address (bgDevs);
+          xglbg::onT = CreateObject<ExponentialRandomVariable> ();
+          xglbg::onT->SetAttribute ("Mean", DoubleValue (0.5));
+          xglbg::onT->SetStream (3110);
+          xglbg::offT = CreateObject<ExponentialRandomVariable> ();
+          xglbg::offT->SetAttribute ("Mean", DoubleValue (0.5));
+          xglbg::offT->SetStream (3111);
+          for (uint32_t u = 0; u < bgNodes.GetN (); ++u)
+            {
+              Ptr<LteUeNetDevice> ue = DynamicCast<LteUeNetDevice> (bgDevs.Get (u));
+              if (xgload::useL) // PRB pozadia patria do vytazenia bunky
+                ue->GetPhy ()->TraceConnectWithoutContext (
+                  "ReportUlPhyResourceBlocks", MakeBoundCallback (+[] (Ptr<LteUeNetDevice> d, uint16_t, const std::vector<int> &rbs) {
+                    xgload::lteRb[d->GetRrc ()->GetCellId ()] += rbs.size ();
+                  }, ue));
+              Ptr<Ipv4> ipv4 = bgNodes.Get (u)->GetObject<Ipv4> ();
+              ipv4RoutingHelper.GetStaticRouting (ipv4)->SetDefaultRoute (epcHelper->GetUeDefaultGatewayAddress (),
+                                                                           ipv4->GetInterfaceForDevice (bgDevs.Get (u)));
+              Ptr<Socket> so = Socket::CreateSocket (bgNodes.Get (u), UdpSocketFactory::GetTypeId ());
+              so->Bind ();
+              so->Connect (InetSocketAddress (serverAddr, 5001));
+              // start po pripojeni (1-2 s), zaciname vo faze OFF
+              Simulator::Schedule (Seconds (1.0 + pr->GetValue ()), &xglbg::burst, so, 0.0);
+            }
+          // prijimac na serveri (inak by server posielal ICMP port unreachable)
+          Ptr<Socket> sink = Socket::CreateSocket (server, UdpSocketFactory::GetTypeId ());
+          sink->Bind (InetSocketAddress (Ipv4Address::GetAny (), 5001));
+          sink->SetRecvCallback (MakeCallback (+[] (Ptr<Socket> s) { while (s->Recv ()) {} }));
+        }
       for (uint32_t u = 0; u < obuNodes.GetN (); ++u)
         {
           // LTE je jedina cesta do siete (802.11p ide cez PacketSocket/GeoNet, NR len multicast 225.0.0.0)
@@ -835,9 +936,15 @@ main (int argc, char *argv[])
                                                                        ipv4->GetInterfaceForDevice (ueDevs.Get (u)));
         }
       if (n_enb == 1)
-        lteHelper->Attach (ueDevs, enbDevs.Get (0));
+        {
+          lteHelper->Attach (ueDevs, enbDevs.Get (0));
+          if (lte_bg_ue > 0)
+            lteHelper->Attach (bgDevs, enbDevs.Get (0));
+        }
       else
         {
+          if (lte_bg_ue > 0)
+            lteHelper->Attach (bgDevs); // najsilnejsia bunka (staticke UE)
           lteHelper->AddX2Interface (enbNodes); // UE sa pripoja az pri vstupe do mapy (vyber bunky podla polohy)
           Config::ConnectWithoutContext ("/NodeList/*/DeviceList/*/LteUeRrc/HandoverStart",
                                          MakeCallback (+[] (uint64_t, uint16_t, uint16_t, uint16_t) { g_ho[0]++; }));
@@ -1087,6 +1194,18 @@ main (int argc, char *argv[])
   clientHelper.SetAttribute ("XgHybDwell", DoubleValue (hyb_dwell));
   clientHelper.SetAttribute ("XgColor", BooleanValue (color_tech));
   clientHelper.SetAttribute ("XgSecurity", BooleanValue (security == 2));
+  if (load_rat && !(adaptive && load_stats))
+    NS_FATAL_ERROR ("--load-rat needs --policy adaptive and --load-stats");
+  clientHelper.SetAttribute ("XgLoadRat", BooleanValue (load_rat));
+  clientHelper.SetAttribute ("XgCbrHigh", DoubleValue (cbr_high));
+  clientHelper.SetAttribute ("XgCbrLow", DoubleValue (cbr_low));
+  clientHelper.SetAttribute ("XgLteHigh", DoubleValue (lte_high));
+  clientHelper.SetAttribute ("XgLoadPeriod", DoubleValue (load_period));
+  if (qos_rat && !(adaptive && load_stats && security != 2))
+    NS_FATAL_ERROR ("--qos-rat needs --policy adaptive, --load-stats and --security 0/1");
+  clientHelper.SetAttribute ("XgQosRat", BooleanValue (qos_rat));
+  clientHelper.SetAttribute ("XgQosMargin", DoubleValue (qos_margin));
+  clientHelper.SetAttribute ("XgLatBudget", DoubleValue (lat_budget));
 
   STARTUP_FCN setupNewNode = [&] (std::string vehicleID,TraciClient::StationTypeTraCI_t stationType) -> Ptr<Node>
     {
@@ -1155,6 +1274,8 @@ main (int argc, char *argv[])
   Simulator::Destroy ();
 
   std::cout << "XGREGORM-RELAY,CAM:" << g_relay_n << std::endl;
+  if (lte_bg_ue > 0)
+    std::cout << "XGREGORM-LTEBG,UE:" << lte_bg_ue << ",PKT:" << xglbg::txN << ",BYTES:" << xglbg::txN * xglbg::pkt << std::endl;
   if (spat_on || cpm_share > 0)
     xgbg::print ();
   std::cout << "XGREGORM-WIFIFRAMES,N:" << xgload::wFrames << ",BYTES:" << xgload::wBytes << std::endl;

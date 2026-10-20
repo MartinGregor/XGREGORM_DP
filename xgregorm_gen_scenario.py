@@ -113,6 +113,20 @@ ap.add_argument("--hyb-qmin", type=float, default=0.9,
                 help="hybrid adaptive: lowest share of CAMs confirmed by the RSU to rely on one direct technology")
 ap.add_argument("--hyb-dwell", type=float, default=1.0,
                 help="hybrid adaptive: the direct link must be good this long before the backup is switched off [s]")
+ap.add_argument("--load-rat", type=int, default=0, choices=[0, 1],
+                help="hybrid adaptive: choose the main direct technology by load - 802.11p, at CBR >= --cbr-high part of "
+                     "the vehicles move to NR-V2X (back below --cbr-low), LTE backup only below --lte-high PRB usage")
+ap.add_argument("--cbr-high", type=float, default=0.3, help="load rule: congested CBR (ETSI DCC 0.3)")
+ap.add_argument("--cbr-low", type=float, default=0.2, help="load rule: CBR of 802.11p to return from NR-V2X")
+ap.add_argument("--lte-high", type=float, default=0.6, help="load rule: LTE UL PRB usage above which LTE is no backup")
+ap.add_argument("--qos-rat", type=int, default=0, choices=[0, 1],
+                help="hybrid adaptive: choose the main direct technology by the measured reliability (neighbours' CAMs "
+                     "within 100 m delivered within --lat-budget, per technology); takes precedence over --load-rat")
+ap.add_argument("--qos-margin", type=float, default=0.05, help="quality rule: required reliability advantage")
+ap.add_argument("--lat-budget", type=float, default=0.1, help="quality rule: CAM latency budget [s]")
+ap.add_argument("--lte-bg-ue", type=int, default=0,
+                help="hybrid: other (non-V2X) LTE users in the cell - static UEs, each a group of phones with bursty uplink")
+ap.add_argument("--lte-bg-kbps", type=float, default=500, help="hybrid: mean uplink rate of one background LTE UE [kbit/s]")
 ap.add_argument("--channel", default="authors", choices=["authors", "3gpp", "urban"],
                 help="hybrid: radio channel of 802.11p and NR-V2X; authors = 802.11p LogDistance (authors' 802.11p "
                      "examples) and NR 3GPP V2V highway (authors' NR example), 3gpp = both on the same 3GPP TR 37.885 "
@@ -706,6 +720,9 @@ HYB = (f"{TM} --tls-radius={a.tls_radius}"
        + f" --policy={a.policy}"
        + "".join(f" --fail-{t}={v}" for t, v in (("80211p", a.fail_80211p), ("lte", a.fail_lte), ("nr", a.fail_nr)) if v)
        + f" --hyb-range={a.hyb_range} --hyb-qmin={a.hyb_qmin} --hyb-dwell={a.hyb_dwell}"
+       f" --load-rat={'true' if a.load_rat else 'false'} --cbr-high={a.cbr_high} --cbr-low={a.cbr_low} --lte-high={a.lte_high}"
+       f" --qos-rat={'true' if a.qos_rat else 'false'} --qos-margin={a.qos_margin} --lat-budget={a.lat_budget}"
+       f" --lte-bg-ue={a.lte_bg_ue} --lte-bg-kbps={a.lte_bg_kbps}"
        f" --core-delay={a.core_delay}" + (f" --sumo-seed={a.seed}" if a.seed is not None else "")
        # xgregorm: dalsia prevadzka; MAPEM podla poctu pruhov krizovatky (4 ramena x pruhy dnu a von:
        # 45 B na prijazdovy pruh s prepojeniami, 32 B na vyjazdovy, 30 B hlavicka), podpis podla merania (Dennik)
@@ -1020,8 +1037,19 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
             print("    CAMs by path               : " + ", ".join(
                 f"{combo(m)} {100 * H(f'P{m}') / ht:.1f} %" for m in range(8) if H(f"P{m}")))
             print(f"    CAMs per technology        : 802.11p {on(1)}, LTE {on(2)} ({on(2) / max(a.sim_time, 1):.1f}/s "
-                  f"cellular uplink), NR {on(4)}; path switches {H('SWITCH')}, probes of 802.11p {H('PROBE')}")
+                  f"cellular uplink), NR {on(4)}; path switches {H('SWITCH')}, probes of 802.11p {H('PROBE')}, "
+                  f"moves of the main technology due to load {H('LOADSW')}, due to quality {H('QOSSW')}")
+            qe = [list(map(int, m)) for m in re.findall(r"QW:(\d+)/(\d+)/(\d+),QN:(\d+)/(\d+)/(\d+)", vystup)]
+            if qe:
+                # odhad vozidiel (z poradovych cisel) vs. skutocnost (PRR kopie po technologiach z polohy v SUMO)
+                q = [sum(r[i] for r in qe) for i in range(6)]
+                print(f"    quality estimate (vehicles): 802.11p received {q[1] / max(q[0], 1):.3f}, on time "
+                      f"{q[2] / max(q[0], 1):.3f} ({q[0]} expected) | NR received {q[4] / max(q[3], 1):.3f}, "
+                      f"on time {q[5] / max(q[3], 1):.3f} ({q[3]} expected) - compare with the PRR per technology below")
             print(f"    relayed by the server      : {relay.group(1) if relay else 'n/a'} CAMs to the RSUs over the backhaul")
+            ltebg = re.search(r"XGREGORM-LTEBG,UE:(\d+),PKT:(\d+),BYTES:(\d+)", vystup)
+            if ltebg:
+                print(f"    other LTE users            : {ltebg.group(1)} UEs, {int(ltebg.group(3)) * 8 / 1e3 / max(a.sim_time, 1):.0f} kbit/s uplink in total")
             if nrdrop:
                 print(f"    NR packets without a valid IP header dropped (5G-LENA, originally aborted the run): {nrdrop.group(1)}")
             print(f"    latency vehicle -> RSU     : 802.11p {lat[0]:.2f} ms ({S_('LAT_W_N'):.0f}), LTE + core + backhaul "

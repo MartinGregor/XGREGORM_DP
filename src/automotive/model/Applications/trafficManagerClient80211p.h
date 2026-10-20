@@ -14,6 +14,8 @@
 #include <map> // xgregorm
 #include <array> // xgregorm
 #include <set> // xgregorm
+#include <deque> // xgregorm
+#include "ns3/xgregorm-hybrid-socket.h" // xgregorm
 
 namespace ns3 {
 
@@ -111,6 +113,36 @@ private:
   bool m_xg_security = false;          //!< xgregorm: podpis sprav (GeoNet security autorov)
   int m_xg_color_last = -1;
   EventId m_xg_color_ev;
+  // xgregorm: vyber technologie podla zataze (XgLoadRat): hlavna priama technologia 802.11p -> NR-V2X pri zahlteni
+  void xgLoadUpdate (int avail);
+  static int xgOtherDirect (int b) { return b == 1 ? 4 : 1; } // 802.11p (1) <-> NR-V2X (4)
+  bool m_xg_load = false;
+  double m_cbr_high = 0.3, m_cbr_low = 0.2, m_lte_high = 0.6, m_load_period = 1.0;
+  double m_load_avg[3] = {0, 0, 0};    //!< klzavy priemer zataze (~1 s): CBR 802.11p, PRB LTE bunky, SL-CBR NR
+  bool m_load_init = false;
+  int m_main = 1;                      //!< hlavna priama technologia (xghyb::WIFI / NR)
+  double m_load_eval_t = -10;
+  uint64_t m_load_sw = 0;              //!< presuny hlavnej technologie kvoli zatazi
+  Ptr<UniformRandomVariable> m_load_rnd;
+  double m_lte_thr = 0.6;              //!< prah PRB bunky pre zalohu LTE tohto auta (nahodne okolo XgLteHigh)
+  // xgregorm: vyber technologie podla nameranej kvality (XgQosRat): spolahlivost = podiel CAM susedov do 100 m
+  // dorucenych nacas (<= XgLatBudget), kazda priama technologia zvlast; straty z poradoveho cisla v znacke GeoNet
+  void xgRxGn (Ptr<Socket> socket);
+  static void xgRxGnStatic (Ptr<GeoNet>, trafficManagerClient80211p *c, Ptr<Socket> socket) { c->xgRxGn (socket); }
+  void xgQosRx (unsigned long sender, int k, int mark, long gdt);
+  int xgMark ();
+  bool m_xg_qos = false;
+  double m_qos_margin = 0.05, m_lat_budget = 0.1;
+  Ptr<XgRxProxySocket> m_rx_proxy;
+  int m_rx_mark = -1;                  //!< znacka prave spracuvaneho prijateho paketu (-1 = ziadna)
+  uint8_t m_tx_seq = 0;
+  struct QRec { int seq; bool has[2]; double t0; bool got[2]; double lat[2]; };
+  struct QSt { std::deque<QRec> recs; int seq = -1; bool has[2] = {false, false}; double t = -10; };
+  std::map<unsigned long, QSt> m_qst;  //!< odosielatel -> CAM cakajuce na vyhodnotenie + posledna vyhodnotena
+  void xgQosFinish (unsigned long sender, QSt &st, const QRec &r);
+  double m_q_exp[2] = {0, 0}, m_q_ok[2] = {0, 0}; //!< klzave sucty (~2 s): ocakavane / dorucene nacas
+  uint64_t m_qt_exp[2] = {0, 0}, m_qt_rx[2] = {0, 0}, m_qt_ok[2] = {0, 0}; //!< celkove sucty (vypis, porovnanie so skutocnostou)
+  uint64_t m_qos_sw = 0;               //!< presuny hlavnej technologie kvoli kvalite
 };
 }
 #endif // trafficManagerClient80211p_H

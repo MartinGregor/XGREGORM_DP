@@ -108,7 +108,50 @@ namespace ns3
             "per second, digest otherwise) - realistic message size",
             BooleanValue (false),
             MakeBooleanAccessor (&trafficManagerClient80211p::m_xg_security),
-            MakeBooleanChecker ());
+            MakeBooleanChecker ())
+        .AddAttribute ("XgLoadRat",
+            "Adaptive hybrid: choose the main direct technology by load - 802.11p, under congestion part of the vehicles "
+            "move to NR-V2X, LTE backup only when the cell is not overloaded (needs the load measurement of the scenario)",
+            BooleanValue (false),
+            MakeBooleanAccessor (&trafficManagerClient80211p::m_xg_load),
+            MakeBooleanChecker ())
+        .AddAttribute ("XgCbrHigh",
+            "Load rule: CBR from which a direct channel counts as congested (ETSI TS 102 687 DCC: 0.3 relaxed -> active)",
+            DoubleValue (0.3),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_cbr_high),
+            MakeDoubleChecker<double> (0, 1))
+        .AddAttribute ("XgCbrLow",
+            "Load rule: CBR of 802.11p below which vehicles return from NR-V2X (hysteresis)",
+            DoubleValue (0.2),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_cbr_low),
+            MakeDoubleChecker<double> (0, 1))
+        .AddAttribute ("XgLteHigh",
+            "Load rule: uplink PRB usage of the LTE cell above which LTE is not added as a backup",
+            DoubleValue (0.6),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_lte_high),
+            MakeDoubleChecker<double> (0, 1))
+        .AddAttribute ("XgLoadPeriod",
+            "Load rule: how often a vehicle re-evaluates its main technology [s] (also the minimum dwell time)",
+            DoubleValue (1.0),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_load_period),
+            MakeDoubleChecker<double> (0.1))
+        .AddAttribute ("XgQosRat",
+            "Adaptive hybrid: choose the main direct technology by the measured reliability (share of the neighbours' "
+            "CAMs within 100 m delivered within XgLatBudget, per technology; losses from a sequence number in the GeoNet "
+            "basic header); moves only to a technology that is not congested (needs the load measurement)",
+            BooleanValue (false),
+            MakeBooleanAccessor (&trafficManagerClient80211p::m_xg_qos),
+            MakeBooleanChecker ())
+        .AddAttribute ("XgQosMargin",
+            "Quality rule: the other technology must be this much more reliable to move to it (hysteresis)",
+            DoubleValue (0.05),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_qos_margin),
+            MakeDoubleChecker<double> (0, 1))
+        .AddAttribute ("XgLatBudget",
+            "Quality rule: latency budget of a CAM [s]; a later CAM counts as lost (3GPP reliability)",
+            DoubleValue (0.1),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_lat_budget),
+            MakeDoubleChecker<double> (0.001));
         return tid;
   }
 
@@ -267,7 +310,26 @@ namespace ns3
           }
         // zaciatok: vsetky dostupne cesty (adaptivny rezim to po prvom ticku zuzi)
         m_hyb_path = m_hyb_base = m_hyb_mask;
-        m_caService.setSocketTx (Create<XgHybridSocket> (m_socket, lte, nr, [this] () { return xgEffectivePath (); }));
+        if (m_xg_load || m_xg_qos)
+          m_load_rnd = CreateObject<UniformRandomVariable> ();
+        // pravidlo zataze: kazde auto ma vlastny prah PRB pre zalohu LTE (rovnomerne XgLteHigh +- 0.2) - pri raste
+        // vytazenia bunky zalohu vypina postupne cast aut, nie vsetky naraz
+        if (m_xg_load)
+          m_lte_thr = m_lte_high + 0.4 * (m_load_rnd->GetValue () - 0.5);
+        Ptr<XgHybridSocket> hs = Create<XgHybridSocket> (m_socket, lte, nr, [this] () { return xgEffectivePath (); });
+        if (m_xg_qos)
+          {
+            // pravidlo kvality: CAM nesie v poli Reserved hlavicky GeoNet technologie a poradove cislo, prijem
+            // 802.11p aj NR ide najprv cez klienta (precita znacku), potom do GeoNet
+            hs->SetMark ([this] () { return xgMark (); });
+            m_rx_proxy = Create<XgRxProxySocket> (GetNode ());
+            // callback drzi Ptr<GeoNet> ako povodny (MakeCallback(&GeoNet::receiveGN, m_geoNet)) - inak by GeoNet
+            // na konci behu zanikol s beziacimi casovacmi LocT (NS_FATAL "Event is still running while destroying")
+            m_socket->SetRecvCallback (MakeBoundCallback (&trafficManagerClient80211p::xgRxGnStatic, m_geoNet, this));
+            if (nr)
+              nr->SetRecvCallback (MakeBoundCallback (&trafficManagerClient80211p::xgRxGnStatic, m_geoNet, this));
+          }
+        m_caService.setSocketTx (hs);
       }
     // xgregorm: algoritmus relevancie - brana pred kazdou CAM spustenou v CA sluzbe
     if (m_xg_relax)
@@ -488,6 +550,15 @@ namespace ns3
       return now - l.last < 1.0 && l.q >= m_hyb_qmin;
     };
     int direct = avail & (xghyb::WIFI | xghyb::NR);
+    // hlavna priama technologia: bez pravidiel zataze a kvality 802.11p (ak je), inak podla nich (xgLoadUpdate)
+    int prim = (direct & xghyb::WIFI) ? xghyb::WIFI : xghyb::NR;
+    if (m_xg_load || m_xg_qos)
+      {
+        xgLoadUpdate (avail);
+        if (direct & m_main)
+          prim = m_main;
+      }
+    int other = direct & xgOtherDirect (prim);
     int path;
     int probe = 0;
     bool confirmed = true;
@@ -498,22 +569,34 @@ namespace ns3
       // XgHybDwell s, aby radic videl, ze auto odislo (inak by ho dalej pocital na prijazde)
       path = now - m_hyb_need_t < m_hyb_dwell ? avail & xghyb::LTE : 0;
     else if (!need)
-      path = (direct & xghyb::WIFI) ? xghyb::WIFI : xghyb::NR;
-    else if (ok (xghyb::WIFI))
-      path = xghyb::WIFI;
-    else if (ok (xghyb::NR))
+      path = prim;
+    else if (ok (prim))
+      path = prim;
+    else if (other && ok (other))
       {
-        path = xghyb::NR;
-        if ((direct & xghyb::WIFI) && now - m_hyb_probe_t >= 1.0)
+        path = other;
+        if (prim == xghyb::WIFI && now - m_hyb_probe_t >= 1.0)
           {
             probe = xghyb::WIFI; // skuska 802.11p (jeden tick = najviac jedna CAM)
             m_hyb_probe_t = now;
             m_hyb_probes++;
           }
       }
-    else
+    else if (!m_xg_load)
       {
         path = direct | (avail & xghyb::LTE);
+        confirmed = false;
+      }
+    else
+      {
+        // pravidlo zataze: RSU nepotvrdzuje ziadnu priamu technologiu. Druhu priamu pridame len ak nie je zahltena
+        // (kopia do zahlteneho kanala by stratu este zhorsila), LTE len ak bunka nie je pretazena - inak by zaloha
+        // zahltila jedinu bunku (Dennik 2026-10-20: 54 % CAM so zalohou LTE, PRB 0.48)
+        path = prim;
+        if (other && m_load_avg[xghyb::idx (other)] < m_cbr_high)
+          path |= other;
+        if ((avail & xghyb::LTE) && m_load_avg[1] < m_lte_thr)
+          path |= xghyb::LTE;
         confirmed = false;
       }
     if (!confirmed)
@@ -527,6 +610,201 @@ namespace ns3
       m_hyb_switch++;
     m_hyb_base = path;
     m_hyb_path = path | probe;
+  }
+
+  void
+  trafficManagerClient80211p::xgLoadUpdate (int avail)
+  {
+    // xgregorm: vyber hlavnej priamej technologie podla zataze (kazde auto samo, z toho, co realne vie):
+    //  - CBR 802.11p meria kazda stanica sama (ETSI TS 102 687), SL-CBR NR-V2X tiez (3GPP TS 38.215; v ns-3 odhad),
+    //    vytazenie bunky LTE oznamuje siet (3GPP Rel-16 predikcia QoS pre V2X, TS 23.287) - priemer za ~1 s
+    //  - raz za XgLoadPeriod s: na 802.11p pri CBR >= XgCbrHigh (ETSI DCC active) a menej zatazenom NR prejde na NR
+    //    s pravdepodobnostou (CBR - ciel) / CBR, ciel = (XgCbrHigh + XgCbrLow) / 2 - presunie sa len cast aut, ktora
+    //    kanal vrati k cielu (keby presli vsetky naraz, zahltili by NR a vratili sa = kmitanie);
+    //    na NR sa vrati, ked CBR 802.11p klesne pod XgCbrLow (s pravdepodobnostou (XgCbrLow - CBR) / XgCbrLow),
+    //    alebo ked sa zahlti NR a 802.11p je na tom lepsie
+    //  - auto ma oba prijimace (prijima 802.11p aj NR), susedia ho teda pocuju aj po presune
+    double a = 0.1; // klzavy priemer vzoriek po 100 ms, casova konstanta ~1 s
+    uint32_t node = GetNode ()->GetId ();
+    for (int k = 0; k < 3; k++)
+      if (xgstats::loadFn ()[k])
+        {
+          double v = xgstats::loadFn ()[k] (node);
+          m_load_avg[k] = m_load_init ? (1 - a) * m_load_avg[k] + a * v : v;
+        }
+    m_load_init = true;
+    double now = Simulator::Now ().GetSeconds ();
+    // pravidlo kvality: klzave sucty dorucenych / ocakavanych CAM zabudaju s casovou konstantou 2 s
+    double fq = std::exp (-0.1 / 2.0);
+    for (int k = 0; k < 2; k++)
+      {
+        m_q_exp[k] *= fq;
+        m_q_ok[k] *= fq;
+      }
+    bool both = (avail & xghyb::WIFI) && (avail & xghyb::NR);
+    if (!both)
+      {
+        // len jedna priama technologia (vypadok / v aute nie je) - nie je kam presuvat
+        int d = avail & (xghyb::WIFI | xghyb::NR);
+        if (d && d != m_main)
+          m_main = d;
+        return;
+      }
+    if (now - m_load_eval_t < m_load_period)
+      return;
+    m_load_eval_t = now;
+    double cw = m_load_avg[0], cn = m_load_avg[2];
+    double target = (m_cbr_high + m_cbr_low) / 2;
+    double u = m_load_rnd->GetValue ();
+    int prev = m_main;
+    // pravidlo kvality (XgQosRat, ma prednost): spolahlivost r = CAM susedov dorucene nacas / ocakavane, kazda
+    // technologia zvlast; prejde na druhu, ak je spolahlivejsia aspon o XgQosMargin a nie je zahltena, s
+    // pravdepodobnostou zisk / 0.4 (pri zisku 0.2 polovica aut za 1 s - aby sa nepresunuli vsetky naraz)
+    int im = m_main == xghyb::WIFI ? 0 : 1, io = 1 - im;
+    const double kQmin = 20; // najmenej ocakavanych CAM v klzavom okne, inak je kvalita nezname
+    bool known = m_xg_qos && m_q_exp[0] >= kQmin && m_q_exp[1] >= kQmin;
+    double r[2] = {known ? m_q_ok[0] / m_q_exp[0] : 0, known ? m_q_ok[1] / m_q_exp[1] : 0};
+    double gain = known ? r[io] - r[im] : 0;
+    double lo = io == 0 ? cw : cn;
+    if (known && gain > m_qos_margin && lo < m_cbr_high)
+      {
+        if (u < std::min (1.0, gain / 0.4))
+          {
+            m_main = xgOtherDirect (m_main);
+            m_qos_sw++;
+          }
+        return;
+      }
+    if (!m_xg_load)
+      return;
+    // pravidlo zataze: nikdy na technologiu, ktora je namerane horsia o viac nez XgQosMargin
+    bool worse = known && -gain > m_qos_margin;
+    if (m_main == xghyb::WIFI)
+      {
+        if (cw >= m_cbr_high && cn < m_cbr_high && cn < cw && !worse && u < (cw - target) / cw)
+          m_main = xghyb::NR;
+      }
+    else if (cn >= m_cbr_high && cw < cn)
+      {
+        if (!worse && u < (cn - target) / cn)
+          m_main = xghyb::WIFI;
+      }
+    else if (cw < m_cbr_low && !worse && u < (m_cbr_low - cw) / m_cbr_low)
+      m_main = xghyb::WIFI;
+    if (m_main != prev)
+      m_load_sw++;
+  }
+
+  int
+  trafficManagerClient80211p::xgMark ()
+  {
+    // znacka odosielanej CAM: priame technologie, ktorymi auto prave posiela (bez skusky 802.11p z NR - ta nie je
+    // suvisly prud) + poradove cislo CAM mod 64
+    int p = xgPathNow ();
+    int m = ((p & xghyb::WIFI) ? 0x80 : 0) | ((p & xghyb::NR) ? 0x40 : 0) | (m_tx_seq & 63);
+    m_tx_seq++;
+    return m;
+  }
+
+  void
+  trafficManagerClient80211p::xgRxGn (Ptr<Socket> socket)
+  {
+    // prijem GeoNet (802.11p aj NR) pri pravidle kvality: precita znacku z pola Reserved zakladnej hlavicky,
+    // paket potom spracuje GeoNet ako obvykle (receiveCAM ju najde v m_rx_mark)
+    Ptr<Packet> p;
+    Address from;
+    while ((p = socket->RecvFrom (from)))
+      {
+        m_rx_mark = -1;
+        if (p->GetSize () >= 6)
+          {
+            uint8_t h[6];
+            p->CopyData (h, 6);
+            if ((h[0] & 0x0f) == 1)
+              m_rx_mark = h[1];
+          }
+        m_rx_proxy->Set (p, from);
+        m_geoNet->receiveGN (m_rx_proxy);
+        m_rx_mark = -1;
+      }
+  }
+
+  void
+  trafficManagerClient80211p::xgQosRx (unsigned long sender, int k, int mark, long gdt)
+  {
+    // kvalita technologie k (0 = 802.11p, 1 = NR) z pohladu prijimaca. Znacka CAM hovori, ktorymi technologiami
+    // ju odosielatel poslal, a jej poradove cislo. Kazda CAM (aj ta, ktora prisla len druhou technologiou) sa po
+    // 200 ms vyhodnoti: pre kazdu technologiu zo znacky ocakavana 1, dorucena, ak prisla touto technologiou, nacas,
+    // ak oneskorenie (cas vzniku z generationDeltaTime, hodiny GNSS) <= XgLatBudget. CAM, ktore chybaju v poradovych
+    // cislach (nedosli ziadnou technologiou), su stratene pre technologie, ktore mali obe susedne CAM v znacke.
+    // Predpoklad: kanal je symetricky - co ja zle prijimam od susedov, to oni zle prijimaju odo mna.
+    // Obmedzenie: sused, ktoreho nepocujem ziadnou technologiou, v odhade chyba.
+    double now = Simulator::Now ().GetSeconds ();
+    bool has[2] = {(mark & 0x80) != 0, (mark & 0x40) != 0};
+    if (!has[0] && !has[1])
+      return;
+    int seq = mark & 63;
+    long nowms = compute_timestampIts (m_real_time) % 65536;
+    double lat = ((nowms - gdt + 65536) % 65536) / 1000.0;
+    QSt &st = m_qst[sender];
+    QRec *r = nullptr;
+    for (auto it = st.recs.rbegin (); it != st.recs.rend (); ++it)
+      if (it->seq == seq && now - it->t0 < 1.0)
+        {
+          r = &*it;
+          break;
+        }
+    if (!r)
+      {
+        st.recs.push_back (QRec {seq, {has[0], has[1]}, now, {false, false}, {0, 0}});
+        r = &st.recs.back ();
+      }
+    if (!r->got[k])
+      {
+        r->got[k] = true;
+        r->lat[k] = lat;
+      }
+    while (!st.recs.empty () && now - st.recs.front ().t0 > 0.2)
+      {
+        xgQosFinish (sender, st, st.recs.front ());
+        st.recs.pop_front ();
+      }
+  }
+
+  void
+  trafficManagerClient80211p::xgQosFinish (unsigned long sender, QSt &st, const QRec &r)
+  {
+    int miss = 0;
+    if (st.seq >= 0 && r.t0 - st.t < 3.0)
+      {
+        int g = (r.seq - st.seq) & 63;
+        if (g == 0)
+          return; // ta ista CAM este raz
+        miss = g - 1;
+      }
+    // susedia do 100 m (ako skutocne PRR); poloha odosielatela je v jeho CAM, v simulacii zo vzorky SUMO (~100 ms)
+    auto &vp = xgstats::vehPos ();
+    auto me = vp.find (m_sid), he = vp.find (sender);
+    bool near = me != vp.end () && he != vp.end ()
+                && std::hypot (me->second.first - he->second.first, me->second.second - he->second.second) <= 100;
+    // NR sidelink bearer vznika az v case nrFrom (autori: 2 s) - dovtedy sa NR nemeria (artefakt nastavenia)
+    if (near && r.t0 >= xgstats::nrFrom ())
+      for (int k = 0; k < 2; k++)
+        {
+          if (!r.has[k])
+            continue;
+          double e = 1 + (st.has[k] ? miss : 0);
+          bool ok = r.got[k] && r.lat[k] <= m_lat_budget;
+          m_q_exp[k] += e;
+          m_q_ok[k] += ok;
+          m_qt_exp[k] += e;
+          m_qt_rx[k] += r.got[k];
+          m_qt_ok[k] += ok;
+        }
+    st.seq = r.seq;
+    st.has[0] = r.has[0];
+    st.has[1] = r.has[1];
+    st.t = r.t0;
   }
 
   void
@@ -611,7 +889,11 @@ namespace ns3
           std::cout << "XGREGORM-HYB," << m_id;
           for (int m = 0; m < 8; m++)
             std::cout << ",P" << m << ":" << m_hyb_cnt[m];
-          std::cout << ",SWITCH:" << m_hyb_switch << ",PROBE:" << m_hyb_probes << std::endl;
+          std::cout << ",SWITCH:" << m_hyb_switch << ",PROBE:" << m_hyb_probes << ",LOADSW:" << m_load_sw;
+          if (m_xg_qos)
+            std::cout << ",QOSSW:" << m_qos_sw << ",QW:" << m_qt_exp[0] << "/" << m_qt_rx[0] << "/" << m_qt_ok[0]
+                      << ",QN:" << m_qt_exp[1] << "/" << m_qt_rx[1] << "/" << m_qt_ok[1];
+          std::cout << std::endl;
         }
       std::cout << "XGREGORM-GAP," << m_id << ",MIN:" << (m_gap_min < 1e8 ? m_gap_min * 1000 : -1)
                 << ",MAX:" << m_gap_max * 1000 << ",LT100:" << m_gap_low << ",GT1000:" << m_gap_high << std::endl;
@@ -644,6 +926,9 @@ namespace ns3
     unsigned long sender = asn1cpp::getField (cam->header.stationId, unsigned long);
     if (sender >= 1000000)
       m_rsu_heard[InetSocketAddress::IsMatchingType (from) ? 2 : 0] = Simulator::Now ().GetSeconds (); // CAM RSU
+    if (sender < 1000000 && m_xg_qos && m_rx_mark >= 0)
+      xgQosRx (sender, InetSocketAddress::IsMatchingType (from) ? 1 : 0, m_rx_mark,
+               asn1cpp::getField (cam->cam.generationDeltaTime, long));
     if (sender < 1000000)
       xgstats::onVehCamRx (m_sid, sender, asn1cpp::getField (cam->cam.generationDeltaTime, long),
                            InetSocketAddress::IsMatchingType (from) ? 2 : 0); // UDP = NR-V2X
