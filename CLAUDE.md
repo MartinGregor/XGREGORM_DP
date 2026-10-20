@@ -48,6 +48,9 @@ prepnutia medzi RSU) oproti pôvodným aplikáciám autorov.
 | `src/nr/model/nr-ue-mac.cc` (5G-LENA) | **> 255 NR zariadení**: SCI stage 2 nesie zo zdrojového L2 ID len 8 bitov (3GPP; zvyšných 16 je v realite v MAC hlavičke SL-SCH, ktorú model nemá) -> ID sa opakovali (IMSI 256 -> 0 -> `NS_ABORT` „Layer 2 source ... shouldn't be 0“, IMSI 1 a 257 zdieľali prijímaciu RLC -> zle poskladané pakety „Unknown IP type“). Plné 24-bitové ID ide ako značka paketu `XgSlSrcL2IdTag` pri SCI 2 (veľkosť vysielania sa nemení); pri < 256 zariadeniach bit po bite bez zmeny | `xgregorm_kod_zaloha/nr-ue-mac.cc` |
 | `src/lte/model/nr-sl-ue-rrc.cc` (5G-LENA; `src/lte/` je v `.gitignore`, zmena je v repozitári len ako `xgregorm_kod_zaloha/nr-sl-ue-rrc_xgregorm_diff.txt`) | **chyba autorov 5G-LENA**: `DoAddNrSlRxDataRadioBearer` hľadal prijímací bearer v `m_slRxDrbMap`, ale vkladal do `m_slDrbMap` (vysielacie bearery podľa cieľa); pri zdroji s L2 ID = cieľu vlastného vysielania (255) sa vloženie neurobilo, RLC/PDCP zaniklo a MAC držal neplatný ukazovateľ -> SIGSEGV v `NrSlBwpManagerUe::DoReceiveNrSlRlcPdu` (500 áut pri výpadku 802.11p). Opravené vkladanie do `m_slRxDrbMap`; pri < 255 zariadeniach bez zmeny | `xgregorm_kod_zaloha/nr-sl-ue-rrc.cc` |
 | `xgregorm-stats.h` (nový, `model/Applications/`), `src/automotive/CMakeLists.txt` | merania (len čítanie zo SUMO): presnosť informácie RSU, uplink do RSU, skutočné PRR auto-auto; hlavička zaradená do zoznamu hlavičiek modulu; od 2026-10-14 záťaž technológií a výkonnosť podľa záťaže (`trafficManagerClient80211p.cc` posiela do `onCamTx` cesty CAM a ID uzla) | `xgregorm_kod_zaloha/automotive_CMakeLists.txt` |
+| `xgregorm-hybrid.cc`, `xgregorm_gen_scenario.py` (moje) | **realistický mestský kanál `--channel urban`** (2026-10-20): 802.11p a NR = 3GPP TR 37.885 V2V Urban (budovy rozhodnú LOS/NLOS, inak pravdepodobnostne LOS/NLOSv, tienenie, `UpdatePeriod` 100 ms – u autorov 0 = stav kanála sa nikdy neobnoví), LTE = 3GPP TR 38.901 UMa + `BuildingsChannelConditionModel`; výšky eNB 25 m, RSU 5 m, autá 1.5 m; výkon 802.11p 23 dBm (ako NR), LTE UE 23 dBm. **Budovy** generuje skript z blokov medzi ulicami (`xgregorm_buildings.txt` pre ns-3 + `.poly.xml` do SUMO GUI), 15-30 m, 357 kvádrov na city-center | – (môj kód) |
+| `xgregorm-hybrid.cc` (môj) | **pozadie `xgbg`**: RSU SPATEM 10 Hz (190 B) + MAPEM 1 Hz (30 + 4·pruhy·77 B) cez 802.11p aj NR; autá so senzormi (`--cpm-share`) CPM podľa ETSI TS 103 324 (kontrola 100 ms, objekty do `--cpm-range` 150 m s priamou viditeľnosťou cez budovy, zaradenie: nový / posun > 4 m / 1 s, 50 + 35·n B, info o senzore 1x za s), cez hlavnú priamu technológiu; každá správa + 44 B BTP/GN + podpis; výpisy `XGREGORM-BG`, `XGREGORM-BGCPM`, `XGREGORM-WIFIFRAMES` | – (môj kód) |
+| `xgregorm-hybrid-socket.h` (môj), `trafficManagerClient80211p.cc/.h`, `trafficManagerServer80211p.cc/.h` | **bezpečnosť ETSI TS 103 097** `--security`: 1 = model veľkosti (prepínač pridá k paketu +93 B digest / +242 B certifikát 1x za s; hodnoty zmerané z kryptografie autorov), 2 = skutočná kryptografia GeoNet autorov (atribút klienta aj servera `XgSecurity` -> `setSecurity(true)`; 3x pomalšie a falošné „invalid signature“ pri digeste od neznámeho certifikátu, preto predvolene 1) | `xgregorm_kod_zaloha/` |
 
 **Pravidlo riadenia semaforov:** 802.11p = každá RSU riadi len semafor svojej križovatky (ako
 v realite: radič + RSU na každej križovatke), predvolené v kóde aj v skripte. LTE = jeden server
@@ -207,6 +210,8 @@ python3 xgregorm_gen_scenario.py --name velke --grid 5 --step 250 --rsu 13 --veh
 python3 xgregorm_gen_scenario.py --map city-center --diag          # druhá mapa: centrum, 9 semaforov, 3 pruhy, 600 áut
 python3 xgregorm_gen_scenario.py --vehicles 30 --run hybrid --fail-80211p 40:70 --gui --colorful   # autá farebne podľa technológie
 python3 xgregorm_gen_scenario.py --vehicles 30 --sim-time 60 --run hybrid --fail-80211p 20:40 --live 1   # každú 1 s: % áut na technológiách + ich záťaž
+python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --sim-time 20 --run hybrid --channel urban   # budovy + 3GPP mestský kanál (max 1 bunka LTE = 280 áut)
+python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --run hybrid --channel urban --security 1 --spat 1 --cpm-share 1.0   # + podpis, SPaT/MAPEM, CPM všetkých áut (realistická záťaž)
 ./ns3 build                                                 # len po zmene C++ kódu
 ```
 
@@ -734,6 +739,60 @@ python3 xgregorm_gen_scenario.py --vehicles 30 --sim-time 60 --run hybrid --fail
   B: 200 áut, 30 s, 1 bunka, výpadok 802.11p 10-20 s + NR 15-17 s (18 min): pri výpadku 802.11p 100 % na NR (záťaž NR
   2 -> 7 %, LTE záloha 32-44 %), pri dvojitom výpadku 94-100 % na LTE (PRB 22-39 %), po návrate do 1 s späť; PRR 802.11p
   0.997, NR 0.992, LTE 0.955-1.0 (18-31 ms); auto-auto 0.925 (vrátane 2 s bez priamej technológie), uplink 0.994.
+- **2026-10-20** – **Realizmus: budovy + 3GPP mestský kanál, podpis správ, ďalšia prevádzka (SPaT/MAPEM, CPM)**
+  (**necommitnuté – na želanie len zapísané**; viď posledné 3 riadky v Moje zmeny). Cieľ: dostať sa do stavu, keď má zmysel
+  prepnúť z 802.11p, aj keď je dostupné (zahltenie / strata), nie len pri výpadku.
+  1. **`--channel urban`**: budovy z blokov mapy (city-center 357 kvádrov 15-30 m, min. 1.6 m od osi pruhu), 802.11p a NR
+     TR 37.885 V2V Urban, LTE TR 38.901 UMa. Zistené: kanál autorov má `UpdatePeriod` 0 = stav LOS/NLOS dvojice sa
+     za celý beh nezmení (u nás 100 ms). Dosah (30 áut, 30 s, `--policy all`, doručenie po 50 m):
+
+     | spoj | 0-50 | 50-100 | 100-150 | 150-200 | 200-250 | 250-300 | 300-350 | 350-400 | 400-450 |
+     |---|---|---|---|---|---|---|---|---|---|
+     | auto-auto 802.11p, autori | 1.00 | 1.00 | 0.75 | 0 | | | | | |
+     | auto-auto 802.11p, urban | 0.99 | 0.75 | 0.43 | 0.11 | 0.11 | 0.08 | 0.03 | 0 | |
+     | auto-auto NR, urban (autori ~0.9 do 450 m) | 0.93 | 0.93 | 0.86 | 0.60 | 0.48 | 0.28 | 0.17 | 0.04 | |
+     | auto-RSU 802.11p, autori | 1.00 | 1.00 | 0.77 | 0 | | | | | |
+     | auto-RSU 802.11p, urban (RSU 5 m) | 1.00 | 0.99 | 0.97 | 0.48 | 0.36 | 0.23 | 0.20 | 0.12 | 0.05 |
+     | auto-RSU NR, urban | 0.97 | 0.92 | 0.93 | 0.80 | 0.62 | 0.42 | 0.27 | 0.20 | 0.09 |
+
+     Za rohom (NLOS) 802.11p padá už pod 100 m – zodpovedá meraniam v meste (literatúra: stovky m len pri LOS).
+  2. **Podpis (ETSI TS 103 097):** kryptografia autorov (`--security 2`) zväčší CAM priemerne 118 -> 250 B (+93 B digest,
+     +242 B certifikát 1x/s), beh 3x pomalší a 0-12 falošných „invalid signature“ na uzol -> `--security 1` = len veľkosť
+     (241 B, rýchlosť ako bez podpisu, PRR 1.0 pri 30 autách).
+  3. **Pozadie:** 30 áut, 10 s, urban + podpis + SPaT + CPM 50 %: CBR 802.11p ~1 % -> 5.7 %, SPATEM 802.11p 0.995 / NR 0.83, CPM 0.92.
+  4. **Limit 1 bunky LTE = 280 áut** (300 áut: `too many UEs (321) for SRS periodicity 320` – realistický kanál = opakované
+     RRC pripojenia). Pamäť ~1.2 GB na beh -> najviac 3 paralelne (4 behy vyčerpali 7.8 GB). Rozhodnutie: ďalej 1 bunka, 280 áut.
+  5. **280 áut, city-center, 1 bunka, 20 s, adaptívne, urban** (1 beh; c1 s kanálom autorov zastavený pre pamäť):
+
+     | | urban | + podpis, SPaT/MAPEM, CPM 30 % áut | + CPM 100 % áut |
+     |---|---|---|---|
+     | CBR 802.11p priemer / p95 / max | 0.031 / 0.05 / 0.09 | 0.129 / 0.22 / 0.38 | **0.250 / 0.42 / 0.84** |
+     | vzorky CBR ≥ 0.3 (ETSI DCC active) | 0 % | 0.3 % | **37 %** |
+     | NR SL-CBR (odhad) priemer / max | 0.014 / 0.025 | 0.062 / 0.11 | 0.105 / 0.18 |
+     | LTE PRB UL priemer / max (vzorky ≥ 0.3) | 0.15 / 0.65 (17 %) | 0.30 / 0.79 (45 %) | **0.48 / 0.79 (92 %)** |
+     | CAM len 802.11p / so zálohou LTE | 75 / 22 % | 58 / 37 % | 41 / **54 %** |
+     | CAM cez LTE za s | 192 | 321 | 466 |
+     | PRR kópie 802.11p / NR (auto-auto < 100 m) | 0.83 / 0.996 | 0.80 / 0.987 | **0.77 / 0.978** |
+     | skutočné PRR auto-auto (prvá kópia) | 0.851 | 0.867 | 0.892 |
+     | uplink do RSU < 100 m | 0.993 | 0.979 | 0.965 |
+     | vek informácie RSU (< 100 m) | 0.26 s | 0.27 s | 0.28 s |
+     | oneskorenie 802.11p / NR auto-auto / LTE -> RSU | 0.27 / 8.3 / 70 ms | 0.49 / 15.6 / 67 ms | 0.54 / 18.6 / 73 ms |
+     | SPATEM 802.11p / NR | – | 0.89 / 0.91 | 0.90 / 0.91 |
+     | MAPEM 802.11p / NR | – | 0.94 / 0.91 | 0.88 / 0.91 |
+     | CPM 802.11p / NR (počet, objekty na CPM) | – | 0.77 / 0.99 (14357, 4.6) | **0.70 / 0.97** (47184, 4.6, priem. 372 B) |
+     | čas behu | 24 min | 35 min | 44 min |
+
+     Hlavná technológia (LIVE) vo všetkých troch 94-97 % áut 802.11p. Doprava rovnaká (25.5 km/h, max státie 18.8 s).
+     **Závery:**
+     - Mestský kanál sám zníži PRR auto-auto do 100 m na ~0.85 (NLOS za rohom), 802.11p 0.83 vs. NR 0.996 – prečo je NR
+       zblízka v NLOS o toľko lepšie, neoverené (citlivosť / kódovanie NR, HARQ).
+     - S CPM všetkých áut je 802.11p v pásme ETSI DCC (priemer 0.25, 37 % času ≥ 0.3) a PRR klesá, NR kanál má rezervu
+       (≤ 0.18, odhad = dolná hranica). Teraz má zmysel odľahčiť 802.11p, hoci je dostupné.
+     - Súčasné adaptívne pravidlo reaguje len cez potvrdenia RSU -> pridáva zálohu cez **LTE** (22 -> 54 % CAM), čím zahltí
+       jedinú bunku (PRB 0.48, 92 % času ≥ 0.3, oneskorenie 70 ms, p99 > 1 s) – teda presúva záťaž na najdrahší zdroj,
+       kým NR má rezervu a lepšie PRR. Základ pre pravidlo podľa záťaže (ďalší krok): pri CBR 802.11p ≥ 0.3 presunúť časť áut na NR.
+     - PRR 802.11p podľa koša CBR v čase vyslania nie je monotónne (vyšší CBR = hustejšie miesta pri križovatkách, bližší
+       prijímatelia) – hodnoty po košoch nebrať ako príčinný vzťah.
 - Pozn.: v sekcii „Tok komunikácie“ je prehľad, čo ide cez ns-3 (CAM, kábel RSU-RSU) a čo cez
   TraCI (RSU -> semafor, mapa).
 

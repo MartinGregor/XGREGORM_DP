@@ -55,6 +55,11 @@ setOutage (int path, const std::string &spec)
     }
 }
 
+// model velkosti podpisu ETSI TS 103 097 (--security 1): bajty pridane ku kazdej sprave; namerane na implementacii
+// autorov (GeoNet security): s odtlackom certifikatu +93 B, s celym certifikatom (raz za 1 s) +242 B; 0 = vypnute
+inline uint32_t &secDigest () { static uint32_t v = 0; return v; }
+inline uint32_t &secCert () { static uint32_t v = 0; return v; }
+
 // casova os: pocet CAM za sekundu podla kombinacie ciest, ktorymi naozaj odisli (index = maska 0..7)
 inline std::map<int, std::array<uint64_t, 8>> &timeline () { static std::map<int, std::array<uint64_t, 8>> m; return m; }
 
@@ -82,6 +87,16 @@ public:
   {
     int path = m_select ();
     int ret = -1;
+    // xgregorm: --security 1 - podpis ako doplnenie na konci (GeoNet prijemcu cita payload podla dlzky v hlavicke)
+    if (xghyb::secDigest ())
+      {
+        double now = Simulator::Now ().GetSeconds ();
+        bool cert = now - m_lastCert >= 1.0;
+        if (cert)
+          m_lastCert = now;
+        p = p->Copy ();
+        p->AddPaddingAtEnd (cert ? xghyb::secCert () : xghyb::secDigest ());
+      }
     Ptr<Socket> s[3] = {m_wifi, m_lte, m_nr};
     for (int b : {xghyb::WIFI, xghyb::LTE, xghyb::NR})
       if ((path & b) && s[xghyb::idx (b)] && xghyb::up (b))
@@ -115,6 +130,7 @@ public:
 private:
   Ptr<Socket> m_wifi, m_lte, m_nr;
   std::function<int ()> m_select;
+  double m_lastCert = -10;
 };
 
 } // namespace ns3

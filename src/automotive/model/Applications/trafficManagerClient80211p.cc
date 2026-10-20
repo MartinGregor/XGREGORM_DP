@@ -102,6 +102,12 @@ namespace ns3
             "Hybrid: colour the vehicle in SUMO by the technology its CAMs currently use (visualisation only)",
             BooleanValue (false),
             MakeBooleanAccessor (&trafficManagerClient80211p::m_xg_color),
+            MakeBooleanChecker ())
+        .AddAttribute ("XgSecurity",
+            "Sign every GeoNet packet (ETSI TS 103 097, authors' GeoNet security: ECDSA signature, certificate once "
+            "per second, digest otherwise) - realistic message size",
+            BooleanValue (false),
+            MakeBooleanAccessor (&trafficManagerClient80211p::m_xg_security),
             MakeBooleanChecker ());
         return tid;
   }
@@ -174,6 +180,9 @@ namespace ns3
       m_geoNet->setMetricSupervisor(m_metric_supervisor);
     }
 
+    // xgregorm: podpis sprav ETSI TS 103 097 (implementacia autorov v GeoNet)
+    if (m_xg_security)
+      m_geoNet->setSecurity (true);
     m_btp->setGeoNet(m_geoNet);
     m_denService.setBTP(m_btp);
     m_caService.setBTP(m_btp);

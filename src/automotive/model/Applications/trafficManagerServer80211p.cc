@@ -110,6 +110,11 @@ namespace ns3
             "XgHybrid = 2, sends its beacon also over NR (port 20)",
             BooleanValue (false),
             MakeBooleanAccessor (&trafficManagerServer80211p::m_xg_nr),
+            MakeBooleanChecker ())
+        .AddAttribute ("XgSecurity",
+            "Sign every GeoNet packet of the RSU (ETSI TS 103 097, authors' GeoNet security)",
+            BooleanValue (false),
+            MakeBooleanAccessor (&trafficManagerServer80211p::m_xg_security),
             MakeBooleanChecker ());
         return tid;
   }
@@ -188,6 +193,9 @@ namespace ns3
     {
       m_geoNet->setMetricSupervisor(m_metric_supervisor);
     }
+    // xgregorm: podpis sprav ETSI TS 103 097 (implementacia autorov v GeoNet)
+    if (m_xg_security)
+      m_geoNet->setSecurity (true);
 
     m_btp->setGeoNet(m_geoNet);
     m_denService.setBTP(m_btp);

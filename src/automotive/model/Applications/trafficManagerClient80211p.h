@@ -108,6 +108,7 @@ private:
   double m_last_gate_count = -1;
   uint64_t m_xg_relaxed = 0, m_xg_force = 0, m_xg_beacons = 0;
   bool m_xg_color = false;             //!< farbit auto podla technologie
+  bool m_xg_security = false;          //!< xgregorm: podpis sprav (GeoNet security autorov)
   int m_xg_color_last = -1;
   EventId m_xg_color_ev;
 };

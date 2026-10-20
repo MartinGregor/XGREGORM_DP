@@ -71,7 +71,8 @@ ap.add_argument("--rsu", type=int, default=None, help="number of RSUs (default 5
 # simulation
 ap.add_argument("--sim-time", type=float, default=120, help="simulation duration [s]")
 ap.add_argument("--baseline", type=float, default=100, help="reference distance for the PRR computation [m]")
-ap.add_argument("--tx-power", type=float, default=30, help="transmission power [dBm] (802.11p only)")
+ap.add_argument("--tx-power", type=float, default=None,
+                help="transmission power [dBm] (802.11p only; default 30, --channel urban 23 = same as NR-V2X)")
 ap.add_argument("--srs", type=int, default=320, choices=[40, 80, 160, 320],
                 help="LTE only: ns3::LteEnbRrc::SrsPeriodicity - the cell can serve roughly this "
                      "many UEs; the default 40 in ns-3 crashes with more than ~39 vehicles")
@@ -112,16 +113,25 @@ ap.add_argument("--hyb-qmin", type=float, default=0.9,
                 help="hybrid adaptive: lowest share of CAMs confirmed by the RSU to rely on one direct technology")
 ap.add_argument("--hyb-dwell", type=float, default=1.0,
                 help="hybrid adaptive: the direct link must be good this long before the backup is switched off [s]")
-ap.add_argument("--channel", default="authors", choices=["authors", "3gpp"],
+ap.add_argument("--channel", default="authors", choices=["authors", "3gpp", "urban"],
                 help="hybrid: radio channel of 802.11p and NR-V2X; authors = 802.11p LogDistance (authors' 802.11p "
                      "examples) and NR 3GPP V2V highway (authors' NR example), 3gpp = both on the same 3GPP TR 37.885 "
-                     "V2V highway model")
+                     "V2V highway model, urban = buildings in the city blocks + 3GPP TR 37.885 V2V urban for 802.11p and "
+                     "NR, 3GPP TR 38.901 UMa for LTE (sets --tx-power and --lte-ue-power to 23 dBm unless given)")
+ap.add_argument("--security", type=int, default=0, choices=[0, 1, 2],
+                help="hybrid: message signature ETSI TS 103 097; 1 = size model (+93 B digest / +242 B certificate once "
+                     "per second, measured on the authors' implementation), 2 = real signing by the authors' GeoNet (slow)")
+ap.add_argument("--spat", type=int, default=0, choices=[0, 1],
+                help="hybrid: RSUs send SPATEM 10 Hz + MAPEM 1 Hz (ETSI TS 103 301) over their direct technologies")
+ap.add_argument("--cpm-share", type=float, default=0,
+                help="hybrid: share of vehicles with sensors sending CPM (ETSI TS 103 324 generation rules), 0..1")
+ap.add_argument("--cpm-range", type=float, default=150, help="hybrid: sensor range of a CPM vehicle [m]")
 ap.add_argument("--enb", type=int, default=1,
                 help="hybrid: LTE macro cells; 1 = one cell in the middle, k*k = square grid with X2 handover "
                      "(one cell serves at most ~320 vehicles)")
 ap.add_argument("--enb-isd", type=float, default=500, help="hybrid: LTE inter-site distance [m] (3GPP urban macro 500 m)")
-ap.add_argument("--lte-ue-power", type=float, default=10,
-                help="hybrid: LTE UE max tx power [dBm] (ns-3 default 10, real UE power class 3 = 23)")
+ap.add_argument("--lte-ue-power", type=float, default=None,
+                help="hybrid: LTE UE max tx power [dBm] (default 10 = ns-3; --channel urban 23 = real UE power class 3)")
 ap.add_argument("--colorful", action="store_true",
                 help="hybrid: colour vehicles in SUMO by the main technology of their CAMs: blue 802.11p, green NR-V2X, "
                      "red LTE (only when no direct technology), grey none; a backup copy on another technology is not shown; use with --gui")
@@ -152,6 +162,11 @@ for k, d, c in (("name", "mesto", "city_center"), ("odstup", 250, 200), ("v_obch
                 ("lanes_mesto", 1, 3), ("lanes_obchvat", 2, 3), ("brany", "right_before_left", "priority"), ("vehicles", 10, 600), ("rsu", 5, 9)):
     if getattr(a, k) is None:
         setattr(a, k, d if a.map == "default" else c)
+# xgregorm: --channel urban = realisticke vykony (802.11p ako NR 23 dBm, LTE UE trieda 3 23 dBm), inak ako doteraz
+if a.tx_power is None:
+    a.tx_power = 23 if a.channel == "urban" else 30
+if a.lte_ue_power is None:
+    a.lte_ue_power = 23 if a.channel == "urban" else 10
 if a.map == "city-center" and a.grid != 3:
     ap.error("--grid applies only to --map default (city-center has a fixed 3x3 layout)")
 TECH = [t.strip().lower() for t in a.tech.split(",") if t.strip()]
@@ -468,7 +483,73 @@ if a.rsu > 0:
         f.write('</additional>\n')
     additional.append("stations.xml")
 
-add_line = f'\n        <additional-files value="{",".join(additional)}"/>' if additional else ""
+# xgregorm: --channel urban - budovy v blokoch medzi ulicami (LOS/NLOS v ns-3, v SUMO len polygony na pohlad).
+# Blok = mnohouholnik z krizovatiek okolo neho, zmenseny o polovicu sirky cesty + chodnik; ns-3 pozna len kvadre
+# rovnobezne s osami, blok sa preto vyplni vodorovnymi pasmi po 8 m (na sikmych uliciach odchylka <= 4 m, do vozovky
+# nezasahuje - chodnik ma 4 m).
+bud_f = os.path.join(out, f"{P}buildings.txt")
+n_bud = 0
+if a.channel == "urban":
+    poz = {n: (x, y) for n, x, y, _ in nodes}
+    if a.map == "default":   # len bloky vnutri mesta, medzi mestom a obchvatom volny priestor (predmestie)
+        bloky = [[f"C{i}{j}", f"C{i + 1}{j}", f"C{i + 1}{j + 1}", f"C{i}{j + 1}"]
+                 for i in range(a.grid - 1) for j in range(a.grid - 1)]
+    else:                    # 4 bloky v centre + useky medzi susednymi vyjazdmi a okruhom
+        bloky = [[f"C{i}{j}", f"C{i + 1}{j}", f"C{i + 1}{j + 1}", f"C{i}{j + 1}"] for i in range(2) for j in range(2)]
+        nb = len(cc_brany)
+        for k in range(nb):
+            ca, cb = cc_brany[k], cc_brany[(k + 1) % nb]
+            bloky.append([ca, f"B{k}", f"B{(k + 1) % nb}"] + ([cb] if cb != ca else []))
+    ulica = a.lanes_mesto * 3.2 + 4   # od osi cesty: pruhy jedneho smeru (3.2 m) + chodnik 4 m
+
+    def zmensi(poly, d):
+        """konvexny mnohouholnik posunuty o d dovnutra (priesecniky posunutych stran)"""
+        if sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(poly, poly[1:] + poly[:1])) < 0:
+            poly = poly[::-1]
+        ciary = []
+        for (x1, y1), (x2, y2) in zip(poly, poly[1:] + poly[:1]):
+            l = math.hypot(x2 - x1, y2 - y1)
+            nx, ny = -(y2 - y1) / l * d, (x2 - x1) / l * d
+            ciary.append(((x1 + nx, y1 + ny), (x2 - x1, y2 - y1)))
+        body = []
+        for (p, u), (q, v) in zip(ciary[-1:] + ciary[:-1], ciary):
+            det = u[0] * v[1] - u[1] * v[0]
+            t = ((q[0] - p[0]) * v[1] - (q[1] - p[1]) * v[0]) / det
+            body.append((p[0] + t * u[0], p[1] + t * u[1]))
+        return body
+
+    def interval(poly, y):
+        xs = []
+        for (x1, y1), (x2, y2) in zip(poly, poly[1:] + poly[:1]):
+            if min(y1, y2) <= y <= max(y1, y2):
+                xs += [x1, x2] if y1 == y2 else [x1 + (y - y1) * (x2 - x1) / (y2 - y1)]
+        return (min(xs), max(xs)) if xs else None
+
+    kvadre = []
+    for k, blok in enumerate(bloky):
+        poly = zmensi([poz[n] for n in blok], ulica)
+        vyska = 15 + (k * 7) % 16       # 15-30 m (5-10 poschodi), deterministicky
+        y, ymax = min(p[1] for p in poly), max(p[1] for p in poly)
+        while ymax - y > 3:
+            y2 = min(y + 8, ymax)
+            iv = interval(poly, (y + y2) / 2)   # sirka v strede pasu: odchylka od okraja bloku <= 4 m (= chodnik)
+            lo, hi = iv if iv else (0, 0)
+            if hi - lo > 5:
+                kvadre.append((lo, hi, y, y2, vyska))
+            y = y2
+    with open(bud_f, "w") as f:
+        for b in kvadre:
+            f.write(" ".join(f"{v:.2f}" for v in b) + "\n")
+    with open(os.path.join(out, f"{P}buildings.poly.xml"), "w") as f:
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n<additional>\n')
+        for i, (x0, x1, y0, y1, h) in enumerate(kvadre):
+            f.write(f'    <poly id="bud{i}" type="building" color="180,170,160" fill="1" layer="-1" '
+                    f'shape="{x0:.2f},{y0:.2f} {x1:.2f},{y0:.2f} {x1:.2f},{y1:.2f} {x0:.2f},{y1:.2f}"/>\n')
+        f.write('</additional>\n')
+    additional.append(f"{P}buildings.poly.xml")
+    n_bud = len(kvadre)
+
+add_line =f'\n        <additional-files value="{",".join(additional)}"/>' if additional else ""
 
 with open(cfg_f, "w") as f:
     f.write(f"""<configuration>
@@ -505,6 +586,8 @@ print(f"  traffic light: {n_tls} (4-arm intersections only), green {a.zelena:.0f
 print(f"  gates        : {a.brany} (city to bypass connection)")
 print(f"  traffic      : {a.vehicles} vehicles ({n_amb} ambulances), {len(okruhy)} loops, all start at t=0")
 print(f"  RSU          : {a.rsu}")
+if n_bud:
+    print(f"  buildings    : {n_bud} boxes in the city blocks (--channel urban)")
 if a.map == "default" and a.step < 100:
     print("  WARNING: spacing below 100 m - the intersections are almost longer than the streets "
           "between them, vehicles will block each other")
@@ -615,14 +698,19 @@ HYB = (f"{TM} --tls-radius={a.tls_radius}"
        f" --xg-relax={'true' if a.xg_relax else 'false'} --xg-relevance={a.xg_relevance}"
        f" --beacon-ms={a.beacon_ms} --nr-sensing={'true' if a.nr_sensing else 'false'}"
        f" --range-stats={'true' if a.range_stats else 'false'} --channel={a.channel}"
-       f" --load-stats={'true' if a.load_stats else 'false'}"
+       + (f" --buildings-file={bud_f}" if a.channel == "urban" else "")
+       + f" --load-stats={'true' if a.load_stats else 'false'}"
        f" --color-tech={'true' if a.colorful else 'false'} --live-period={a.live}"
        f" --enb={a.enb} --enb-isd={a.enb_isd} --lte-ue-power={a.lte_ue_power}"
        + "".join(f" --use-{t}={'true' if t in TECH else 'false'}" for t in ("80211p", "lte", "nr"))
        + f" --policy={a.policy}"
        + "".join(f" --fail-{t}={v}" for t, v in (("80211p", a.fail_80211p), ("lte", a.fail_lte), ("nr", a.fail_nr)) if v)
        + f" --hyb-range={a.hyb_range} --hyb-qmin={a.hyb_qmin} --hyb-dwell={a.hyb_dwell}"
-       f" --core-delay={a.core_delay}" + (f" --sumo-seed={a.seed}" if a.seed is not None else ""))
+       f" --core-delay={a.core_delay}" + (f" --sumo-seed={a.seed}" if a.seed is not None else "")
+       # xgregorm: dalsia prevadzka; MAPEM podla poctu pruhov krizovatky (4 ramena x pruhy dnu a von:
+       # 45 B na prijazdovy pruh s prepojeniami, 32 B na vyjazdovy, 30 B hlavicka), podpis podla merania (Dennik)
+       + f" --security={a.security} --spat={'true' if a.spat else 'false'}"
+       f" --mapem-bytes={30 + 4 * a.lanes_mesto * (45 + 32)} --cpm-share={a.cpm_share} --cpm-range={a.cpm_range}")
 # per scenario name, so that runs with different --name can go in parallel
 TMP = f"{P}tmp" if a.name == "mesto" else f"{P}tmp_{a.name}"
 
