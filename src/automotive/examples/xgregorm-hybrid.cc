@@ -601,6 +601,16 @@ main (int argc, char *argv[])
                 "urban = 802.11p and NR on 3GPP TR 37.885 V2V urban with buildings (LOS/NLOS from --buildings-file, NLOSv from "
                 "vehicles, shadowing), LTE 3GPP TR 38.901 UMa with buildings, eNB 25 m, RSU 5 m",
                 channel_model);
+  // xgregorm: dalsie realne vplyvy pri --channel urban (pri inom kanali bez zmeny = ako autori)
+  bool w_fading = true;
+  cmd.AddValue ("fading","--channel urban: Nakagami-m fast fading on 802.11p (m = 3 below 50 m, 1.5 to 150 m, 1 beyond; "
+                "measurements at 5.9 GHz); NR has 3GPP fading of its own",w_fading);
+  double nr_nf = -1;
+  cmd.AddValue ("nr-noise-figure","NR-V2X UE noise figure [dB]; -1 = 9 with --channel urban (3GPP TR 37.885), "
+                "otherwise 5 (5G-LENA default, authors)",nr_nf);
+  double lte_iot = -1;
+  cmd.AddValue ("lte-iot","Uplink interference over thermal from neighbouring LTE cells [dB], added to the eNB noise "
+                "figure (one simulated cell has no neighbours); -1 = 3 with --channel urban, otherwise 0",lte_iot);
   std::string buildings_file = "";
   cmd.AddValue ("buildings-file","Buildings for --channel urban: one box per line 'xmin xmax ymin ymax height' [m]",buildings_file);
   int security = 0;
@@ -744,6 +754,20 @@ main (int argc, char *argv[])
       channel = CreateObject<YansWifiChannel> ();
       channel->SetPropagationDelayModel (CreateObject<ConstantSpeedPropagationDelayModel> ());
       channel->SetPropagationLossModel (loss);
+      // xgregorm: rychle uniky (viaccestne sirenie) - TR 37.885 dava len stredny utlm + tienenie; NR ma fading
+      // v spektralnom modeli 3GPP, 802.11p (Yans) bez neho prijima kazdy ramec s rovnakym vykonom. Nakagami-m
+      // (m klesa so vzdialenostou: blizko silna priama zlozka, dalej ~Rayleigh); ten isty retazec pouziva aj meranie CBR
+      if (w_fading)
+        {
+          Ptr<NakagamiPropagationLossModel> nak = CreateObject<NakagamiPropagationLossModel> ();
+          nak->SetAttribute ("Distance1", DoubleValue (50));
+          nak->SetAttribute ("Distance2", DoubleValue (150));
+          nak->SetAttribute ("m0", DoubleValue (3.0));
+          nak->SetAttribute ("m1", DoubleValue (1.5));
+          nak->SetAttribute ("m2", DoubleValue (1.0));
+          nak->AssignStreams (2020);
+          loss->SetNext (nak);
+        }
       xgload::wLoss = loss;
     }
   else if (channel_model != "authors")
@@ -792,6 +816,11 @@ main (int argc, char *argv[])
   if (use_lte)
     {
       Config::SetDefault ("ns3::LteUePhy::TxPower", DoubleValue (lte_ue_power));
+      // xgregorm: rusenie zo susednych buniek (IoT) ako zvyseny sum eNB - jedna simulovana bunka susedov nema
+      if (lte_iot < 0)
+        lte_iot = urban ? 3 : 0;
+      if (lte_iot > 0)
+        Config::SetDefault ("ns3::LteEnbPhy::NoiseFigure", DoubleValue (5.0 + lte_iot));
       lteHelper = CreateObject<LteHelper> ();
       epcHelper = CreateObject<PointToPointEpcHelper> ();
       lteHelper->SetEpcHelper (epcHelper);
@@ -989,6 +1018,10 @@ main (int argc, char *argv[])
       nrHelper->SetUeAntennaAttribute ("NumColumns", UintegerValue (2));
       nrHelper->SetUeAntennaAttribute ("AntennaElement", PointerValue (CreateObject<IsotropicAntennaModel> ()));
       nrHelper->SetUePhyAttribute ("TxPower", DoubleValue (nr_tx_power));
+      // xgregorm: sumove cislo UE podla 3GPP TR 37.885 (9 dB); 5G-LENA ma predvolene 5 dB
+      if (nr_nf < 0)
+        nr_nf = urban ? 9 : 5;
+      nrHelper->SetUePhyAttribute ("NoiseFigure", DoubleValue (nr_nf));
       nrHelper->SetUeMacAttribute ("EnableSensing", BooleanValue (nr_sensing));
       nrHelper->SetUeMacAttribute ("T1", UintegerValue (2));
       nrHelper->SetUeMacAttribute ("T2", UintegerValue (81));

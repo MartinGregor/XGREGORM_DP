@@ -127,6 +127,13 @@ ap.add_argument("--lat-budget", type=float, default=0.1, help="quality rule: CAM
 ap.add_argument("--lte-bg-ue", type=int, default=0,
                 help="hybrid: other (non-V2X) LTE users in the cell - static UEs, each a group of phones with bursty uplink")
 ap.add_argument("--lte-bg-kbps", type=float, default=500, help="hybrid: mean uplink rate of one background LTE UE [kbit/s]")
+ap.add_argument("--fading", type=int, default=1, choices=[0, 1],
+                help="hybrid, --channel urban: Nakagami-m fast fading on 802.11p (NR has 3GPP fading of its own)")
+ap.add_argument("--nr-noise-figure", type=float, default=-1,
+                help="hybrid: NR-V2X UE noise figure [dB]; -1 = 9 with --channel urban (3GPP TR 37.885), otherwise 5 (authors)")
+ap.add_argument("--lte-iot", type=float, default=-1,
+                help="hybrid: LTE uplink interference from neighbouring cells [dB] added to the eNB noise figure; "
+                     "-1 = 3 with --channel urban, otherwise 0")
 ap.add_argument("--channel", default="authors", choices=["authors", "3gpp", "urban"],
                 help="hybrid: radio channel of 802.11p and NR-V2X; authors = 802.11p LogDistance (authors' 802.11p "
                      "examples) and NR 3GPP V2V highway (authors' NR example), 3gpp = both on the same 3GPP TR 37.885 "
@@ -403,6 +410,31 @@ if 'projParameter="!"' in _n:  # geo-reference needed for CAM, DENM and GeoArea
     _n = re.sub(r'netOffset="[^"]*"', 'netOffset="-394175.96,-4989734.74"', _n, count=1)
     _n = re.sub(r'projParameter="!"',
                 'projParameter="+proj=utm +zone=32 +ellps=WGS84 +datum=WGS84 +units=m +no_defs"', _n, count=1)
+    open(net_f, "w").write(_n)
+
+# xgregorm: trafficManager (802.11p aj LTE) ma natvrdo fazu 0 = zelena pre 1. a 3. privod v poradi riadenych
+# pruhov (u autorov "sever-juh"), 2 = zelena pre 2. a 4. netconvert vsak da fazu 0 hlavnej ceste, takze na
+# niektorych krizovatkach bola opacne: radic potom daval zelenu smeru podla zataze druheho smeru a pri
+# zahlteni ju hned ukoncil -> rady sa nikdy nevyprazdnili (city-center 280 aut: po 120 s stoji 77 % aut).
+# Fazy takej krizovatky posunieme o 2 (pevny program SUMO ostava rovnaky, len zacne druhym smerom).
+_root = ET.parse(net_f).getroot()
+_otocit = []
+for _t in _root.findall("tlLogic"):
+    _fazy = _t.findall("phase")
+    if len(_fazy) != 4:
+        continue
+    _spoje = sorted((c for c in _root.findall("connection") if c.get("tl") == _t.get("id")),
+                    key=lambda c: int(c.get("linkIndex")))
+    _prvy = [int(c.get("linkIndex")) for c in _spoje if c.get("from") == _spoje[0].get("from")]
+    if not any(_fazy[0].get("state")[i] in "Gg" for i in _prvy):
+        _otocit.append(_t.get("id"))
+if _otocit:
+    _n = open(net_f).read()
+    for _id in _otocit:
+        def _rotuj(mm):
+            riadky = re.findall(r"[ \t]*<phase [^>]*/>\n", mm.group(2))
+            return mm.group(1) + "".join(riadky[2:] + riadky[:2]) + mm.group(3)
+        _n = re.sub(rf'(<tlLogic id="{_id}"[^>]*>\n)((?:[ \t]*<phase [^>]*/>\n){{4}})([ \t]*</tlLogic>)', _rotuj, _n, count=1)
     open(net_f, "w").write(_n)
 
 
@@ -723,6 +755,7 @@ HYB = (f"{TM} --tls-radius={a.tls_radius}"
        f" --load-rat={'true' if a.load_rat else 'false'} --cbr-high={a.cbr_high} --cbr-low={a.cbr_low} --lte-high={a.lte_high}"
        f" --qos-rat={'true' if a.qos_rat else 'false'} --qos-margin={a.qos_margin} --lat-budget={a.lat_budget}"
        f" --lte-bg-ue={a.lte_bg_ue} --lte-bg-kbps={a.lte_bg_kbps}"
+       f" --fading={'true' if a.fading else 'false'} --nr-noise-figure={a.nr_noise_figure} --lte-iot={a.lte_iot}"
        f" --core-delay={a.core_delay}" + (f" --sumo-seed={a.seed}" if a.seed is not None else "")
        # xgregorm: dalsia prevadzka; MAPEM podla poctu pruhov krizovatky (4 ramena x pruhy dnu a von:
        # 45 B na prijazdovy pruh s prepojeniami, 32 B na vyjazdovy, 30 B hlavicka), podpis podla merania (Dennik)

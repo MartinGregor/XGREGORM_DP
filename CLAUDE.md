@@ -53,6 +53,7 @@ prepnutia medzi RSU) oproti pôvodným aplikáciám autorov.
 | `xgregorm-hybrid-socket.h` (môj), `trafficManagerClient80211p.cc/.h`, `trafficManagerServer80211p.cc/.h` | **bezpečnosť ETSI TS 103 097** `--security`: 1 = model veľkosti (prepínač pridá k paketu +93 B digest / +242 B certifikát 1x za s; hodnoty zmerané z kryptografie autorov), 2 = skutočná kryptografia GeoNet autorov (atribút klienta aj servera `XgSecurity` -> `setSecurity(true)`; 3x pomalšie a falošné „invalid signature“ pri digeste od neznámeho certifikátu, preto predvolene 1) | `xgregorm_kod_zaloha/` |
 | `trafficManagerClient80211p.cc/.h`, `xgregorm-hybrid.cc`, `xgregorm_gen_scenario.py` | **výber technológie podľa záťaže** (2026-10-20, atribút klienta `XgLoadRat` + `XgCbrHigh` 0.3, `XgCbrLow` 0.2, `XgLteHigh` 0.6, `XgLoadPeriod` 1 s; CLI `--load-rat`, `--cbr-high`, `--cbr-low`, `--lte-high`): auto si vedie kĺzavý priemer (~1 s) vlastného CBR 802.11p, odhadu SL-CBR NR a vyťaženia PRB svojej bunky LTE (to oznamuje sieť – 3GPP Rel-16 predikcia QoS); raz za 1 s pri CBR 802.11p ≥ 0.3 a menej zaťaženom NR prejde hlavnou technológiou na NR s pravdepodobnosťou (CBR − 0.25)/CBR (presunie sa len časť áut), späť pod 0.2 alebo pri zahltení NR; keď RSU nepotvrdzuje žiadnu priamu technológiu, druhú priamu pridá len ak nie je zahltená a LTE len ak bunka < 0.6 PRB. Výpis `LOADSW` v `XGREGORM-HYB`. Bez `--load-rat` bit po bite zhodné | `xgregorm_kod_zaloha/` |
 | `trafficManagerClient80211p.cc/.h`, `xgregorm-hybrid-socket.h`, `xgregorm-hybrid.cc`, `xgregorm_gen_scenario.py` | **výber technológie podľa nameranej kvality** (2026-10-20, atribúty klienta `XgQosRat`, `XgQosMargin` 0.05, `XgLatBudget` 0.1 s; CLI `--qos-rat`, `--qos-margin`, `--lat-budget`; má prednosť pred pravidlom záťaže): auto meria spoľahlivosť každej priamej technológie = podiel CAM susedov do 100 m doručených načas (≤ 100 ms, definícia spoľahlivosti 3GPP TS 22.186), kĺzavo ~2 s; straty určí z **poradového čísla** – prepínač zapíše do poľa Reserved základnej hlavičky GeoNet (EN 302 636-4-1, autori ho píšu 0 a ignorujú) 1 bajt: bit 7/6 = CAM ide cez 802.11p / NR, bity 0-5 = poradové číslo mod 64 (veľkosť správy bez zmeny; rozšírenie normy). Príjem 802.11p a NR ide cez klienta (`xgRxGn`, prečíta značku, potom `GeoNet::receiveGN` cez `XgRxProxySocket`). Raz za 1 s prejde na druhú technológiu, ak je spoľahlivejšia o ≥ 0.05 a nie je zahltená (CBR < 0.3), s pravdepodobnosťou zisk/0.4; pravidlo záťaže nepresunie auto na nameraně horšiu technológiu. Predpoklad: kanál je symetrický. Pravidlo záťaže navyše: prah PRB pre zálohu LTE má každé auto vlastný (XgLteHigh ± 0.2, rovnomerne), aby zálohu nevyplo naraz celé mesto. Výpis `QOSSW`, `QW`/`QN` (odhad) v `XGREGORM-HYB`. Bez `--qos-rat` bit po bite zhodné | `xgregorm_kod_zaloha/` |
+| `xgregorm-hybrid.cc`, `xgregorm_gen_scenario.py` (moje) | **ďalší šum pri `--channel urban`** (2026-10-23): rýchle úniky 802.11p Nakagami-m (`--fading`, m = 3 do 50 m, 1.5 do 150 m, 1 ďalej; reťazené za TR 37.885, aj pre meranie CBR); šumové číslo NR UE 9 dB podľa 3GPP TR 37.885 (`--nr-noise-figure`, 5G-LENA/autori 5 dB); rušenie zo susedných buniek LTE ako +3 dB k šumovému číslu eNB (`--lte-iot`, bežná rezerva v plánovaní LTE). Pri inom kanáli bez zmeny | – (môj kód) |
 | `xgregorm-hybrid.cc` (môj) | **iná prevádzka v bunke LTE** `--lte-bg-ue N --lte-bg-kbps R`: N statických UE (náhodne v oblasti RSU ± 100 m), každé = skupina telefónov s uplinkom ON/OFF (exp. 0.5 s / 0.5 s, počas ON 2R, pakety 1000 B na server); ich PRB sa rátajú do vyťaženia bunky; výpis `XGREGORM-LTEBG`. Limit bunky ~320 UE platí aj pre ne | – (môj kód) |
 
 **Pravidlo riadenia semaforov:** 802.11p = každá RSU riadi len semafor svojej križovatky (ako
@@ -857,6 +858,38 @@ python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --run hybrid -
   vzrástlo. Beh F (kvalita + záťaž + 5 UE pozadia) systém zastavil pre nedostatok pamäte v 18. s (2 behy × 3.3 GB) – do
   18 s: hlavná NR 21-24 % áut, záloha LTE od 13 s 0 %, PRB bunky 0.96 (pozadie zaberie uvoľnené PRB). **Pri 280 autách
   s pravidlom kvality spúšťať len 1 beh naraz.**
+- **2026-10-23** – **Kontrola dopravy s grafikou: obrátené fázy semaforov (opravené v generátore).** trafficManager
+  (802.11p aj LTE, kód autorov) má natvrdo fázu 0 = zelená pre 1. a 3. príjazd v poradí riadených pruhov („sever-juh“),
+  2 = pre 2. a 4. netconvert však dáva fázu 0 hlavnej ceste, takže na časti križovatiek bola opačne (city-center 5 z 9:
+  C01, C02, C10, C11, C20; `xgregorm_mesto` 2 z 5: C01, C21). Radič potom dával smeru zelenú úmernú záťaži **druhého**
+  smeru a pri zahltení (> 70 %) ju hneď ukončil -> rady na príjazdoch sa nikdy nevyprázdnili. V GUI: na C11 desiatky áut
+  na červenej, zelená prázdnemu smeru. Oprava v `xgregorm_gen_scenario.py`: fázy takej križovatky sa v `net.xml` posunú
+  o 2 (pevný program SUMO ostáva, len začne druhým smerom); kód autorov nezmenený. Test (city-center, 280 áut, urban,
+  len 802.11p, 150 s, 1 beh; čisté SUMO s pevnými semaformi pre porovnanie):
+
+  | | 0-30 s | 30-60 s | 60-90 s | 90-120 s | 120-150 s | stojace autá na príjazde C11 N/E/S/W |
+  |---|---|---|---|---|---|---|
+  | čisté SUMO, pevné 30 s | 22 km/h, stojí 33 % | 27 / 22 % | 28 / 22 % | 30 / 22 % | 28 / 25 % | 4.4 / 0.5 / 2.7 / 0.8 |
+  | ns-3 pred opravou | 25 / 24 % | 16 / 56 % | 14 / 64 % | 12 / 71 % | **9.5 / 77 %** | **40 / 0 / 18 / 0** |
+  | ns-3 po oprave | 27 / 19 % | 30 / 18 % | 32 / 15 % | 32 / 15 % | **32 / 17 %** | 0.7 / 1.3 / 0.3 / 1.6 |
+
+  Skutočné PRR auto-auto 0.898 -> **0.851**, uplink 0.984 -> 0.977 (zápchy = autá natlačené blízko seba, umelo lepšie
+  doručenie). **Dôsledky:** behy A-E (20 s) boli zasiahnuté len mierne (zápcha vzniká po ~30 s; 0-30 s 25 vs. 27 km/h), ale
+  treba ich zopakovať; všetky staršie výsledky trafficManager na `xgregorm_mesto` (lokálne riadenie, koordinácia,
+  algoritmus 3, hybrid) mali 2 z 5 križovatiek obrátené. Ďalej zistené: autá štartujú všetky v čase 0 stojace na
+  náhodnom mieste, prvých ~30 s je rozbeh (aj v čistom SUMO 33 % stojí) – 20 s behy merajú len tento rozbeh.
+- **2026-10-23** – **Ďalší šum v mestskom kanáli** (viď Moje zmeny): 802.11p nemalo rýchle úniky (NR ich má v spektrálnom
+  modeli 3GPP), NR UE malo šumové číslo 5 dB namiesto 9 dB (TR 37.885), LTE bunka nemala rušenie od susedov. Overené
+  rušenie zo susedov 5 dB: LTE už pri 30 autách 38 -> 104 ms (p95 434 ms) -> zvolené 3 dB (56 ms). Test 30 áut, 30 s,
+  urban, `--policy all`, `--range-stats 1`, 1 beh (bez / s novým šumom; auto-auto = prvá kópia ktorejkoľvek technológie):
+
+  | auto-auto | 0-50 m | 50-100 | 100-150 | 150-200 | 200-250 | 250-300 | 300-350 |
+  |---|---|---|---|---|---|---|---|
+  | bez | 1.00 | 0.98 | 0.90 | 0.59 | 0.47 | 0.26 | 0.14 |
+  | s novým šumom | 1.00 | 0.97 | 0.78 | 0.37 | 0.25 | 0.09 | 0.05 |
+
+  Do 100 m: 802.11p 0.896 -> 0.881, NR 0.990 -> 0.986, skutočné PRR 0.991 -> 0.987; LTE -> RSU 38 -> 56 ms (rušenie 3 dB).
+  Dosah NR klesol hlavne zo šumového čísla (+4 dB). Stará konfigurácia: `--fading 0 --nr-noise-figure 5 --lte-iot 0`.
 - Pozn.: v sekcii „Tok komunikácie“ je prehľad, čo ide cez ns-3 (CAM, kábel RSU-RSU) a čo cez
   TraCI (RSU -> semafor, mapa).
 
