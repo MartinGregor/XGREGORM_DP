@@ -890,6 +890,35 @@ python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --run hybrid -
 
   Do 100 m: 802.11p 0.896 -> 0.881, NR 0.990 -> 0.986, skutočné PRR 0.991 -> 0.987; LTE -> RSU 38 -> 56 ms (rušenie 3 dB).
   Dosah NR klesol hlavne zo šumového čísla (+4 dB). Stará konfigurácia: `--fading 0 --nr-noise-figure 5 --lte-iot 0`.
+- **2026-10-23** – **Zopakované A a E s opravenými fázami a novým šumom** (280 áut, city-center, 1 bunka, 20 s, urban +
+  podpis + SPaT/MAPEM + CPM 100 %, 1 beh na prípad; A = adaptívne, E = + `--qos-rat 1`; staré = záznamy 2026-10-20):
+
+  | | A starý | A nový | E starý | E nový |
+  |---|---|---|---|---|
+  | CBR 802.11p priemer / vzorky ≥ 0.3 | 0.250 / 37 % | 0.246 / 34 % | 0.233 / 30 % | **0.217 / 23 %** |
+  | NR SL-CBR (odhad) priemer / max | 0.105 / 0.18 | 0.116 / 0.20 | 0.163 / 0.25 | 0.176 / 0.26 |
+  | LTE PRB priemer / vzorky ≥ 0.6 | 0.48 / 19 % | 0.52 / 20 % | 0.56 / 43 % | 0.51 / 18 % |
+  | CAM len cez NR | 4.1 % | 4.1 % | 15.2 % | **16.4 %** |
+  | autá s hlavnou technológiou NR (8-19 s) | 3-4 % | 3-8 % | – | 17-24 % |
+  | presuny podľa kvality | – | – | 270 | 274 |
+  | odhad kvality v autách 802.11p / NR (načas) | – | – | 0.789 / 0.938 | 0.759 / 0.914 |
+  | PRR kópie 802.11p / NR (súčet košov záťaže) | 0.771 / 0.978 | 0.745 / 0.957 | 0.759 / 0.969 | 0.738 / 0.951 |
+  | **skutočné PRR auto-auto** | 0.892 | 0.886 | 0.899 | **0.889** |
+  | uplink do RSU < 100 m | 0.965 | 0.969 | 0.971 | 0.973 |
+  | oneskorenie LTE -> RSU / NR auto-auto | 72.6 / 18.6 ms | 104.3 / 19.6 ms | 68.6 / 18.2 ms | 91.4 / 20.5 ms |
+  | CAM cez LTE za s | 466 | 534 | 473 | 510 |
+  | SPATEM 802.11p / NR | 0.904 / 0.906 | 0.913 / 0.907 | – | 0.929 / 0.899 |
+  | MAPEM 802.11p / NR | 0.88 / 0.91 | 0.883 / 0.901 | – | 0.880 / 0.891 |
+  | rýchlosť, státie, max státie | 25.5 km/h | 26.7 km/h, 12.2 %, 16.3 s | – | 26.7 km/h, 12.1 %, 16.3 s |
+  | čas behu | 44 min | 39 min | 54 min | 50 min |
+
+  0 porušení ETSI, 0 zahodených NR paketov, 0 fantómov. **Závery:** nový šum zhoršil NR (kópie 0.978 -> 0.957) viac než
+  802.11p (0.771 -> 0.745) a LTE (+3 dB rušenie) je pri plnej bunke pomalšie (73 -> 104 ms). Pravidlo kvality presúva
+  na NR rovnako ako predtým (~17-24 % áut, 274 presunov) a odľahčí 802.11p (CBR ≥ 0.3: 34 -> 23 % času, LTE PRB 0.52 -> 0.51,
+  LTE 104 -> 91 ms), ale skutočné PRR auto-auto sa zlepší len o +0.3 p. b. (0.886 -> 0.889; predtým +0.7) – v rozptyle
+  jedného behu. Rozdiel NR a 802.11p sa zmenšil (NR 0.95 vs. 802.11p 0.74 na kópiu, ale skutočné PRR = prvá kópia
+  ktorejkoľvek technológie, a autá na NR prestanú posielať 802.11p tým, ktorí NR nepočujú). 20 s = rozbeh, treba dlhšie
+  behy a viac seedov.
 - Pozn.: v sekcii „Tok komunikácie“ je prehľad, čo ide cez ns-3 (CAM, kábel RSU-RSU) a čo cez
   TraCI (RSU -> semafor, mapa).
 
