@@ -149,6 +149,7 @@ inline std::map<std::pair<unsigned long, unsigned long>, double> &lastRxT () { s
 struct Tx
 {
   double t, x, y;
+  unsigned long sid = 0;
   long gdt;                           // generationDeltaTime CAM
   bool direct;                        // odisla priamo autam (802.11p a/alebo NR-V2X)
   std::set<unsigned long> inRange;
@@ -166,10 +167,51 @@ struct Tx
 // nastavenia simulacie, nie vlastnost technologie), do vykonnosti NR podla zataze sa nepocitaju
 inline double &nrFrom () { static double t = 0; return t; }
 
+// --warmup: merania sa zacnu az v tomto case (autá startuju vsetky v case 0 stojace, prvych ~30 s je rozbeh);
+// CAM poslane skor sa do ziadnej statistiky nezapocitaju, ani ked su prijate neskor. Spravanie algoritmov sa nemeni.
+inline double &warmup () { static double t = 0; return t; }
+inline bool measuring () { return Simulator::Now ().GetSeconds () >= warmup (); }
+
+// straty pri prepnuti technologie: pre kazdu CAM a suseda do 100 m (meria sa len pri CAM poslanej po nrFrom)
+//  comp[c][r]: c = priame cesty CAM (0 = len 802.11p, 1 = len NR, 2 = obe), r = dostal ju 0 nikto, 1 len 802.11p,
+//              2 len NR, 3 oboma -> pri c = 2 je to doplnkovost technologii (r = 1: CAM by sa stratila, keby auto
+//              poslalo len cez NR; r = 2: keby len cez 802.11p)
+//  lostAlt[c][j]: CAM poslana len jednou technologiou (c = 0 / 1) a sused ju nedostal, hoci od toho isteho auta
+//              prijal druhou technologiou (j = 0) za poslednu 1 s / (j = 1) za posledne 3 s pred vyslanim -> odhad
+//              strat, ktore by druha technologia zachranila. Pri c = 1 je dolny odhad: auto na NR posiela 802.11p
+//              len obcas (skuska), takze dokaz, ze 802.11p fungovalo, casto chyba.
+inline std::array<std::array<uint64_t, 4>, 3> &comp () { static std::array<std::array<uint64_t, 4>, 3> a {}; return a; }
+inline std::array<std::array<uint64_t, 2>, 2> &lostAlt () { static std::array<std::array<uint64_t, 2>, 2> a {}; return a; }
+// (prijemca, odosielatel) -> cas posledneho prijatia CAM [0] cez 802.11p, [1] cez NR
+inline std::map<std::pair<unsigned long, unsigned long>, std::array<double, 2>> &lastRxTech ()
+{
+  static std::map<std::pair<unsigned long, unsigned long>, std::array<double, 2>> m;
+  return m;
+}
+
 // vykonnost podla zataze sa zapocita, ked CAM vypadne z evidencie (2 s) alebo na konci behu
 inline void
 finishTx (const Tx &tx)
 {
+  if (tx.t < warmup ())
+    return;
+  int direct = tx.paths & 5;
+  if (direct && tx.t >= nrFrom ())
+    {
+      int c = direct == 1 ? 0 : direct == 4 ? 1 : 2;
+      for (unsigned long r : tx.inRange)
+        {
+          int k = (tx.gotW.count (r) ? 1 : 0) + (tx.gotN.count (r) ? 2 : 0);
+          comp ()[c][k]++;
+          if (c < 2 && k == 0)
+            {
+              auto lr = lastRxTech ().find ({r, tx.sid});
+              double alt = lr == lastRxTech ().end () ? -1e9 : lr->second[c == 0 ? 1 : 0];
+              lostAlt ()[c][0] += tx.t - alt <= 1.0;
+              lostAlt ()[c][1] += tx.t - alt <= 3.0;
+            }
+        }
+    }
   if (tx.lbin[0] >= 0 && (tx.paths & 1))
     {
       Perf &p = perf ()[0][tx.lbin[0]];
@@ -230,8 +272,9 @@ inline void
 onCamTx (unsigned long sid, double x, double y, long gdt, bool direct = true, int paths = 0, uint32_t node = UINT32_MAX)
 {
   double t = Simulator::Now ().GetSeconds ();
-  Tx tx {t, x, y, gdt, direct, {}, {}, {}};
+  Tx tx {t, x, y, sid, gdt, direct, {}, {}, {}};
   tx.paths = paths;
+  bool meas = t >= warmup ();
   for (int k = 0; k < 3; k++)
     if (node != UINT32_MAX && loadFn ()[k] && (paths & (1 << k)))
       tx.lbin[k] = loadBin (loadFn ()[k] (node));
@@ -241,7 +284,7 @@ onCamTx (unsigned long sid, double x, double y, long gdt, bool direct = true, in
     if (v.first != sid && std::hypot (x - v.second.first, y - v.second.second) <= kRange)
       tx.inRange.insert (v.first);
   tx.pending = tx.inRange;
-  if (rangeOn ())
+  if (rangeOn () && meas)
     {
       for (auto &v : vehPos ())
         {
@@ -262,7 +305,8 @@ onCamTx (unsigned long sid, double x, double y, long gdt, bool direct = true, in
             }
         }
     }
-  v2vExp () += tx.inRange.size ();
+  if (meas)
+    v2vExp () += tx.inRange.size ();
   timeline ()[(int) t][2] += tx.inRange.size ();
   std::deque<Tx> &d = lastTx ()[sid];
   d.push_back (tx);
@@ -274,7 +318,8 @@ onCamTx (unsigned long sid, double x, double y, long gdt, bool direct = true, in
   for (Rsu *r : rsus ())
     if (std::hypot (x - r->x, y - r->y) <= kRange)
       {
-        r->ulExp[bucket (r, t)]++;
+        if (meas)
+          r->ulExp[bucket (r, t)]++;
         timeline ()[(int) t][0]++;
       }
 }
@@ -291,12 +336,16 @@ onCamRx (Rsu *r, unsigned long sid, long gdt, int path = 0)
       if (tx->gdt != gdt)
         continue;
       double now = Simulator::Now ().GetSeconds ();
-      r->latSum[path] += now - tx->t;
-      r->latN[path]++;
+      bool meas = tx->t >= warmup ();
+      if (meas)
+        {
+          r->latSum[path] += now - tx->t;
+          r->latN[path]++;
+        }
       if (path == 1)
         {
           tx->gotL = true;
-          if (tx->lbin[1] >= 0)
+          if (tx->lbin[1] >= 0 && meas)
             perf ()[1][tx->lbin[1]].lat.add (now - tx->t);
         }
       if (!tx->got.insert (r).second)
@@ -312,7 +361,8 @@ onCamRx (Rsu *r, unsigned long sid, long gdt, int path = 0)
         }
       if (std::hypot (tx->x - r->x, tx->y - r->y) <= kRange)
         {
-          r->ulRx[bucket (r, tx->t)]++;
+          if (meas)
+            r->ulRx[bucket (r, tx->t)]++;
           timeline ()[(int) tx->t][1]++;
         }
       return;
@@ -337,23 +387,29 @@ onVehCamRx (unsigned long receiver, unsigned long sender, long gdt, int path = 0
           tx->farV.erase (fv);
         }
       double now = Simulator::Now ().GetSeconds ();
+      bool meas = tx->t >= warmup ();
+      lastRxTech ().emplace (std::make_pair (receiver, sender), std::array<double, 2> {{-1e9, -1e9}})
+          .first->second[path == 2 ? 1 : 0] = tx->t;
       // vykonnost po technologiach: kazda kopia svojou technologiou (prva kopia kazdou)
       if (tx->inRange.count (receiver))
         {
           int k = path == 2 ? 2 : 0;
           std::set<unsigned long> &got = k == 2 ? tx->gotN : tx->gotW;
-          if (got.insert (receiver).second && tx->lbin[k] >= 0)
+          if (got.insert (receiver).second && tx->lbin[k] >= 0 && meas)
             perf ()[k][tx->lbin[k]].lat.add (now - tx->t);
         }
       if (tx->pending.erase (receiver))
         {
-          v2vRx ()++;
           timeline ()[(int) tx->t][3]++;
-          v2vLatSum ()[path] += now - tx->t;
-          v2vLatN ()[path]++;
+          if (meas)
+            {
+              v2vRx ()++;
+              v2vLatSum ()[path] += now - tx->t;
+              v2vLatN ()[path]++;
+            }
           auto key = std::make_pair (receiver, sender);
           auto lr = lastRxT ().find (key);
-          if (lr != lastRxT ().end () && now - lr->second <= 5.0)
+          if (lr != lastRxT ().end () && now - lr->second <= 5.0 && meas)
             pir ().add (now - lr->second);
           lastRxT ()[key] = now;
         }
@@ -392,21 +448,25 @@ sample ()
           auto bp = r->believedPos.find (sid);
           double e = bp == r->believedPos.end () ? 0 : std::hypot (p.x - bp->second.first, p.y - bp->second.second);
           double age = bp == r->believedPos.end () ? 0 : now - r->believedT[sid];
-          // cely prijazd (hybrid: LTE doplna informaciu aj mimo dosahu 802.11p)
-          r->samplesF++;
           std::array<uint64_t, 8> &tl = timeline ()[(int) now];
           tl[4]++;
           if (bp == r->believedPos.end ())
+            tl[5]++;
+          else
             {
-              r->unknownF++;
-              tl[5]++;
+              tl[6] += (uint64_t) (age * 1000);
+              tl[7] += e > 10;
             }
+          if (now < warmup ())
+            continue;
+          // cely prijazd (hybrid: LTE doplna informaciu aj mimo dosahu 802.11p)
+          r->samplesF++;
+          if (bp == r->believedPos.end ())
+            r->unknownF++;
           else
             {
               r->errSumF += e;
               r->ageSumF += age;
-              tl[6] += (uint64_t) (age * 1000);
-              tl[7] += e > 10;
               r->gt10F += e > 10;
             }
           if (std::hypot (p.x - r->x, p.y - r->y) > kRange)
@@ -431,7 +491,7 @@ sample ()
   // je pri vzorke v pohybe normalna - pocitame len, ak posledna CAM, z ktorej to RSU vie, je starsia nez 2 s)
   for (Rsu *r : rsus ())
     {
-      if (!r->believedEdge || r->tls.empty ())
+      if (!r->believedEdge || r->tls.empty () || now < warmup ())
         continue;
       for (const auto &be : *r->believedEdge)
         {

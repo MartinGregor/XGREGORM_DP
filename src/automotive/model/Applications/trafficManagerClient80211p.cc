@@ -261,7 +261,7 @@ namespace ns3
           for (int b : {xghyb::WIFI, xghyb::LTE, xghyb::NR})
             if (sent & b)
               m_hyb_last_tx[xghyb::idx (b)] = t;
-          m_hyb_cnt[sent]++;
+          m_hyb_cnt[sent] += xgstats::measuring (); // xgregorm: --warmup
           xghyb::timeline ()[(int) t][sent]++;
         }
       xgstats::onCamTx (m_sid, p.x, p.y, gdt, sent & (xghyb::WIFI | xghyb::NR), sent, GetNode ()->GetId ());
@@ -579,7 +579,7 @@ namespace ns3
           {
             probe = xghyb::WIFI; // skuska 802.11p (jeden tick = najviac jedna CAM)
             m_hyb_probe_t = now;
-            m_hyb_probes++;
+            m_hyb_probes += xgstats::measuring ();
           }
       }
     else if (!m_xg_load)
@@ -607,7 +607,7 @@ namespace ns3
       path |= avail & xghyb::LTE; // hysterezia: LTE drzime este XgHybDwell s po potvrdeni
     // prepnutie = zmena zvolenych technologii (skuska 802.11p sa za prepnutie nepocita)
     if (path != m_hyb_base)
-      m_hyb_switch++;
+      m_hyb_switch += xgstats::measuring ();
     m_hyb_base = path;
     m_hyb_path = path | probe;
   }
@@ -671,7 +671,7 @@ namespace ns3
         if (u < std::min (1.0, gain / 0.4))
           {
             m_main = xgOtherDirect (m_main);
-            m_qos_sw++;
+            m_qos_sw += xgstats::measuring ();
           }
         return;
       }
@@ -692,7 +692,7 @@ namespace ns3
     else if (cw < m_cbr_low && !worse && u < (m_cbr_low - cw) / m_cbr_low)
       m_main = xghyb::WIFI;
     if (m_main != prev)
-      m_load_sw++;
+      m_load_sw += xgstats::measuring ();
   }
 
   int
@@ -797,9 +797,12 @@ namespace ns3
           bool ok = r.got[k] && r.lat[k] <= m_lat_budget;
           m_q_exp[k] += e;
           m_q_ok[k] += ok;
-          m_qt_exp[k] += e;
-          m_qt_rx[k] += r.got[k];
-          m_qt_ok[k] += ok;
+          if (r.t0 >= xgstats::warmup ())
+            {
+              m_qt_exp[k] += e;
+              m_qt_rx[k] += r.got[k];
+              m_qt_ok[k] += ok;
+            }
         }
     st.seq = r.seq;
     st.has[0] = r.has[0];

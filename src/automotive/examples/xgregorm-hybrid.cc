@@ -158,7 +158,8 @@ tick ()
             }
           v.erase (std::remove_if (v.begin (), v.end (), [T] (const std::pair<double, double> &iv) { return iv.second <= T; }), v.end ());
           curW[n] = std::min (1.0, busy / 0.1);
-          xgstats::loadDist ()[0].add (curW[n]);
+          if (xgstats::measuring ())
+            xgstats::loadDist ()[0].add (curW[n]);
           liveAdd (0, curW[n]);
         }
       if (useN && nrSubch > 0)
@@ -171,7 +172,8 @@ tick ()
             if (e.first <= T)
               used += e.second;
           curN[n] = std::min (1.0, used / (nrSubch * nrSlotsPerSec * 0.1));
-          xgstats::loadDist ()[2].add (curN[n]);
+          if (xgstats::measuring ())
+            xgstats::loadDist ()[2].add (curN[n]);
           liveAdd (2, curN[n]);
         }
     }
@@ -180,7 +182,8 @@ tick ()
       {
         curL[c] = std::min (1.0, lteRb[c] / (lteUlRb * 100.0));
         lteRb[c] = 0;
-        xgstats::loadDist ()[1].add (curL[c]);
+        if (xgstats::measuring ())
+          xgstats::loadDist ()[1].add (curL[c]);
         liveAdd (1, curL[c]);
       }
   if (livePeriod > 0 && ++liveTicks >= (int) std::lround (livePeriod * 10))
@@ -268,6 +271,8 @@ send (Station &s, int type, uint32_t bytes, int techMask)
       Ptr<Packet> pkt = Create<Packet> (buf, 12);
       pkt->AddPaddingAtEnd (size - 12);
       sock->Send (pkt);
+      if (!xgstats::measuring ())
+        continue; // --warmup: sprava sa posle, ale nepocita
       tx[type][k]++;
       txB[type][k] += size;
       exp_[type][k] += want.size ();
@@ -355,8 +360,11 @@ cpm (uint32_t id)
   if (sensorInfo)
     s.lastSensorInfo = now;
   s.lastCpm = now;
-  objs += n;
-  cpmN++;
+  if (xgstats::measuring ())
+    {
+      objs += n;
+      cpmN++;
+    }
   // ITS PDU 8 + management 25 + originating vehicle 15 + perceived object container 2 + 35 B na objekt
   // + informacie o senzoroch (2 senzory) 40 B raz za 1 s
   if (mask)
@@ -579,6 +587,8 @@ main (int argc, char *argv[])
   cmd.AddValue ("tx-power", "802.11p transmission power [dBm]", txPower);
   cmd.AddValue ("datarate", "802.11p channel data rate [Mbit/s]", datarate);
   cmd.AddValue ("sim-time", "Total duration of the simulation [s]", simTime);
+  cmd.AddValue ("warmup", "Statistics start at this time [s] (CAMs sent earlier are not counted; behaviour unchanged)",
+                xgstats::warmup ());
   bool range_stats = false;
   bool load_stats = true;
   bool color_tech = false;
@@ -1366,6 +1376,17 @@ main (int argc, char *argv[])
     std::cout << "XGREGORM-PIR,N:" << h.n << ",MEAN_MS:" << (h.n ? 1000 * h.sum / h.n : 0) << ",P50_MS:" << 1000 * h.pct (0.5)
               << ",P95_MS:" << 1000 * h.pct (0.95) << ",P99_MS:" << 1000 * h.pct (0.99) << ",MAX_MS:" << 1000 * h.max << std::endl;
   }
+  // straty pri prepnuti technologie (xgstats::comp, lostAlt): C<cesty>:nikto/len802.11p/lenNR/oboma
+  std::cout << "XGREGORM-SWLOSS,WARMUP:" << xgstats::warmup ();
+  for (int c = 0; c < 3; c++)
+    {
+      std::cout << ",C" << c << ":";
+      for (int r = 0; r < 4; r++)
+        std::cout << (r ? "/" : "") << xgstats::comp ()[c][r];
+    }
+  for (int c = 0; c < 2; c++)
+    std::cout << ",ALT" << c << ":" << xgstats::lostAlt ()[c][0] << "/" << xgstats::lostAlt ()[c][1];
+  std::cout << std::endl;
   // dorucenie podla vzdialenosti (po 50 m): B<index>:v2v_exp/v2v_rx/ul_exp/ul_rx
   if (range_stats)
     {

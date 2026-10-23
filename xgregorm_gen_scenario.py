@@ -134,6 +134,9 @@ ap.add_argument("--nr-noise-figure", type=float, default=-1,
 ap.add_argument("--lte-iot", type=float, default=-1,
                 help="hybrid: LTE uplink interference from neighbouring cells [dB] added to the eNB noise figure; "
                      "-1 = 3 with --channel urban, otherwise 0")
+ap.add_argument("--warmup", type=float, default=0,
+                help="hybrid: statistics (network and traffic) start at this time [s]; all vehicles depart standing "
+                     "at t = 0, the first ~30 s on city-center are the start-up (e.g. --warmup 30 --sim-time 60)")
 ap.add_argument("--channel", default="authors", choices=["authors", "3gpp", "urban"],
                 help="hybrid: radio channel of 802.11p and NR-V2X; authors = 802.11p LogDistance (authors' 802.11p "
                      "examples) and NR 3GPP V2V highway (authors' NR example), 3gpp = both on the same 3GPP TR 37.885 "
@@ -756,6 +759,7 @@ HYB = (f"{TM} --tls-radius={a.tls_radius}"
        f" --qos-rat={'true' if a.qos_rat else 'false'} --qos-margin={a.qos_margin} --lat-budget={a.lat_budget}"
        f" --lte-bg-ue={a.lte_bg_ue} --lte-bg-kbps={a.lte_bg_kbps}"
        f" --fading={'true' if a.fading else 'false'} --nr-noise-figure={a.nr_noise_figure} --lte-iot={a.lte_iot}"
+       f" --warmup={a.warmup}"
        f" --core-delay={a.core_delay}" + (f" --sumo-seed={a.seed}" if a.seed is not None else "")
        # xgregorm: dalsia prevadzka; MAPEM podla poctu pruhov krizovatky (4 ramena x pruhy dnu a von:
        # 45 B na prijazdovy pruh s prepojeniami, 32 B na vyjazdovy, 30 B hlavicka), podpis podla merania (Dennik)
@@ -819,13 +823,18 @@ def doprava_z_netstate(cesta):
     if not os.path.isfile(cesta):
         return {}, {}
     casy, sucet, vzorky, stoji_teraz, stoji_spolu, max_stoj = [], {}, {}, {}, {}, {}
-    for _, el in ET.iterparse(cesta, events=("end",)):
+    # xgregorm: --warmup (len hybrid) - doprava sa pocita az od tohto casu; vozidla prichadzaju pred timestep
+    od = a.warmup if a.run == "hybrid" else 0
+    for _, el in ET.iterparse(cesta, events=("start", "end")):
         if el.tag == "timestep":
+            if _ == "start":
+                t_teraz = float(el.get("time"))
+                continue
             if len(casy) < 2:
-                casy.append(float(el.get("time")))
+                casy.append(t_teraz)
             el.clear()
             continue
-        if el.tag != "vehicle":
+        if el.tag != "vehicle" or _ != "end" or t_teraz < od:
             continue
         i, v = el.get("id"), float(el.get("speed"))
         sucet[i] = sucet.get(i, 0.0) + v
@@ -1033,7 +1042,7 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
               f"{' (' + v2v.group(2) + '/' + v2v.group(1) + ')' if v2v else ''}")
         print("      (MetricSupervisor takes the sender position from GeoNet, refreshed only every 1 s,")
         print("       so its PRR is biased and the bias depends on the CAM rate - compare this one instead)")
-        print(f"    uplink CAM -> RSU (<100 m) : {ul_all:.4f} (3 s after a green start {ulg:.4f}, "
+        print(f"    uplink CAM -> RSU (<100 m) : {ul_all:.4f} (3 s after a green start {format(ulg, '.4f') if S_('ULG_EXP') else 'n/a'}, "
               f"otherwise {ul:.4f})")
         print(f"    CAM per vehicle per second : {cam_veh_s:.2f}")
         print(f"    RSU beacons                : {beac:.0f} ({beac / max(a.sim_time, 1):.1f}/s, "
@@ -1157,6 +1166,27 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
                     print(f"    PIR car->car <100 m (time between two received CAMs of the same sender, 3GPP TR 37.885): "
                           f"{d['N']:.0f} gaps, mean {d['MEAN_MS']:.0f} ms, p50 {d['P50_MS']:.0f}, p95 {d['P95_MS']:.0f}, "
                           f"p99 {d['P99_MS']:.0f}, max {d['MAX_MS']:.0f} ms")
+            sw = re.search(r"XGREGORM-SWLOSS,(.*)", vystup)
+            if sw:
+                # xgregorm: car->car <100 m by the direct technologies of the CAM, who got it (first copy of each)
+                c = {k: [int(x) for x in v.split("/")] for k, v in re.findall(r"(C\d|ALT\d):([\d/]+)", sw.group(1))}
+                print("    car->car <100 m by the direct path of the CAM (each CAM x neighbour): got it via 802.11p only / "
+                      "NR only / both / nobody")
+                for k, nazov in (("C0", "802.11p only"), ("C1", "NR only"), ("C2", "802.11p + NR")):
+                    v = c.get(k, [0, 0, 0, 0])
+                    n = sum(v)
+                    if n:
+                        print(f"      sent {nazov:<13}: {n:8d}  {100 * v[1] / n:5.1f} / {100 * v[2] / n:5.1f} / "
+                              f"{100 * v[3] / n:5.1f} / {100 * v[0] / n:5.1f} %   PRR {1 - v[0] / n:.4f}")
+                v = c.get("C2", [0, 0, 0, 0])
+                if sum(v):
+                    print(f"      complementarity (CAMs sent on both): NR alone would lose {100 * v[1] / sum(v):.1f} %, "
+                          f"802.11p alone would lose {100 * v[2] / sum(v):.1f} % of the receptions")
+                for k, j, nazov, druha in (("C0", "ALT0", "802.11p only", "NR"), ("C1", "ALT1", "NR only", "802.11p")):
+                    n, alt = c.get(k, [0])[0], c.get(j, [0, 0])
+                    if n:
+                        print(f"      lost when sent {nazov}: {n}, of which the neighbour got this sender over {druha} "
+                              f"within 1 s / 3 s before: {100 * alt[0] / n:.1f} / {100 * alt[1] / n:.1f} %")
             rg = re.search(r"XGREGORM-RANGE,(.*)", vystup)
             if rg:
                 # delivery vs. distance: share of CAMs received (first copy) by vehicles / RSUs at that distance

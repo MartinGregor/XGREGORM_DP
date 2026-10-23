@@ -54,6 +54,7 @@ prepnutia medzi RSU) oproti pôvodným aplikáciám autorov.
 | `trafficManagerClient80211p.cc/.h`, `xgregorm-hybrid.cc`, `xgregorm_gen_scenario.py` | **výber technológie podľa záťaže** (2026-10-20, atribút klienta `XgLoadRat` + `XgCbrHigh` 0.3, `XgCbrLow` 0.2, `XgLteHigh` 0.6, `XgLoadPeriod` 1 s; CLI `--load-rat`, `--cbr-high`, `--cbr-low`, `--lte-high`): auto si vedie kĺzavý priemer (~1 s) vlastného CBR 802.11p, odhadu SL-CBR NR a vyťaženia PRB svojej bunky LTE (to oznamuje sieť – 3GPP Rel-16 predikcia QoS); raz za 1 s pri CBR 802.11p ≥ 0.3 a menej zaťaženom NR prejde hlavnou technológiou na NR s pravdepodobnosťou (CBR − 0.25)/CBR (presunie sa len časť áut), späť pod 0.2 alebo pri zahltení NR; keď RSU nepotvrdzuje žiadnu priamu technológiu, druhú priamu pridá len ak nie je zahltená a LTE len ak bunka < 0.6 PRB. Výpis `LOADSW` v `XGREGORM-HYB`. Bez `--load-rat` bit po bite zhodné | `xgregorm_kod_zaloha/` |
 | `trafficManagerClient80211p.cc/.h`, `xgregorm-hybrid-socket.h`, `xgregorm-hybrid.cc`, `xgregorm_gen_scenario.py` | **výber technológie podľa nameranej kvality** (2026-10-20, atribúty klienta `XgQosRat`, `XgQosMargin` 0.05, `XgLatBudget` 0.1 s; CLI `--qos-rat`, `--qos-margin`, `--lat-budget`; má prednosť pred pravidlom záťaže): auto meria spoľahlivosť každej priamej technológie = podiel CAM susedov do 100 m doručených načas (≤ 100 ms, definícia spoľahlivosti 3GPP TS 22.186), kĺzavo ~2 s; straty určí z **poradového čísla** – prepínač zapíše do poľa Reserved základnej hlavičky GeoNet (EN 302 636-4-1, autori ho píšu 0 a ignorujú) 1 bajt: bit 7/6 = CAM ide cez 802.11p / NR, bity 0-5 = poradové číslo mod 64 (veľkosť správy bez zmeny; rozšírenie normy). Príjem 802.11p a NR ide cez klienta (`xgRxGn`, prečíta značku, potom `GeoNet::receiveGN` cez `XgRxProxySocket`). Raz za 1 s prejde na druhú technológiu, ak je spoľahlivejšia o ≥ 0.05 a nie je zahltená (CBR < 0.3), s pravdepodobnosťou zisk/0.4; pravidlo záťaže nepresunie auto na nameraně horšiu technológiu. Predpoklad: kanál je symetrický. Pravidlo záťaže navyše: prah PRB pre zálohu LTE má každé auto vlastný (XgLteHigh ± 0.2, rovnomerne), aby zálohu nevyplo naraz celé mesto. Výpis `QOSSW`, `QW`/`QN` (odhad) v `XGREGORM-HYB`. Bez `--qos-rat` bit po bite zhodné | `xgregorm_kod_zaloha/` |
 | `xgregorm-hybrid.cc`, `xgregorm_gen_scenario.py` (moje) | **ďalší šum pri `--channel urban`** (2026-10-23): rýchle úniky 802.11p Nakagami-m (`--fading`, m = 3 do 50 m, 1.5 do 150 m, 1 ďalej; reťazené za TR 37.885, aj pre meranie CBR); šumové číslo NR UE 9 dB podľa 3GPP TR 37.885 (`--nr-noise-figure`, 5G-LENA/autori 5 dB); rušenie zo susedných buniek LTE ako +3 dB k šumovému číslu eNB (`--lte-iot`, bežná rezerva v plánovaní LTE). Pri inom kanáli bez zmeny | – (môj kód) |
+| `xgregorm-stats.h`, `xgregorm-hybrid.cc`, `xgregorm_gen_scenario.py` (moje), `trafficManagerClient80211p.cc`, `trafficManagerServer80211p.cc` | **`--warmup X`** (2026-10-23, len hybrid): všetky štatistiky (sieť aj doprava zo SUMO) sa počítajú až od X s; CAM poslané skôr sa nezapočítajú, ani keď prídu neskôr. Časová os, LIVE a kontrola ETSI ostávajú za celý beh. Správanie bez zmeny (overené: výpisy CAM, LIVE, GAP pri 0 a 10 bit po bite zhodné). **Straty pri prepnutí technológie** `XGREGORM-SWLOSS`: pre každú CAM × suseda do 100 m podľa priamych ciest CAM (len 802.11p / len NR / obe), kto ju dostal (len 802.11p / len NR / oboma / nikto) a pri strate CAM jednou technológiou, či sused od toho auta za poslednú 1 s / 3 s prijal druhou (odhad strát, ktoré by druhá technológia zachránila) | `xgregorm_kod_zaloha/` (klient, server) |
 | `xgregorm-hybrid.cc` (môj) | **iná prevádzka v bunke LTE** `--lte-bg-ue N --lte-bg-kbps R`: N statických UE (náhodne v oblasti RSU ± 100 m), každé = skupina telefónov s uplinkom ON/OFF (exp. 0.5 s / 0.5 s, počas ON 2R, pakety 1000 B na server); ich PRB sa rátajú do vyťaženia bunky; výpis `XGREGORM-LTEBG`. Limit bunky ~320 UE platí aj pre ne | – (môj kód) |
 
 **Pravidlo riadenia semaforov:** 802.11p = každá RSU riadi len semafor svojej križovatky (ako
@@ -919,6 +920,47 @@ python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --run hybrid -
   jedného behu. Rozdiel NR a 802.11p sa zmenšil (NR 0.95 vs. 802.11p 0.74 na kópiu, ale skutočné PRR = prvá kópia
   ktorejkoľvek technológie, a autá na NR prestanú posielať 802.11p tým, ktorí NR nepočujú). 20 s = rozbeh, treba dlhšie
   behy a viac seedov.
+- **2026-10-23** – **`--warmup` a meranie strát pri prepnutí (`XGREGORM-SWLOSS`)** (viď Moje zmeny). Overenie: 30 áut,
+  20 s, `--warmup 0` vs. `10` – výpisy CAM, LIVE a GAP bit po bite zhodné (správanie bez zmeny). Ostrý test: 280 áut,
+  city-center, 1 bunka, **60 s, štatistiky od 30 s** (po rozbehu), urban + podpis + SPaT/MAPEM + CPM 100 %, 1 beh na prípad
+  (A = adaptívne, E = + `--qos-rat 1`; beh A 1 h 58 min, E 2 h 56 min, pamäť ~3.2 GB):
+
+  | 30-60 s | A | E |
+  |---|---|---|
+  | **skutočné PRR auto-auto** | 0.903 | **0.918** |
+  | uplink do RSU < 100 m | 0.962 | **0.973** |
+  | CBR 802.11p priemer / vzorky ≥ 0.3 | 0.273 / 44 % | **0.229 / 32 %** |
+  | NR SL-CBR (odhad) priemer / max | 0.098 / 0.13 | 0.226 / 0.29 |
+  | LTE PRB priemer / vzorky ≥ 0.6 | 0.48 / 11 % | 0.44 / 7 % |
+  | CAM len cez NR / len 802.11p | 2.3 / 46.8 % | **34.5** / 17.7 % |
+  | CAM cez LTE za s | 222 | 210 |
+  | presuny podľa kvality (od 30 s) | – | 16 (autá sa presunú počas rozbehu a ostanú) |
+  | PRR kópie 802.11p / NR (súčet košov) | 0.75 / 0.96 | 0.75 / 0.95 |
+  | oneskorenie LTE -> RSU / NR auto-auto | 69.0 / 19.9 ms | 70.0 / 20.8 ms |
+  | SPATEM 802.11p / NR | 0.896 / 0.985 | 0.912 / 0.972 |
+  | MAPEM 802.11p / NR | 0.838 / 0.970 | 0.859 / 0.968 |
+  | CPM 802.11p / NR | 0.678 / 0.962 | 0.679 / 0.954 |
+  | vek informácie RSU (< 100 m) | 0.31 s | 0.32 s |
+  | rýchlosť, státie, max státie (30-60 s) | 29.8 km/h, 15.4 %, 22.6 s | 29.8 km/h, 15.5 %, 22.5 s |
+
+  Straty podľa priamej cesty CAM (CAM × sused do 100 m; dostal len 802.11p / len NR / oboma / nikto):
+
+  | | A | E |
+  |---|---|---|
+  | len 802.11p | 80.7 / – / – / **19.3 %** (227 106) | 80.1 / – / – / **19.9 %** (154 282) |
+  | len NR | – / 97.2 / – / **2.8 %** (18 067) | – / 95.8 / – / **4.2 %** (115 247) |
+  | 802.11p + NR | 1.2 / 27.6 / 68.8 / 2.4 % | 1.8 / 24.9 / 70.3 / 3.0 % |
+  | strata len 802.11p: sused prijal toto auto cez NR za 1 s / 3 s | 37 / 49 % | 58 / 74 % |
+  | strata len NR: sused prijal toto auto cez 802.11p za 1 s / 3 s | 58 / 82 % (514) | 15 / 23 % (4 837) |
+
+  0 porušení ETSI, 2-6 zahodených NR paketov, 0 fantómov. **Závery:**
+  - Po rozbehu je prínos pravidla kvality väčší ako v 20 s behoch: skutočné PRR +1.5 p. b. (0.903 -> 0.918), uplink
+    +1.1 p. b., 802.11p v pásme DCC active 44 -> 32 % času; doprava rovnaká. Stále 1 beh, seedy nerobené.
+  - **Hypotéza „prechodom na NR sa stratia susedia, ktorí počujú len 802.11p“ sa nepotvrdila:** CAM len cez NR stratí
+    4.2 % (802.11p samo 19.9 %) a z nich len 15 % susedov počulo auto cez 802.11p. Pri CAM poslanej oboma by NR samo
+    stratilo 1.2-1.8 %, 802.11p samo 25-28 % príjmov.
+  - Rezerva: CAM poslané len cez 802.11p stále strácajú ~20 % a v E 58 % z týchto susedov auto počuje cez NR -> pravidlo
+    presúva málo (prah zisku 0.05, pravdepodobnosť zisk/0.4). NR je pri 34.5 % CAM na 0.23 (max 0.29), blízko prahu 0.3.
 - Pozn.: v sekcii „Tok komunikácie“ je prehľad, čo ide cez ns-3 (CAM, kábel RSU-RSU) a čo cez
   TraCI (RSU -> semafor, mapa).
 

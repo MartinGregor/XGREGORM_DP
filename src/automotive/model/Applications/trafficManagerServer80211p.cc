@@ -452,7 +452,7 @@ namespace ns3
         // spracujeme len CAM novsiu nez posledna (generationDeltaTime, modulo 65536). Porovnanie modulo plati len
         // pre CAM blizko seba v case: auto, ktore RSU nepocula dlhsie nez 10 s (napr. objazd okruhu 33-65 s),
         // ma CAM vzdy novu (inak by ju porovnanie modulo 65.536 s mohlo vyhodnotit ako staru a RSU by auto ignorovala)
-        m_hyb_rx[path]++;
+        m_hyb_rx[path] += xgstats::measuring (); // xgregorm: --warmup
         double now = Simulator::Now ().GetSeconds ();
         auto last = m_hyb_last_gdt.find (stationId);
         if (last != m_hyb_last_gdt.end () && now - last->second.second < 10.0)
@@ -460,7 +460,7 @@ namespace ns3
             long d = (gdt - last->second.first + 65536) % 65536;
             if (d == 0 || d >= 32768)
               {
-                m_hyb_stale++;
+                m_hyb_stale += xgstats::measuring ();
                 return;
               }
           }
