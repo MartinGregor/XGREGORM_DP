@@ -51,8 +51,7 @@ Počet jadier druhého počítača nie je známy, `JOBS` nemá byť väčší ne
 ## 3. Prenos na druhý počítač
 
 **Samotný `git clone` nestačí.** `.gitignore` vynecháva veľkú časť ns-3 (napr. `src/lte`, `src/core`, `src/wifi`,
-`src/internet`, `build-support`) a moja oprava `src/lte/model/nr-sl-ue-rrc.cc` je v gite len ako diff. V čase zápisu navyše
-6 commitov nie je na `dp` a zmeny od 2026-10-23 nie sú commitnuté. Preto prenos cez **archív `~/VaN3Twin/xgregorm_prenos.tar.gz`**,
+`src/internet`, `build-support`) a moja oprava `src/lte/model/nr-sl-ue-rrc.cc` je v gite len ako diff. Preto prenos cez **archív `~/VaN3Twin/xgregorm_prenos.tar.gz`**,
 ktorý obsahuje všetko okrem `build/`, `cmake-cache/` a starých `.pcap`.
 
 Zdrojové prostredie: Ubuntu 24.04.5, gcc 13.3.0, CMake 3.28.3, Python 3.12.3, SUMO 1.18.0, profil `optimized`.
@@ -129,8 +128,7 @@ Prvý záznam je z 2026-10-07, keď sa overovali scenáre na už nainštalovanom
 | 11-02 | DCC, limit CR, zmes výbavy, telefóny, šírka LTE | Krátke testy, potom séria nižšie |
 | 11-02 | Séria s plným realizmom: L hotové, RA hotové | L: 0.946 / 0.967 / 0.967; RA: 0.901, SPATEM cez 802.11p 0.156 |
 
-**Stav kódu pri zastavení:** posledný commit `18b4d5ae` (2026-10-23), necommitnuté `--coex`, `--pred-rat`, DCC, limit CR, výbava,
-telefóny, `--lte-bw`, `CLAUDE.md`, `.gitignore`, tento súbor a `xgregorm_logs/`.
+**Stav kódu pri zastavení:** všetko commitnuté a pushnuté na `dp`/`main` (2026-11-02, commit `0297e48c` a tento zápis). Prepis konverzácie je len v archíve.
 
 ## 6. Čo je v `xgregorm_logs/`
 
