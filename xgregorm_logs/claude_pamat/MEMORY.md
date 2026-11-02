@@ -1,0 +1,4 @@
+- [Thesis git repo](thesis-git-repo.md) — push to remote dp/main, fresh history without VaN3Twin authors
+- [Ask before commit](ask-before-commit.md) — always ask before committing; log changes into CLAUDE.md
+- [Long run results](long-run-results.md) — logs in xgregorm_logs/ next to CLAUDE.md, interim results to the Dennik, resume with ser.sh
+- [Machine handover](machine-handover.md) — stopped 2026-11-02 to move to a 32 GB machine; read xgregorm_STAV_PRACE.md first

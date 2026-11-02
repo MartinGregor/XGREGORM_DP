@@ -143,6 +143,16 @@ private:
   double m_q_exp[2] = {0, 0}, m_q_ok[2] = {0, 0}; //!< klzave sucty (~2 s): ocakavane / dorucene nacas
   uint64_t m_qt_exp[2] = {0, 0}, m_qt_rx[2] = {0, 0}, m_qt_ok[2] = {0, 0}; //!< celkove sucty (vypis, porovnanie so skutocnostou)
   uint64_t m_qos_sw = 0;               //!< presuny hlavnej technologie kvoli kvalite
+  // xgregorm: prediktivny vyber (XgPredRat): spolahlivost a zataz technologii na nasledujucich XgPredHorizon s
+  // z mapy kvality (xgstats::rem) v bodoch trasy auta; rozhodnutie inak rovnake ako pravidlo kvality
+  bool m_xg_pred = false;
+  double m_pred_h = 3;
+  void xgPredict (double q[2], int nq[2], double c[2], int nc[2]);
+  double m_qc_exp[2] = {0, 0}, m_qc_ok[2] = {0, 0}; //!< celkove sucty od zaciatku (vyhodnotenie predikcie)
+  struct PRec { double t; double pred[2]; double now[2]; double e0[2]; double o0[2]; bool map[2]; };
+  std::deque<PRec> m_pred_q;           //!< predikcie cakajuce na vyhodnotenie (po XgPredHorizon s)
+  std::vector<std::string> m_route;
+  uint64_t m_pred_sw = 0;              //!< presuny hlavnej technologie podla predikcie
 };
 }
 #endif // trafficManagerClient80211p_H

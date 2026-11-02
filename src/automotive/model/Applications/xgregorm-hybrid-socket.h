@@ -18,6 +18,9 @@
 #include <string>
 #include <map>
 #include <array>
+#include <deque>
+#include <algorithm>
+#include <cmath>
 #include <vector>
 #include <sstream>
 
@@ -75,6 +78,209 @@ findDevice (Ptr<Node> node, const std::string &type)
 }
 
 } // namespace xghyb
+
+// xgregorm: riadenie zahltenia (--dcc, --nr-cr), spolocne pre CAM (prepinac) aj dalsiu prevadzku (SPATEM, MAPEM, CPM)
+//  802.11p: reaktivne DCC podla ETSI TS 102 687 (hodnoty ako modul DCC autorov, tab. A.1/A.2): stav podla CBR stanice
+//           (Relaxed < 0.30, Active1 < 0.40, Active2 < 0.50, Active3 < 0.65, inak Restrictive; vyhodnotenie raz za
+//           100 ms, vzdy len do susedneho stavu). Po kazdom ramci je brana zatvorena Toff (Ton <= 0.5 ms: 50/100/200/250/
+//           1000 ms, Ton <= 1 ms: 100/200/400/500/1000 ms; dlhsi ramec Toff x Ton/1 ms, najviac 1 s - norma tabulky pre
+//           Ton > 1 ms nema, zachovava sa podiel casu vysielania stavu, napr. Relaxed 1 %); spravy cakaju vo fronte podla priority
+//           (DP1 SPATEM/MAPEM, DP2 CAM, DP3 CPM a beacon GeoNet), novsia sprava rovnakeho druhu nahradi cakajucu,
+//           po 1 s sa zahodi. Navyse CA a CP sluzba (T_GenCam_DCC, T_GenCpm podla EN 302 637-2 / TS 103 324) nevytvaraju
+//           spravy castejsie nez Toff stavu (camGap). Znizenie vykonu z tabulky autorov sa nepouziva (len frekvencia).
+//  NR-V2X: limit CR (podiel vlastnych obsadenych subkanalov x slotov za poslednu 1 s) podla SL-CBR, ETSI TS 103 574
+//           tab. 1, PPPP3-5: <= 0.3 bez limitu, <= 0.65 0.03, <= 0.8 0.006, inak 0.003. Pri CR >= limit sa kopia
+//           spravy cez NR zahodi (3GPP TS 38.321: UE musi CR udrzat pod limitom). SL-CBR = odhad zo scenara (dolny odhad).
+namespace xgdcc {
+enum Kind { CAM = 0, GNB = 1, SPAT = 2, MAP = 3, CPM = 4 };
+inline bool &wOn () { static bool b = false; return b; }
+inline bool &nrOn () { static bool b = false; return b; }
+inline std::function<double (uint32_t)> &cbrW () { static std::function<double (uint32_t)> f; return f; }
+inline std::function<double (uint32_t)> &cbrN () { static std::function<double (uint32_t)> f; return f; }
+inline double &nrCap () { static double c = 0; return c; } // subkanaly x sloty za 1 s
+struct QPkt
+{
+  Ptr<Socket> s;
+  Ptr<Packet> p;
+  double t;
+  int prio, kind;
+};
+struct WSt
+{
+  double open = 0, eval = -1;
+  int state = 0;
+  bool sched = false;
+  std::deque<QPkt> q;
+};
+inline std::map<uint32_t, WSt> &wst () { static std::map<uint32_t, WSt> m; return m; }
+inline std::map<uint32_t, std::deque<std::pair<double, double>>> &nrUse ()
+{
+  static std::map<uint32_t, std::deque<std::pair<double, double>>> m;
+  return m;
+}
+// [0] 802.11p hned, [1] do fronty, [2] z fronty, [3] nahradene novsou, [4] zahodene po 1 s, [5] NR odoslane,
+// [6] NR zahodene (CR), [7] CAM nevytvorene (T_GenCam_DCC), [8] CPM nevytvorene
+inline std::array<uint64_t, 9> &cnt () { static std::array<uint64_t, 9> a {}; return a; }
+inline std::array<uint64_t, 5> &stateN () { static std::array<uint64_t, 5> a {}; return a; } // stav pri sprave
+inline double &qDelay () { static double d = 0; return d; }
+inline double &crSum () { static double d = 0; return d; }
+
+// trvanie ramca 802.11p (OFDM 6 Mbit/s, 10 MHz): preambula + SIGNAL 40 us, symbol 8 us = 24 bitov dat;
+// MAC hlavicka + LLC + FCS 36 B, SERVICE 16 + tail 6 bitov
+inline double
+airtime (uint32_t bytes)
+{
+  return 40e-6 + std::ceil ((22 + 8.0 * (bytes + 36)) / 24.0) * 8e-6;
+}
+inline int stateOf (double c) { return c < 0.30 ? 0 : c < 0.40 ? 1 : c < 0.50 ? 2 : c < 0.65 ? 3 : 4; }
+inline double
+toff (int st, double ton)
+{
+  static const double a[5] = {0.05, 0.1, 0.2, 0.25, 1.0}, b[5] = {0.1, 0.2, 0.4, 0.5, 1.0};
+  if (ton <= 0.5e-3)
+    return a[st];
+  return std::min (1.0, b[st] * std::max (1.0, ton / 1e-3));
+}
+// TS 102 687 cl. 5.3: stav sa vyhodnoti raz za T_CBR (100 ms) a prechadza len do susedneho stavu
+inline void
+updState (uint32_t n, WSt &w)
+{
+  double now = Simulator::Now ().GetSeconds ();
+  if (w.eval >= 0 && now - w.eval < 0.1 - 1e-9)
+    return;
+  w.eval = now;
+  int t = stateOf (cbrW () ? cbrW () (n) : 0);
+  w.state += t > w.state ? 1 : t < w.state ? -1 : 0;
+}
+// minimalny odstup sprav, ktore facility vrstva vytvara (T_GenCam_DCC): Toff stavu pre typicku CAM (< 0.5 ms)
+inline double
+camGap (uint32_t n)
+{
+  if (!wOn ())
+    return 0;
+  WSt &w = wst ()[n];
+  updState (n, w);
+  return toff (w.state, 0);
+}
+inline void flush (uint32_t n);
+inline void
+schedule (uint32_t n, WSt &w)
+{
+  if (w.sched || w.q.empty ())
+    return;
+  w.sched = true;
+  double dt = std::max (0.0, w.open - Simulator::Now ().GetSeconds ());
+  Simulator::Schedule (Seconds (dt), &flush, n);
+}
+inline void
+txNow (WSt &w, const QPkt &q)
+{
+  q.s->Send (q.p);
+  w.open = Simulator::Now ().GetSeconds () + toff (w.state, airtime (q.p->GetSize ()));
+}
+inline void
+flush (uint32_t n)
+{
+  WSt &w = wst ()[n];
+  w.sched = false;
+  double now = Simulator::Now ().GetSeconds ();
+  for (auto it = w.q.begin (); it != w.q.end ();)
+    if (now - it->t > 1.0)
+      {
+        it = w.q.erase (it);
+        cnt ()[4]++;
+      }
+    else
+      ++it;
+  if (w.q.empty ())
+    return;
+  if (now < w.open - 1e-9)
+    {
+      schedule (n, w);
+      return;
+    }
+  updState (n, w);
+  auto best = std::min_element (w.q.begin (), w.q.end (), [] (const QPkt &a, const QPkt &b) {
+    return a.prio != b.prio ? a.prio < b.prio : a.t < b.t;
+  });
+  QPkt q = *best;
+  w.q.erase (best);
+  qDelay () += now - q.t;
+  cnt ()[2]++;
+  txNow (w, q);
+  schedule (n, w);
+}
+// odoslanie cez 802.11p cez branu DCC
+inline int
+wSend (Ptr<Socket> s, Ptr<Packet> p, int kind)
+{
+  if (!wOn ())
+    return s->Send (p);
+  static const int prio[5] = {2, 3, 1, 1, 3};
+  uint32_t n = s->GetNode ()->GetId ();
+  WSt &w = wst ()[n];
+  updState (n, w);
+  stateN ()[w.state]++;
+  double now = Simulator::Now ().GetSeconds ();
+  QPkt q {s, p, now, prio[kind], kind};
+  if (w.q.empty () && now >= w.open - 1e-9)
+    {
+      cnt ()[0]++;
+      txNow (w, q);
+      return p->GetSize ();
+    }
+  for (QPkt &e : w.q)
+    if (e.kind == kind)
+      {
+        e = q;
+        cnt ()[3]++;
+        return p->GetSize ();
+      }
+  w.q.push_back (q);
+  cnt ()[1]++;
+  schedule (n, w);
+  return p->GetSize ();
+}
+// vlastne obsadenie NR (subkanaly x sloty) pri kazdom vlastnom PSSCH - vola scenar
+inline void
+nrUsed (uint32_t n, double occ)
+{
+  nrUse ()[n].push_back ({Simulator::Now ().GetSeconds (), occ});
+}
+inline double
+crOf (uint32_t n)
+{
+  auto &d = nrUse ()[n];
+  double now = Simulator::Now ().GetSeconds (), u = 0;
+  while (!d.empty () && now - d.front ().first > 1.0)
+    d.pop_front ();
+  for (auto &e : d)
+    u += e.second;
+  return nrCap () > 0 ? u / nrCap () : 0;
+}
+inline double
+crLimit (double cbr)
+{
+  return cbr <= 0.3 ? 1.0 : cbr <= 0.65 ? 0.03 : cbr <= 0.8 ? 0.006 : 0.003;
+}
+// odoslanie cez NR s limitom CR
+inline int
+nrSend (Ptr<Socket> s, Ptr<Packet> p)
+{
+  if (!nrOn ())
+    return s->Send (p);
+  uint32_t n = s->GetNode ()->GetId ();
+  double cr = crOf (n);
+  crSum () += cr;
+  if (cr >= crLimit (cbrN () ? cbrN () (n) : 0))
+    {
+      cnt ()[6]++;
+      return p->GetSize ();
+    }
+  cnt ()[5]++;
+  return s->Send (p);
+}
+} // namespace xgdcc
 
 // xgregorm: zakladna hlavicka GeoNet (ETSI EN 302 636-4-1, 4 B) ako surove bajty - prepinac do jej pola Reserved
 // (bajt 1, GeoNet autorov ho pise 0 a pri prijme ignoruje) zapise znacku pre vyber technologie podla kvality
@@ -180,9 +386,23 @@ public:
           }
       }
     Ptr<Socket> s[3] = {m_wifi, m_lte, m_nr};
+    // xgregorm: --dcc / --nr-cr - 802.11p cez branu DCC, NR s limitom CR (druh spravy: beacon GeoNet / CAM)
+    int kind = xgdcc::CAM;
+    if (p->GetSize () >= 6)
+      {
+        uint8_t h[6];
+        p->CopyData (h, 6);
+        if ((h[0] & 0x0f) == 1 && (h[5] >> 4) == 1)
+          kind = xgdcc::GNB;
+      }
     for (int b : {xghyb::WIFI, xghyb::LTE, xghyb::NR})
       if ((path & b) && s[xghyb::idx (b)] && xghyb::up (b))
-        ret = std::max (ret, s[xghyb::idx (b)]->Send (p->Copy (), flags));
+        {
+          Ptr<Packet> c = p->Copy ();
+          int r = b == xghyb::WIFI ? xgdcc::wSend (s[0], c, kind) : b == xghyb::NR ? xgdcc::nrSend (s[2], c)
+                                                                                  : s[1]->Send (c, flags);
+          ret = std::max (ret, r);
+        }
     // vsetky zvolene cesty vypadnute: CAM sa stratila, pre CA sluzbu je vsak odoslana (ako pri chybe radia)
     return ret == -1 ? (int) p->GetSize () : ret;
   }

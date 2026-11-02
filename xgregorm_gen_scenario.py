@@ -124,6 +124,30 @@ ap.add_argument("--qos-rat", type=int, default=0, choices=[0, 1],
                      "within 100 m delivered within --lat-budget, per technology); takes precedence over --load-rat")
 ap.add_argument("--qos-margin", type=float, default=0.05, help="quality rule: required reliability advantage")
 ap.add_argument("--lat-budget", type=float, default=0.1, help="quality rule: CAM latency budget [s]")
+ap.add_argument("--pred-rat", type=int, default=0, choices=[0, 1],
+                help="hybrid adaptive: quality rule with prediction - reliability and load over the next --pred-horizon s "
+                     "from a shared quality map (measurements of all vehicles) along the vehicle's route (implies --qos-rat)")
+ap.add_argument("--pred-horizon", type=float, default=3, help="prediction horizon [s]")
+ap.add_argument("--coex", type=int, default=0, choices=[0, 1],
+                help="hybrid: mutual interference of 802.11p and NR-V2X in the 5.9 GHz band (802.11p on --coex-wifi-ch, "
+                     "NR 40 MHz at 5890 MHz = co-channel); 802.11p defers to NR energy above -65 dBm (CCA-ED)")
+ap.add_argument("--coex-aclr", type=float, default=30, help="coexistence: adjacent channel leakage ratio [dB]")
+ap.add_argument("--coex-wifi-ch", type=int, default=180, help="coexistence: 802.11p channel (180 = 5900 MHz)")
+ap.add_argument("--nr-freq", type=float, default=5.89e9, help="hybrid: NR-V2X sidelink centre frequency [Hz]")
+ap.add_argument("--nr-bw", type=float, default=0, help="hybrid: NR-V2X sidelink bandwidth [MHz] (0 = 40, authors)")
+ap.add_argument("--equip", default="",
+                help="hybrid: equipment of the vehicles - shares of W (802.11p only), N (NR-V2X only), WN (both), NONE "
+                     "(no V2X), e.g. W:0.4,N:0.2,WN:0.2,NONE:0.2; every vehicle has LTE; empty = all WN")
+ap.add_argument("--phone-share", type=float, default=0,
+                help="hybrid: share of vehicles with passengers' phones / infotainment on the LTE uplink (bursty ON/OFF); "
+                     "CAMs over LTE then use a dedicated V2X bearer")
+ap.add_argument("--phone-kbps", type=float, default=100, help="hybrid: mean uplink rate of the phones in one vehicle [kbit/s]")
+ap.add_argument("--lte-bw", type=int, default=0, choices=[0, 6, 15, 25, 50, 75, 100],
+                help="hybrid: LTE cell bandwidth [PRB] (25 = 5 MHz ns-3 default, 50 = 10 MHz, 100 = 20 MHz; 0 = default)")
+ap.add_argument("--dcc", type=int, default=0, choices=[0, 1],
+                help="hybrid: 802.11p reactive DCC (ETSI TS 102 687) - gatekeeper after every frame + T_GenCam_DCC / T_GenCpm")
+ap.add_argument("--nr-cr", type=int, default=0, choices=[0, 1],
+                help="hybrid: NR-V2X congestion control - CR limit by SL-CBR (ETSI TS 103 574)")
 ap.add_argument("--lte-bg-ue", type=int, default=0,
                 help="hybrid: other (non-V2X) LTE users in the cell - static UEs, each a group of phones with bursty uplink")
 ap.add_argument("--lte-bg-kbps", type=float, default=500, help="hybrid: mean uplink rate of one background LTE UE [kbit/s]")
@@ -758,6 +782,12 @@ HYB = (f"{TM} --tls-radius={a.tls_radius}"
        f" --load-rat={'true' if a.load_rat else 'false'} --cbr-high={a.cbr_high} --cbr-low={a.cbr_low} --lte-high={a.lte_high}"
        f" --qos-rat={'true' if a.qos_rat else 'false'} --qos-margin={a.qos_margin} --lat-budget={a.lat_budget}"
        f" --lte-bg-ue={a.lte_bg_ue} --lte-bg-kbps={a.lte_bg_kbps}"
+       + (f" --pred-rat=true --pred-horizon={a.pred_horizon}" if a.pred_rat else "")
+       + (f" --coex=true --coex-aclr={a.coex_aclr} --coex-wifi-ch={a.coex_wifi_ch}" if a.coex else "")
+       + (f" --nr-freq={a.nr_freq}" if a.nr_freq != 5.89e9 else "") + (f" --nr-bw={a.nr_bw}" if a.nr_bw else "")
+       + (f" --equip={a.equip}" if a.equip else "")
+       + (f" --phone-share={a.phone_share} --phone-kbps={a.phone_kbps}" if a.phone_share else "")
+       + (f" --lte-bw={a.lte_bw}" if a.lte_bw else "") + (" --dcc=true" if a.dcc else "") + (" --nr-cr=true" if a.nr_cr else "") +
        f" --fading={'true' if a.fading else 'false'} --nr-noise-figure={a.nr_noise_figure} --lte-iot={a.lte_iot}"
        f" --warmup={a.warmup}"
        f" --core-delay={a.core_delay}" + (f" --sumo-seed={a.seed}" if a.seed is not None else "")
@@ -1080,7 +1110,8 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
                 f"{combo(m)} {100 * H(f'P{m}') / ht:.1f} %" for m in range(8) if H(f"P{m}")))
             print(f"    CAMs per technology        : 802.11p {on(1)}, LTE {on(2)} ({on(2) / max(a.sim_time, 1):.1f}/s "
                   f"cellular uplink), NR {on(4)}; path switches {H('SWITCH')}, probes of 802.11p {H('PROBE')}, "
-                  f"moves of the main technology due to load {H('LOADSW')}, due to quality {H('QOSSW')}")
+                  f"moves of the main technology due to load {H('LOADSW')}, due to quality {H('QOSSW')}, "
+                  f"by prediction {H('PREDSW')}")
             qe = [list(map(int, m)) for m in re.findall(r"QW:(\d+)/(\d+)/(\d+),QN:(\d+)/(\d+)/(\d+)", vystup)]
             if qe:
                 # odhad vozidiel (z poradovych cisel) vs. skutocnost (PRR kopie po technologiach z polohy v SUMO)
@@ -1187,6 +1218,56 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
                     if n:
                         print(f"      lost when sent {nazov}: {n}, of which the neighbour got this sender over {druha} "
                               f"within 1 s / 3 s before: {100 * alt[0] / n:.1f} / {100 * alt[1] / n:.1f} %")
+            cx = re.search(r"XGREGORM-COEX,TO_NR:(.*)", vystup)
+            cf = re.search(r"XGREGORM-COEX,W_MHZ:([\d.]+)/([\d.]+),NR_MHZ:([\d.]+)/([\d.]+),OVERLAP_MHZ:([\d.]+),ACLR_DB:([\d.]+)", vystup)
+            if cx:
+                d = dict((k, float(v)) for k, v in re.findall(r"([A-Z_]+):([\d.eE+-]+)", "TO_NR:" + cx.group(1)))
+                print(f"    coexistence 5.9 GHz        : 802.11p {cf.group(1)} MHz / {cf.group(2)} MHz, NR {cf.group(3)} MHz / "
+                      f"{cf.group(4)} MHz, overlap {cf.group(5)} MHz, ACLR {cf.group(6)} dB (whole run)" if cf else
+                      "    coexistence 5.9 GHz        :")
+                print(f"      802.11p -> NR receivers  : {d['TO_NR']:.0f} signals (mean {d['TO_NR_DBM']:.1f} dBm), counted in "
+                      f"the NR SL-CBR estimate {d['CBR_NR']:.0f}")
+                print(f"      NR -> 802.11p receivers  : {d['TO_W']:.0f} signals (mean {d['TO_W_DBM']:.1f} dBm), CCA busy "
+                      f"(802.11p defers) {d['CCA']:.0f}, counted in CBR {d['CBR_W']:.0f}")
+            eqm = re.search(r"XGREGORM-EQUIP,W:(\d+),N:(\d+),WN:(\d+),NONE:(\d+)", vystup)
+            if eqm:
+                print(f"    equipment (vehicle pool)   : 802.11p only {eqm.group(1)}, NR only {eqm.group(2)}, both {eqm.group(3)}, "
+                      f"no V2X {eqm.group(4)} (all with LTE)")
+            ph = re.search(r"XGREGORM-PHONE,VEH:(\d+),PKT:(\d+),BYTES:(\d+)", vystup)
+            if ph:
+                print(f"    phones in vehicles         : {ph.group(1)} vehicles, {int(ph.group(3)) * 8 / 1e3 / max(a.sim_time, 1):.0f} "
+                      f"kbit/s LTE uplink in total (whole run)")
+            dc = re.search(r"XGREGORM-DCC,NOW:(.*)", vystup)
+            if dc:
+                d = dict((k, v) for k, v in re.findall(r"([A-Z_]+):([\d/.eE+-]+)", "NOW:" + dc.group(1)))
+                f_ = lambda k: float(d.get(k, 0))
+                st_ = [int(x) for x in d["STATE"].split("/")]
+                tot = max(sum(st_), 1)
+                n11 = f_("NOW") + f_("QUEUED") + f_("REPLACED")
+                if n11:
+                    print(f"    DCC 802.11p (whole run)    : messages sent at once {100 * f_('NOW') / n11:.1f} %, queued "
+                          f"{100 * f_('QUEUED') / n11:.1f} % (mean wait {1000 * f_('QDELAY_S') / max(f_('FROMQ'), 1):.0f} ms), "
+                          f"replaced by a newer one {100 * f_('REPLACED') / n11:.1f} %, expired {f_('EXPIRED'):.0f}; "
+                          f"CAMs not generated (T_GenCam_DCC) {f_('CAMSKIP'):.0f}, CPMs {f_('CPMSKIP'):.0f}")
+                    print("      state at a message    : " + ", ".join(
+                        f"{n} {100 * v / tot:.1f} %" for n, v in zip(("relaxed", "active1", "active2", "active3", "restrictive"), st_)))
+                nr = f_("NR_SENT") + f_("NR_DROP")
+                if nr:
+                    print(f"    NR CR limit (whole run)    : copies dropped {100 * f_('NR_DROP') / nr:.2f} % of {nr:.0f}, mean CR "
+                          f"{f_('CR_SUM') / nr:.4f}")
+            pd = re.search(r"XGREGORM-PRED,(.*)", vystup)
+            if pd:
+                d = dict((k, v) for k, v in re.findall(r"([A-Z0-9]+):([\d/.eE+-]+)", pd.group(1)))
+                cov = [int(x) for x in d["COVER"].split("/")]
+                print(f"    prediction                 : map cells {d['CELLS']}, predictions with map data "
+                      f"{100 * cov[0] / max(sum(cov), 1):.1f} % ({sum(cov)}); reliability over the next {a.pred_horizon:g} s, "
+                      f"mean |error| (bias) prediction vs. 'stays as now':")
+                for k, nazov in ((0, "802.11p"), (1, "NR")):
+                    n = int(d[f"N{k}"])
+                    e = [float(x) for x in d[f"E{k}"].split("/")]
+                    b = [float(x) for x in d[f"B{k}"].split("/")]
+                    if n:
+                        print(f"      {nazov:<8}: {e[0] / n:.4f} ({b[0] / n:+.4f}) vs. {e[1] / n:.4f} ({b[1] / n:+.4f})   ({n} predictions)")
             rg = re.search(r"XGREGORM-RANGE,(.*)", vystup)
             if rg:
                 # delivery vs. distance: share of CAMs received (first copy) by vehicles / RSUs at that distance

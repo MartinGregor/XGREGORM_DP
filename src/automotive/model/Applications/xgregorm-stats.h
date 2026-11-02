@@ -189,6 +189,73 @@ inline std::map<std::pair<unsigned long, unsigned long>, std::array<double, 2>> 
   return m;
 }
 
+// mapa kvality (radio environment map) pre prediktivny vyber technologie (XgPredRat): zdielana medzi autami - v realite
+// server, kam auta posielaju svoje merania (crowdsourcing, ako 3GPP predikcia QoS); tu jedna struktura. Bunka
+// remCell x remCell m (suradnice SUMO). Pre kazdu priamu technologiu (0 = 802.11p, 1 = NR):
+//  exp/ok = ocakavane / nacas dorucene CAM susedov do 100 m, ktore auto namerajo, ked bolo v bunke (prijimac);
+//  cbr    = sucet vzoriek zataze kanala (100 ms) v bunke, cbrN ich pocet.
+// Sucty zabudaju s casovou konstantou remTau (premavka sa meni). Mapa obsahuje len merania z minulosti.
+struct RemCell
+{
+  double t = 0;
+  double exp[2] = {0, 0}, ok[2] = {0, 0}, cbr[2] = {0, 0}, cbrN[2] = {0, 0};
+};
+inline double &remCell () { static double c = 20; return c; }
+inline double &remTau () { static double t = 30; return t; }
+inline std::map<std::pair<int, int>, RemCell> &rem () { static std::map<std::pair<int, int>, RemCell> m; return m; }
+inline RemCell *
+remAt (double x, double y, bool create)
+{
+  std::pair<int, int> key {(int) std::floor (x / remCell ()), (int) std::floor (y / remCell ())};
+  auto it = rem ().find (key);
+  if (it == rem ().end ())
+    {
+      if (!create)
+        return nullptr;
+      it = rem ().emplace (key, RemCell ()).first;
+    }
+  RemCell &c = it->second;
+  double now = Simulator::Now ().GetSeconds ();
+  if (now > c.t)
+    {
+      double f = std::exp (-(now - c.t) / remTau ());
+      for (int k = 0; k < 2; k++)
+        {
+          c.exp[k] *= f;
+          c.ok[k] *= f;
+          c.cbr[k] *= f;
+          c.cbrN[k] *= f;
+        }
+      c.t = now;
+    }
+  return &c;
+}
+// presnost predikcie (len po warmup): predikovana spolahlivost na nasledujuci horizont vs. potom namerana autom;
+// [k][0] = predikcia z mapy, [k][1] = "zostane ako teraz" (sucasne meranie, zaklad pre porovnanie)
+inline std::array<std::array<double, 2>, 2> &predErr () { static std::array<std::array<double, 2>, 2> a {}; return a; }
+inline std::array<std::array<double, 2>, 2> &predBias () { static std::array<std::array<double, 2>, 2> a {}; return a; }
+inline std::array<uint64_t, 2> &predN () { static std::array<uint64_t, 2> a {}; return a; }
+inline std::array<uint64_t, 2> &predCover () { static std::array<uint64_t, 2> a {}; return a; } // [0] s mapou, [1] bez
+
+// vybava aut (--equip): ID auta -> priame technologie (1 = 802.11p, 4 = NR-V2X, 0 = bez V2X); chyba = obe.
+// Auto bez V2X nie je prijemca CAM (nema ju dostat) a RSU o nom vediet nemoze; auto bez technologie sa do jej
+// vykonnosti nepocita, do skutocneho PRR ano (CAM poslanu len technologiou, ktoru nema, nedostane = strata).
+inline std::map<unsigned long, int> &equip () { static std::map<unsigned long, int> m; return m; }
+inline int
+eqOf (unsigned long sid)
+{
+  auto it = equip ().find (sid);
+  return it == equip ().end () ? 5 : it->second;
+}
+inline uint64_t
+countEq (const std::set<unsigned long> &s, int bit)
+{
+  uint64_t n = 0;
+  for (unsigned long r : s)
+    n += (eqOf (r) & bit) != 0;
+  return n;
+}
+
 // vykonnost podla zataze sa zapocita, ked CAM vypadne z evidencie (2 s) alebo na konci behu
 inline void
 finishTx (const Tx &tx)
@@ -216,14 +283,14 @@ finishTx (const Tx &tx)
     {
       Perf &p = perf ()[0][tx.lbin[0]];
       p.cam++;
-      p.exp += tx.inRange.size ();
+      p.exp += countEq (tx.inRange, 1);
       p.rx += tx.gotW.size ();
     }
   if (tx.lbin[2] >= 0 && (tx.paths & 4) && tx.t >= nrFrom ())
     {
       Perf &p = perf ()[2][tx.lbin[2]];
       p.cam++;
-      p.exp += tx.inRange.size ();
+      p.exp += countEq (tx.inRange, 4);
       p.rx += tx.gotN.size ();
     }
   if (tx.lbin[1] >= 0 && (tx.paths & 2))
@@ -281,7 +348,7 @@ onCamTx (unsigned long sid, double x, double y, long gdt, bool direct = true, in
   // susedia do 100 m maju CAM dostat vzdy; ak odisla len cez LTE (direct = false), nedostanu ju -> strata
   (void) direct;
   for (auto &v : vehPos ())
-    if (v.first != sid && std::hypot (x - v.second.first, y - v.second.second) <= kRange)
+    if (v.first != sid && eqOf (v.first) && std::hypot (x - v.second.first, y - v.second.second) <= kRange)
       tx.inRange.insert (v.first);
   tx.pending = tx.inRange;
   if (rangeOn () && meas)
@@ -443,6 +510,8 @@ sample ()
       vehPos ()[sid] = {p.x, p.y};
       for (Rsu *r : rsus ())
         {
+          if (!eqOf (sid))
+            break; // auto bez V2X RSU poznat nemoze
           if (!r->approaches.count (road))
             continue;
           auto bp = r->believedPos.find (sid);

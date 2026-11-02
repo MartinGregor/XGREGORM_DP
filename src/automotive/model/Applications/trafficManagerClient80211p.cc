@@ -151,7 +151,19 @@ namespace ns3
             "Quality rule: latency budget of a CAM [s]; a later CAM counts as lost (3GPP reliability)",
             DoubleValue (0.1),
             MakeDoubleAccessor (&trafficManagerClient80211p::m_lat_budget),
-            MakeDoubleChecker<double> (0.001));
+            MakeDoubleChecker<double> (0.001))
+        .AddAttribute ("XgPredRat",
+            "Quality rule with prediction: the reliability and load of each direct technology over the next "
+            "XgPredHorizon s come from a shared quality map (measurements of all vehicles, per 20 m cell) at the "
+            "points of the vehicle's route, averaged with its own current measurement (needs XgQosRat)",
+            BooleanValue (false),
+            MakeBooleanAccessor (&trafficManagerClient80211p::m_xg_pred),
+            MakeBooleanChecker ())
+        .AddAttribute ("XgPredHorizon",
+            "Prediction: horizon [s]; one route point per second",
+            DoubleValue (3.0),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_pred_h),
+            MakeDoubleChecker<double> (1, 10));
         return tid;
   }
 
@@ -332,7 +344,8 @@ namespace ns3
         m_caService.setSocketTx (hs);
       }
     // xgregorm: algoritmus relevancie - brana pred kazdou CAM spustenou v CA sluzbe
-    if (m_xg_relax)
+    // xgregorm: --dcc - T_GenCam_DCC (CAM cez 802.11p nie castejsie nez Toff stavu DCC) ide cez tu istu branu
+    if (m_xg_relax || xgdcc::wOn ())
       m_caService.setCamGate (std::bind (&trafficManagerClient80211p::camGate, this, std::placeholders::_1));
     // xgregorm: adaptivny hybrid - beacon RSU (zoznam pocutych CAM) cez 802.11p
     if (m_xg_hybrid == 2 && (m_hyb_mask & xghyb::WIFI))
@@ -398,9 +411,17 @@ namespace ns3
     double gap = Simulator::Now ().GetSeconds () - m_last_tx;
     if (gap < 0.1 - 1e-6)
       return false; // tesne po vynutenej CAM (forceCam), dalsia este nesmie ist
-    if (!m_relevant && gap < 0.95)
+    if (m_xg_relax && !m_relevant && gap < 0.95)
       {
         xgCount (m_xg_relaxed);
+        return false;
+      }
+    // xgregorm: DCC (ETSI EN 302 637-2, T_GenCam_DCC): dynamicky spustena CAM cez 802.11p najskor po Toff stavu DCC
+    if (dynamic && xgdcc::wOn () && (xgPathNow () & xghyb::WIFI) && gap < xgdcc::camGap (GetNode ()->GetId ()) - 1e-6)
+      {
+        if (Simulator::Now ().GetSeconds () != m_last_gate_count)
+          xgdcc::cnt ()[7]++;
+        m_last_gate_count = Simulator::Now ().GetSeconds ();
         return false;
       }
     return true;
@@ -634,6 +655,40 @@ namespace ns3
         }
     m_load_init = true;
     double now = Simulator::Now ().GetSeconds ();
+    if (m_xg_pred)
+      {
+        // mapa kvality: vzorka zataze kanala 802.11p a NR (100 ms) v bunke, kde auto prave je
+        auto me = xgstats::vehPos ().find (m_sid);
+        if (me != xgstats::vehPos ().end ())
+          {
+            xgstats::RemCell *c = xgstats::remAt (me->second.first, me->second.second, true);
+            for (int k = 0; k < 2; k++)
+              if (xgstats::loadFn ()[k ? 2 : 0])
+                {
+                  c->cbr[k] += xgstats::loadFn ()[k ? 2 : 0] (node);
+                  c->cbrN[k] += 1;
+                }
+          }
+        // vyhodnotenie predikcii: spolahlivost namerana autom za horizont vs. predikcia a vs. "zostane ako teraz"
+        while (!m_pred_q.empty () && now - m_pred_q.front ().t >= m_pred_h - 1e-9)
+          {
+            const PRec &p = m_pred_q.front ();
+            for (int k = 0; k < 2; k++)
+              {
+                double e = m_qc_exp[k] - p.e0[k];
+                if (e < 10 || p.t < xgstats::warmup ())
+                  continue;
+                double real = (m_qc_ok[k] - p.o0[k]) / e;
+                xgstats::predErr ()[k][0] += std::abs (p.pred[k] - real);
+                xgstats::predErr ()[k][1] += std::abs (p.now[k] - real);
+                xgstats::predBias ()[k][0] += p.pred[k] - real;
+                xgstats::predBias ()[k][1] += p.now[k] - real;
+                xgstats::predN ()[k]++;
+                xgstats::predCover ()[p.map[k] ? 0 : 1]++;
+              }
+            m_pred_q.pop_front ();
+          }
+      }
     // pravidlo kvality: klzave sucty dorucenych / ocakavanych CAM zabudaju s casovou konstantou 2 s
     double fq = std::exp (-0.1 / 2.0);
     for (int k = 0; k < 2; k++)
@@ -664,14 +719,35 @@ namespace ns3
     const double kQmin = 20; // najmenej ocakavanych CAM v klzavom okne, inak je kvalita nezname
     bool known = m_xg_qos && m_q_exp[0] >= kQmin && m_q_exp[1] >= kQmin;
     double r[2] = {known ? m_q_ok[0] / m_q_exp[0] : 0, known ? m_q_ok[1] / m_q_exp[1] : 0};
-    double gain = known ? r[io] - r[im] : 0;
     double lo = io == 0 ? cw : cn;
+    if (known && m_xg_pred)
+      {
+        // predikcia (XgPredRat): body trasy o 1, 2, ... XgPredHorizon s; spolahlivost a zataz kazdej technologie =
+        // priemer vlastneho sucasneho merania a hodnot mapy v tych bodoch (bunka bez dost dat sa vynecha)
+        double pq[2], pc[2];
+        int nq[2], nc[2];
+        xgPredict (pq, nq, pc, nc);
+        PRec rec {now, {0, 0}, {r[0], r[1]}, {m_qc_exp[0], m_qc_exp[1]}, {m_qc_ok[0], m_qc_ok[1]}, {nq[0] > 0, nq[1] > 0}};
+        double cur[2] = {cw, cn};
+        for (int k = 0; k < 2; k++)
+          {
+            r[k] = (r[k] + pq[k]) / (1 + nq[k]);
+            rec.pred[k] = r[k];
+            cur[k] = (cur[k] + pc[k]) / (1 + nc[k]);
+          }
+        m_pred_q.push_back (rec);
+        lo = cur[io];
+      }
+    double gain = known ? r[io] - r[im] : 0;
     if (known && gain > m_qos_margin && lo < m_cbr_high)
       {
         if (u < std::min (1.0, gain / 0.4))
           {
             m_main = xgOtherDirect (m_main);
-            m_qos_sw += xgstats::measuring ();
+            if (m_xg_pred)
+              m_pred_sw += xgstats::measuring ();
+            else
+              m_qos_sw += xgstats::measuring ();
           }
         return;
       }
@@ -693,6 +769,97 @@ namespace ns3
       m_main = xghyb::WIFI;
     if (m_main != prev)
       m_load_sw += xgstats::measuring ();
+  }
+
+  void
+  trafficManagerClient80211p::xgPredict (double q[2], int nq[2], double c[2], int nc[2])
+  {
+    // xgregorm: body, kde auto bude o 1, 2, ... XgPredHorizon s: pri sucasnej rychlosti pozdlz jeho trasy (ako navigacia;
+    // pruhy trasy z mapy SUMO, dalsie cesty po pravom pruhu - bunka 20 m je hrubsia nez sirka cesty). Pre kazdu
+    // technologiu sucet hodnot mapy v tych bodoch a pocet bodov, kde mapa ma dost dat (>= 10 CAM, >= 5 vzoriek zataze).
+    static std::map<std::string, std::vector<std::pair<double, double>>> shapes; // tvar pruhu (staticka mapa)
+    for (int k = 0; k < 2; k++)
+      q[k] = c[k] = 0, nq[k] = nc[k] = 0;
+    TraCIAPI::VehicleScope &veh = m_client->TraCIAPI::vehicle;
+    if (m_route.empty ())
+      m_route = veh.getRoute (m_id);
+    std::vector<std::string> lanes {veh.getLaneID (m_id)};
+    int ri = veh.getRouteIndex (m_id);
+    for (int j = ri + 1; j >= 1 && j < (int) m_route.size () && lanes.size () < 8; j++)
+      lanes.push_back (m_route[j] + "_0");
+    double pos = veh.getLanePosition (m_id), v = veh.getSpeed (m_id);
+    auto shape = [&] (const std::string &l) -> const std::vector<std::pair<double, double>> & {
+      auto it = shapes.find (l);
+      if (it == shapes.end ())
+        {
+          std::vector<std::pair<double, double>> s;
+          for (const libsumo::TraCIPosition &p : m_client->TraCIAPI::lane.getShape (l))
+            s.push_back ({p.x, p.y});
+          it = shapes.emplace (l, s).first;
+        }
+      return it->second;
+    };
+    int H = (int) std::lround (m_pred_h);
+    size_t li = 0, si = 0; // aktualny pruh a usek jeho tvaru
+    double off = 0;        // vzdialenost od zaciatku useku si
+    double x = 0, y = 0;
+    for (int i = 1; i <= H; i++)
+      {
+        // posun o v * 1 s pozdlz trasy (prvy krok navyse z zaciatku pruhu na sucasnu polohu v nom)
+        double need = (i == 1 ? pos : 0) + v;
+        bool ok = false;
+        while (li < lanes.size ())
+          {
+            const std::vector<std::pair<double, double>> &s = shape (lanes[li]);
+            if (s.size () < 2)
+              {
+                li++, si = 0, off = 0;
+                continue;
+              }
+            bool done = false;
+            while (si + 1 < s.size ())
+              {
+                double dx = s[si + 1].first - s[si].first, dy = s[si + 1].second - s[si].second;
+                double len = std::hypot (dx, dy);
+                if (off + need <= len)
+                  {
+                    off += need;
+                    need = 0;
+                    x = s[si].first + dx * off / std::max (len, 1e-9);
+                    y = s[si].second + dy * off / std::max (len, 1e-9);
+                    done = true;
+                    break;
+                  }
+                need -= len - off;
+                off = 0;
+                si++;
+              }
+            if (done)
+              {
+                ok = true;
+                break;
+              }
+            li++, si = 0, off = 0;
+          }
+        if (!ok)
+          break; // trasa konci skor nez horizont
+        xgstats::RemCell *cell = xgstats::remAt (x, y, false);
+        if (!cell)
+          continue;
+        for (int k = 0; k < 2; k++)
+          {
+            if (cell->exp[k] >= 10)
+              {
+                q[k] += cell->ok[k] / cell->exp[k];
+                nq[k]++;
+              }
+            if (cell->cbrN[k] >= 5)
+              {
+                c[k] += cell->cbr[k] / cell->cbrN[k];
+                nc[k]++;
+              }
+          }
+      }
   }
 
   int
@@ -797,6 +964,15 @@ namespace ns3
           bool ok = r.got[k] && r.lat[k] <= m_lat_budget;
           m_q_exp[k] += e;
           m_q_ok[k] += ok;
+          if (m_xg_pred)
+            {
+              // mapa kvality: meranie patri do bunky, kde auto (prijimac) prave je
+              m_qc_exp[k] += e;
+              m_qc_ok[k] += ok;
+              xgstats::RemCell *c = xgstats::remAt (me->second.first, me->second.second, true);
+              c->exp[k] += e;
+              c->ok[k] += ok;
+            }
           if (r.t0 >= xgstats::warmup ())
             {
               m_qt_exp[k] += e;
@@ -894,7 +1070,7 @@ namespace ns3
             std::cout << ",P" << m << ":" << m_hyb_cnt[m];
           std::cout << ",SWITCH:" << m_hyb_switch << ",PROBE:" << m_hyb_probes << ",LOADSW:" << m_load_sw;
           if (m_xg_qos)
-            std::cout << ",QOSSW:" << m_qos_sw << ",QW:" << m_qt_exp[0] << "/" << m_qt_rx[0] << "/" << m_qt_ok[0]
+            std::cout << ",QOSSW:" << m_qos_sw << ",PREDSW:" << m_pred_sw << ",QW:" << m_qt_exp[0] << "/" << m_qt_rx[0] << "/" << m_qt_ok[0]
                       << ",QN:" << m_qt_exp[1] << "/" << m_qt_rx[1] << "/" << m_qt_ok[1];
           std::cout << std::endl;
         }

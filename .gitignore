@@ -400,3 +400,7 @@ src/automotive/examples/v2v-student-application-80211p-denm.cc
 
 # Windows metadata (WSL)
 *:Zone.Identifier
+
+# xgregorm: logy dlhych behov patria do repozitara, prepis konverzacie nie
+!xgregorm_logs/*.log
+xgregorm_logs/*.jsonl

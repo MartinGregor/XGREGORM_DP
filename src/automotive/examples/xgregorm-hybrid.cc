@@ -34,9 +34,12 @@
 #include "ns3/sumo_xml_parser.h"
 #include "ns3/vehicle-visualizer-module.h"
 #include "ns3/wifi-module.h"
+#include "ns3/interference-helper.h"
+#include "ns3/wifi-phy-state-helper.h"
 #include <unistd.h>
 #include <deque>
 #include <set>
+#include <unordered_map>
 
 using namespace ns3;
 
@@ -51,6 +54,7 @@ std::vector<std::pair<uint32_t, Ptr<MobilityModel>>> wifiNodes;          // vset
 Ptr<PropagationLossModel> wLoss;                                         // ten isty model ako kanal 802.11p
 std::map<uint32_t, std::vector<std::pair<double, double>>> busyW;        // obsadene intervaly [s]
 std::map<uint32_t, double> curW, curN;                                   // posledne okno 100 ms
+std::map<uint32_t, double> prevW, prevN;                                 // predposledne (DCC: priemer dvoch okien)
 std::map<uint32_t, std::deque<std::pair<double, int>>> nrRx;             // PSCCH: cas, pocet subkanalov
 int nrSubch = 0;
 double nrSlotsPerSec = 0;
@@ -157,6 +161,7 @@ tick ()
                 }
             }
           v.erase (std::remove_if (v.begin (), v.end (), [T] (const std::pair<double, double> &iv) { return iv.second <= T; }), v.end ());
+          prevW[n] = curW[n];
           curW[n] = std::min (1.0, busy / 0.1);
           if (xgstats::measuring ())
             xgstats::loadDist ()[0].add (curW[n]);
@@ -171,6 +176,7 @@ tick ()
           for (auto &e : d)
             if (e.first <= T)
               used += e.second;
+          prevN[n] = curN[n];
           curN[n] = std::min (1.0, used / (nrSubch * nrSlotsPerSec * 0.1));
           if (xgstats::measuring ())
             xgstats::loadDist ()[2].add (curN[n]);
@@ -194,6 +200,153 @@ tick ()
   Simulator::Schedule (MilliSeconds (100), &tick);
 }
 } // namespace xgload
+
+// xgregorm: vzajomne rusenie 802.11p a NR-V2X v pasme 5.9 GHz (--coex 1). V ns-3 su to dva oddelene kanaly (Yans
+// a spektralny kanal NR), vysielanie jednej technologie druhu nevidi (autori to riesia upravenymi subormi jadra
+// ns-3, TxTracker - tu bez zasahu do jadra, cez trace zdroje). Pri kazdom vysielani sa prijimacom druhej technologie
+// prida cudzi signal:
+//  - vykon v prekryti pasiem (802.11p rovnomerne v 10 MHz, NR podla PSD po RB z vysielania) + unik do susedneho
+//    pasma (do sirky jedneho kanala) potlaceny o ACLR (--coex-aclr, 3GPP TS 38.101-1 UE: 30 dB);
+//  - utlm samostatnym modelom sirenia rovnakeho typu ako kanal 802.11p (budovy, LOS/NLOS, tienenie; bez rychlych
+//    unikov), pre dvojicu prepocitany najviac raz za 100 ms (ako stav kanala);
+//  - 802.11p: cudzi signal v InterferenceHelper (zhorsi SINR prebiehajuceho prijmu) a CCA podla energie - nad prahom
+//    ED (ETSI EN 302 571: -65 dBm) je kanal obsadeny a 802.11p odklada vysielanie (CSMA/CA); pocita sa aj do CBR
+//    (> -85 dBm, ETSI TS 102 687);
+//  - NR: cudzi signal do interferencie sidelinku (SINR PSCCH/PSSCH); NR (mode 2 bez sensingu) 802.11p neodklada;
+//    do odhadu SL-CBR sa zapocitaju prekryte subkanaly, ak je vykon v pasme NR nad -94 dBm.
+namespace xgcoex {
+bool on = false;
+double fW = 5.9e9, bwW = 10e6, fN = 5.89e9, bwN = 40e6, aclr = 1000, ccaW = 0;
+Ptr<PropagationLossModel> loss;
+struct Sta
+{
+  uint32_t id;
+  Ptr<MobilityModel> mob;
+  Ptr<YansWifiPhy> w;
+  Ptr<NrSpectrumPhy> n;
+};
+std::vector<Sta> sta;
+std::map<uint32_t, size_t> idx;
+std::unordered_map<uint64_t, std::pair<double, double>> gainC; // dvojica -> (cas vypoctu, zisk [dB])
+uint64_t toNr = 0, toW = 0, ccaHits = 0, cbrW = 0, cbrN = 0;
+double sumNrDbm = 0, sumWDbm = 0;
+
+double
+ovl (double a0, double a1, double b0, double b1)
+{
+  return std::max (0.0, std::min (a1, b1) - std::max (a0, b0));
+}
+
+double
+gainDb (size_t a, size_t b)
+{
+  uint64_t key = ((uint64_t) std::min (sta[a].id, sta[b].id) << 32) | std::max (sta[a].id, sta[b].id);
+  double now = Simulator::Now ().GetSeconds ();
+  auto it = gainC.find (key);
+  if (it == gainC.end () || now - it->second.first >= 0.1)
+    {
+      double g = loss->CalcRxPower (0, sta[a].mob, sta[b].mob);
+      it = gainC.insert_or_assign (key, std::make_pair (now, g)).first;
+    }
+  return it->second.second;
+}
+
+void
+onWifiTx (size_t s, Ptr<WifiPhy> phy, WifiConstPsduMap psdus, WifiTxVector txv, double txW)
+{
+  if (!xgload::active.count (sta[s].id))
+    return;
+  Time d = WifiPhy::CalculateTxDuration (psdus, txv, phy->GetPhyBand ());
+  double now = Simulator::Now ().GetSeconds ();
+  double w0 = fW - bwW / 2, w1 = fW + bwW / 2, psd = txW / bwW;
+  for (size_t j = 0; j < sta.size (); j++)
+    {
+      if (j == s || !sta[j].n || !xgload::active.count (sta[j].id))
+        continue;
+      double g = std::pow (10, gainDb (s, j) / 10);
+      if (10 * std::log10 (txW * g) + 30 < -110)
+        continue; // pod sumom NR
+      Ptr<SpectrumValue> v = Create<SpectrumValue> (sta[j].n->GetRxSpectrumModel ());
+      double tot = 0;
+      int i = 0;
+      std::set<int> sub;
+      auto b = v->ConstBandsBegin ();
+      for (auto it = v->ValuesBegin (); it != v->ValuesEnd (); ++it, ++b, ++i)
+        {
+          double bw = b->fh - b->fl;
+          double in = ovl (b->fl, b->fh, w0, w1);
+          double leak = ovl (b->fl, b->fh, w0 - bwW, w0) + ovl (b->fl, b->fh, w1, w1 + bwW);
+          *it = psd * g * (in + leak / aclr) / bw;
+          tot += *it * bw;
+          if (in > 0)
+            sub.insert (i / 10); // subkanal = 10 RB (SetSlSubchannelSize)
+        }
+      if (tot <= 0)
+        continue;
+      double dbm = 10 * std::log10 (tot) + 30;
+      if (dbm < -110)
+        continue;
+      sta[j].n->GetSlInterferencePointer ()->AddSignal (v, d);
+      toNr++;
+      sumNrDbm += dbm;
+      if (xgload::useN && dbm > -94 && !sub.empty ())
+        {
+          int slots = std::max (1, (int) std::ceil (d.GetSeconds () * xgload::nrSlotsPerSec));
+          xgload::nrRx[sta[j].id].push_back ({now, (int) sub.size () * slots});
+          cbrN++;
+        }
+    }
+}
+
+void
+onNrTx (Ptr<SpectrumSignalParameters> p)
+{
+  if (!p->txPhy || !p->txPhy->GetDevice ())
+    return;
+  auto f = idx.find (p->txPhy->GetDevice ()->GetNode ()->GetId ());
+  if (f == idx.end () || !xgload::active.count (f->first))
+    return;
+  size_t s = f->second;
+  double w0 = fW - bwW / 2, w1 = fW + bwW / 2, in = 0, leak = 0;
+  auto b = p->psd->ConstBandsBegin ();
+  for (auto v = p->psd->ConstValuesBegin (); v != p->psd->ConstValuesEnd (); ++v, ++b)
+    if (*v > 0)
+      {
+        in += *v * ovl (b->fl, b->fh, w0, w1);
+        leak += *v * (ovl (b->fl, b->fh, w0 - bwW, w0) + ovl (b->fl, b->fh, w1, w1 + bwW));
+      }
+  double P = in + leak / aclr;
+  if (P <= 0)
+    return;
+  double now = Simulator::Now ().GetSeconds ();
+  for (size_t j = 0; j < sta.size (); j++)
+    {
+      if (j == s || !sta[j].w || !xgload::active.count (sta[j].id))
+        continue;
+      double rx = P * std::pow (10, gainDb (s, j) / 10);
+      double dbm = 10 * std::log10 (rx) + 30;
+      if (dbm < -110)
+        continue; // pod sumom 802.11p (10 MHz: -97 dBm)
+      RxPowerWattPerChannelBand m;
+      m.insert ({std::make_pair (0, 0), rx});
+      Ptr<InterferenceHelper> ih = sta[j].w->GetInterferenceHelper ();
+      ih->AddForeignSignal (p->duration, m);
+      Time busy = ih->GetEnergyDuration (ccaW, std::make_pair (0, 0));
+      if (!busy.IsZero ())
+        {
+          sta[j].w->GetState ()->SwitchMaybeToCcaBusy (busy);
+          ccaHits++;
+        }
+      toW++;
+      sumWDbm += dbm;
+      if (xgload::useW && dbm > xgstats::kCbrThrDbm)
+        {
+          xgload::busyW[sta[j].id].push_back ({now, now + p->duration.GetSeconds ()});
+          cbrW++;
+        }
+    }
+}
+} // namespace xgcoex
 
 // xgregorm: dalsia realna prevadzka popri CAM (zataz kanala + meranie jej dorucenia; obsah sa nekoduje v ASN.1,
 // posiela sa len sprava spravnej velkosti - ako model prevadzky 3GPP TR 37.885):
@@ -256,12 +409,16 @@ send (Station &s, int type, uint32_t bytes, int techMask)
   uint8_t buf[12] = {(uint8_t) type};
   std::memcpy (buf + 4, &id, 4);
   std::memcpy (buf + 8, &seq, 4);
-  // prijemcovia do prrRange (poloha zo SUMO v okamihu vyslania), auta aj RSU okrem odosielatela
-  std::set<uint32_t> want;
+  // prijemcovia do prrRange (poloha zo SUMO v okamihu vyslania), auta aj RSU okrem odosielatela, ktore tu
+  // technologiu maju (--equip: auto bez nej spravu nedostane, ani ju nema dostat)
+  std::set<uint32_t> want[2];
   Vector p = s.mob->GetPosition ();
   for (auto &o : st)
     if (o.first != id && xgload::active.count (o.first) && CalculateDistance (p, o.second.mob->GetPosition ()) <= prrRange)
-      want.insert (o.first);
+      for (int k = 0; k < 2; k++)
+        if (k == 0 ? (bool) o.second.w : (bool) o.second.nr)
+          want[k].insert (o.first);
+  static const int kKind[3] = {xgdcc::SPAT, xgdcc::MAP, xgdcc::CPM};
   for (int k = 0; k < 2; k++)
     {
       Ptr<Socket> sock = k == 0 ? s.w : s.nr;
@@ -270,13 +427,17 @@ send (Station &s, int type, uint32_t bytes, int techMask)
       buf[1] = k;
       Ptr<Packet> pkt = Create<Packet> (buf, 12);
       pkt->AddPaddingAtEnd (size - 12);
-      sock->Send (pkt);
+      // xgregorm: --dcc / --nr-cr - 802.11p cez branu DCC, NR s limitom CR
+      if (k == 0)
+        xgdcc::wSend (sock, pkt, kKind[type]);
+      else
+        xgdcc::nrSend (sock, pkt);
       if (!xgstats::measuring ())
         continue; // --warmup: sprava sa posle, ale nepocita
       tx[type][k]++;
       txB[type][k] += size;
-      exp_[type][k] += want.size ();
-      pend[{id, seq, k}] = {now, want};
+      exp_[type][k] += want[k].size ();
+      pend[{id, seq, k}] = {now, want[k]};
     }
   if (now - lastClean > 1.0)   // spravy starsie nez 1 s uz nikto nedostane
     {
@@ -337,6 +498,12 @@ cpm (uint32_t id)
   if (adaptive && (mask & xghyb::WIFI))
     mask = xghyb::WIFI;   // hlavna priama technologia (zaloha CAM pre radic sa CPM netyka)
   double now = Simulator::Now ().GetSeconds ();
+  // xgregorm: --dcc - T_GenCpm (ETSI TS 103 324) cez 802.11p nie kratsi nez Toff stavu DCC
+  if ((mask & xghyb::WIFI) && xgdcc::wOn () && now - s.lastCpm < xgdcc::camGap (id) - 1e-6)
+    {
+      xgdcc::cnt ()[8]++;
+      return;
+    }
   Vector me = s.mob->GetPosition ();
   uint32_t n = 0;
   for (auto &o : st)
@@ -372,7 +539,7 @@ cpm (uint32_t id)
 }
 
 void
-install (Ptr<Node> node, bool rsu, bool sensor, bool spatOn, Ptr<UniformRandomVariable> rnd)
+install (Ptr<Node> node, bool rsu, bool sensor, bool spatOn, Ptr<UniformRandomVariable> rnd, int equip = xghyb::WIFI | xghyb::NR)
 {
   Station &s = st[node->GetId ()];
   s.node = node;
@@ -380,7 +547,7 @@ install (Ptr<Node> node, bool rsu, bool sensor, bool spatOn, Ptr<UniformRandomVa
   s.rsu = rsu;
   s.sensor = sensor;
   uint32_t id = node->GetId ();
-  if (useW)
+  if (useW && (equip & xghyb::WIFI))
     {
       s.w = Socket::CreateSocket (node, TypeId::LookupByName ("ns3::PacketSocketFactory"));
       PacketSocketAddress local;
@@ -395,7 +562,7 @@ install (Ptr<Node> node, bool rsu, bool sensor, bool spatOn, Ptr<UniformRandomVa
       s.w->Connect (remote);
       s.w->SetRecvCallback (MakeBoundCallback (&receive, id));
     }
-  Ptr<NetDevice> nrDev = useN ? xghyb::findDevice (node, "ns3::NrUeNetDevice") : nullptr;
+  Ptr<NetDevice> nrDev = useN && (equip & xghyb::NR) ? xghyb::findDevice (node, "ns3::NrUeNetDevice") : nullptr;
   if (nrDev)
     {
       s.nr = Socket::CreateSocket (node, UdpSocketFactory::GetTypeId ());
@@ -434,24 +601,45 @@ print ()
 namespace xglbg {
 uint32_t pkt = 1000;
 double kbps = 500;
-uint64_t txN = 0;
+uint64_t txN = 0, phoneN = 0;
 Ptr<ExponentialRandomVariable> onT, offT;
 
+// rate [kbit/s] priemerna rychlost; node = auto s telefonmi (--phone-share; vysiela, len kym je auto v mape),
+// UINT32_MAX = staticke UE pozadia
 void
-burst (Ptr<Socket> s, double until)
+burst (Ptr<Socket> s, double until, double rate, uint32_t node)
 {
+  if (node != UINT32_MAX && !xgload::active.count (node))
+    return;
   if (Simulator::Now ().GetSeconds () >= until)
     {
-      Simulator::Schedule (Seconds (offT->GetValue ()), +[] (Ptr<Socket> s) {
-        burst (s, Simulator::Now ().GetSeconds () + onT->GetValue ());
-      }, s);
+      Simulator::Schedule (Seconds (offT->GetValue ()), +[] (Ptr<Socket> s, double rate, uint32_t node) {
+        burst (s, Simulator::Now ().GetSeconds () + onT->GetValue (), rate, node);
+      }, s, rate, node);
       return;
     }
   s->Send (Create<Packet> (pkt));
-  txN++;
-  Simulator::Schedule (Seconds (pkt * 8.0 / (2 * kbps * 1000)), &burst, s, until);
+  (node == UINT32_MAX ? txN : phoneN)++;
+  Simulator::Schedule (Seconds (pkt * 8.0 / (2 * rate * 1000)), &burst, s, until, rate, node);
 }
 } // namespace xglbg
+
+// xgregorm: vybava aut (--equip): kazde auto ma LTE (telematika, eCall - v EU povinne), priame technologie podla
+// trhu: len 802.11p (ITS-G5, napr. VW), len NR-V2X (C-V2X), obe, alebo ziadnu V2X. Rozdelenie podla poradia uzla
+// v poole (vlastny prud nahodnych cisel). Bez 802.11p ma auto radio 802.11p v spanku (nic neprijima ani nevysiela),
+// bez NR nema NR zariadenie; auto bez V2X nema klienta (CAM neposiela), CPM ostatnych ho vsak zachyti.
+namespace xgeq {
+std::vector<int> mask;   // index uzla v poole -> xghyb::WIFI | xghyb::NR
+bool on = false;
+} // namespace xgeq
+// xgregorm: telefony v autach (--phone-share): socket na server za PGW podla indexu uzla (nullptr = bez telefonov)
+namespace xgphone {
+std::vector<Ptr<Socket>> sock;
+std::set<uint32_t> started;
+Ptr<UniformRandomVariable> start;
+double kbps = 100;
+uint32_t n = 0;
+} // namespace xgphone
 
 NS_LOG_COMPONENT_DEFINE ("xgregorm-hybrid");
 
@@ -522,6 +710,15 @@ main (int argc, char *argv[])
   double cbr_high = 0.3, cbr_low = 0.2, lte_high = 0.6, load_period = 1.0;
   bool qos_rat = false;                                      // xgregorm: vyber technologie podla namerannej kvality
   double qos_margin = 0.05, lat_budget = 0.1;
+  bool pred_rat = false;                                     // xgregorm: prediktivny vyber (mapa kvality + trasa)
+  double pred_horizon = 3;
+  double coex_aclr = 30;                                     // xgregorm: vzajomne rusenie 802.11p a NR
+  uint16_t coex_wifi_ch = 180;
+  double nr_bw_mhz = 0;
+  std::string equip;                                         // xgregorm: vybava aut, napr. "W:0.4,N:0.2,WN:0.2,NONE:0.2"
+  double phone_share = 0, phone_kbps = 100;                  // xgregorm: telefony v autach (LTE uplink)
+  uint16_t lte_bw = 0;                                       // xgregorm: sirka pasma bunky LTE [PRB]
+  bool dcc = false, nr_cr = false;                           // xgregorm: riadenie zahltenia
   double core_delay_ms = 5; // PGW -> server, ako autori v v2i-trafficManager-LTE
   // NR-V2X (hodnoty z v2v-emergencyVehicleAlert-nrv2x autorov)
   double nr_freq = 5.89e9;
@@ -578,6 +775,25 @@ main (int argc, char *argv[])
                 "(delivered within --lat-budget, per technology); needs --load-stats",qos_rat);
   cmd.AddValue ("qos-margin","Quality rule: required reliability advantage of the other technology",qos_margin);
   cmd.AddValue ("lat-budget","Quality rule: CAM latency budget [s] (later = lost)",lat_budget);
+  cmd.AddValue ("pred-rat","Quality rule with prediction: reliability and load over the next --pred-horizon s from a "
+                "shared quality map (measurements of all vehicles, per cell) along the route (implies --qos-rat)",pred_rat);
+  cmd.AddValue ("pred-horizon","Prediction horizon [s] (one route point per second)",pred_horizon);
+  cmd.AddValue ("rem-cell","Quality map: cell size [m]",xgstats::remCell ());
+  cmd.AddValue ("rem-tau","Quality map: forgetting time constant [s]",xgstats::remTau ());
+  cmd.AddValue ("coex","Mutual interference of 802.11p and NR-V2X in the 5.9 GHz band (overlap of the bands + "
+                "adjacent channel leakage); 802.11p on --coex-wifi-ch",xgcoex::on);
+  cmd.AddValue ("coex-aclr","Coexistence: adjacent channel leakage ratio of both transmitters [dB]",coex_aclr);
+  cmd.AddValue ("coex-wifi-ch","Coexistence: 802.11p channel (180 = 5900 MHz, ETSI ITS-G5 control channel)",coex_wifi_ch);
+  cmd.AddValue ("nr-freq","NR-V2X sidelink centre frequency [Hz]",nr_freq);
+  cmd.AddValue ("nr-bw","NR-V2X sidelink bandwidth [MHz] (0 = 40, authors)",nr_bw_mhz);
+  cmd.AddValue ("equip","Equipment of the vehicles: shares of W (802.11p only), N (NR-V2X only), WN (both), NONE (no V2X), "
+                "e.g. W:0.4,N:0.2,WN:0.2,NONE:0.2; every vehicle has LTE; empty = all WN",equip);
+  cmd.AddValue ("phone-share","Share of vehicles with passengers' phones / infotainment using the LTE uplink of the "
+                "vehicle (bursty ON/OFF); CAMs over LTE then use a dedicated V2X bearer (QCI 79)",phone_share);
+  cmd.AddValue ("phone-kbps","Mean uplink rate of the phones in one vehicle [kbit/s]",phone_kbps);
+  cmd.AddValue ("lte-bw","LTE cell bandwidth [PRB] (25 = 5 MHz ns-3 default, 50 = 10 MHz, 100 = 20 MHz; 0 = default)",lte_bw);
+  cmd.AddValue ("dcc","802.11p reactive DCC (ETSI TS 102 687): gatekeeper after every frame + T_GenCam_DCC / T_GenCpm",dcc);
+  cmd.AddValue ("nr-cr","NR-V2X congestion control: CR limit by SL-CBR (ETSI TS 103 574), copies over the limit are dropped",nr_cr);
   cmd.AddValue ("lte-bg-ue","Other (non-V2X) LTE users: number of static UEs, each a group of phones with bursty uplink",lte_bg_ue);
   cmd.AddValue ("lte-bg-kbps","Mean uplink rate of one background LTE UE [kbit/s] (ON/OFF 0.5 s / 0.5 s, 2x during ON)",xglbg::kbps);
   cmd.AddValue ("core-delay","One-way delay PGW -> server [ms]",core_delay_ms);
@@ -638,6 +854,10 @@ main (int argc, char *argv[])
   cmd.AddValue ("sec-cert","Signature size with the full certificate, once per second [B]",xgbg::secCert);
   cmd.AddValue ("range-stats","Measure delivery vs. distance (50 m bins up to 1000 m), car-car and car-RSU",range_stats);
   cmd.Parse (argc, argv);
+  if (pred_rat)
+    qos_rat = true;
+  if (nr_bw_mhz > 0)
+    nr_bandwidth = (uint16_t) std::lround (nr_bw_mhz * 10); // jednotky 100 kHz
   xgstats::rangeOn () = range_stats;
   if (security == 1)
     {
@@ -695,6 +915,50 @@ main (int argc, char *argv[])
   /*** 1. Uzly ***/
   NodeContainer obuNodes;
   obuNodes.Create (numberOfNodes);
+  // xgregorm: --equip - vybava kazdeho auta (index v poole)
+  xgeq::mask.assign (numberOfNodes, xghyb::WIFI | xghyb::NR);
+  if (!equip.empty ())
+    {
+      xgeq::on = true;
+      std::map<std::string, double> sh;
+      std::stringstream ss (equip);
+      std::string item;
+      while (std::getline (ss, item, ','))
+        {
+          size_t c = item.find (':');
+          if (c == std::string::npos)
+            NS_FATAL_ERROR ("--equip: expected TYPE:share, got " << item);
+          sh[item.substr (0, c)] = std::stod (item.substr (c + 1));
+        }
+      double tot = 0;
+      for (auto &e : sh)
+        {
+          if (e.first != "W" && e.first != "N" && e.first != "WN" && e.first != "NONE")
+            NS_FATAL_ERROR ("--equip: types are W, N, WN, NONE");
+          tot += e.second;
+        }
+      Ptr<UniformRandomVariable> er = CreateObject<UniformRandomVariable> ();
+      er->SetStream (3200);
+      int cnt[4] = {0, 0, 0, 0};
+      for (int i = 0; i < numberOfNodes; i++)
+        {
+          double u = er->GetValue () * tot, acc = 0;
+          int m = xghyb::WIFI | xghyb::NR;
+          for (auto t : {std::make_pair ("W", (int) xghyb::WIFI), std::make_pair ("N", (int) xghyb::NR),
+                         std::make_pair ("WN", (int) (xghyb::WIFI | xghyb::NR)), std::make_pair ("NONE", 0)})
+            {
+              acc += sh.count (t.first) ? sh[t.first] : 0;
+              if (u < acc)
+                {
+                  m = t.second;
+                  break;
+                }
+            }
+          xgeq::mask[i] = m;
+          cnt[m == xghyb::WIFI ? 0 : m == xghyb::NR ? 1 : m ? 2 : 3]++;
+        }
+      std::cout << "XGREGORM-EQUIP,W:" << cnt[0] << ",N:" << cnt[1] << ",WN:" << cnt[2] << ",NONE:" << cnt[3] << std::endl;
+    }
   NodeContainer rsuNodes;
   rsuNodes.Create (numberOfRSUs);
   NodeContainer serverNodes;
@@ -728,6 +992,13 @@ main (int argc, char *argv[])
   YansWifiPhyHelper wifiPhy;
   wifiPhy.Set ("TxPowerStart", DoubleValue (txPower));
   wifiPhy.Set ("TxPowerEnd", DoubleValue (txPower));
+  // xgregorm: --coex - 802.11p na skutocnom kanali (prekrytie s NR sa pocita z frekvencii) a prah CCA podla energie
+  // pre cudzie signaly podla ETSI EN 302 571 (-65 dBm); bez --coex nastavenie autorov
+  if (xgcoex::on)
+    {
+      wifiPhy.Set ("ChannelSettings", StringValue ("{" + std::to_string (coex_wifi_ch) + ", 10, BAND_5GHZ, 0}"));
+      wifiPhy.Set ("CcaEdThreshold", DoubleValue (-65));
+    }
   YansWifiChannelHelper wifiChannel = YansWifiChannelHelper::Default ();
   Ptr<YansWifiChannel> channel = wifiChannel.Create ();
   // xgregorm: --channel 3gpp - 802.11p na rovnakom modeli sirenia ako NR-V2X (3GPP TR 37.885 V2V highway: LOS/NLOSv
@@ -789,6 +1060,10 @@ main (int argc, char *argv[])
   wifi80211p.SetRemoteStationManager ("ns3::ConstantRateWifiManager", "DataMode", StringValue (datarate_config), "ControlMode", StringValue (datarate_config));
   wifi80211p.Install (wifiPhy, wifi80211pMac, obuNodes);
   wifi80211p.Install (wifiPhy, wifi80211pMac, rsuNodes);
+  // xgregorm: --equip - auto bez 802.11p: radio v spanku (zariadenie musi byt, GeoNet z neho berie adresu)
+  for (uint32_t n = 0; n < obuNodes.GetN (); ++n)
+    if (!(xgeq::mask[n] & xghyb::WIFI))
+      DynamicCast<WifiNetDevice> (obuNodes.Get (n)->GetDevice (0))->GetPhy ()->SetSleepMode ();
   // xgregorm: meranie CBR 802.11p - kanal autorov = YansWifiChannelHelper::Default (LogDistance s predvolenymi
   // parametrami, deterministicky), pre meranie rovnaky model; pri 3gpp ten isty objekt ako kanal
   if (!xgload::wLoss)
@@ -804,6 +1079,55 @@ main (int argc, char *argv[])
         if (xgload::useW)
           phy->TraceConnectWithoutContext ("PhyTxPsduBegin", MakeBoundCallback (&xgload::onWifiTx, node->GetId (), mob, phy));
       }
+  if (xgcoex::on && !(use_80211p && use_nr))
+    {
+      std::cout << "XGREGORM-COEX,off (needs 802.11p and NR)" << std::endl;
+      xgcoex::on = false;
+    }
+  if (xgcoex::on)
+    {
+      // samostatny model sirenia pre rusenie medzi technologiami: rovnaky typ ako kanal 802.11p, bez rychlych unikov
+      if (urban || channel_model == "3gpp")
+        {
+          Ptr<ChannelConditionModel> ccm;
+          Ptr<ThreeGppPropagationLossModel> l;
+          if (urban)
+            {
+              ccm = CreateObject<ThreeGppV2vUrbanChannelConditionModel> ();
+              l = CreateObject<ThreeGppV2vUrbanPropagationLossModel> ();
+            }
+          else
+            {
+              ccm = CreateObject<ThreeGppV2vHighwayChannelConditionModel> ();
+              l = CreateObject<ThreeGppV2vHighwayPropagationLossModel> ();
+            }
+          ccm->SetAttribute ("UpdatePeriod", TimeValue (MilliSeconds (urban ? 100 : 0)));
+          ccm->AssignStreams (3000);
+          l->SetAttribute ("Frequency", DoubleValue (5.9e9));
+          l->SetAttribute ("ShadowingEnabled", BooleanValue (urban));
+          l->SetChannelConditionModel (ccm);
+          l->AssignStreams (3010);
+          xgcoex::loss = l;
+        }
+      else
+        xgcoex::loss = CreateObject<LogDistancePropagationLossModel> ();
+      xgcoex::aclr = std::pow (10, coex_aclr / 10);
+      xgcoex::ccaW = std::pow (10, (-65 - 30) / 10.0);
+      for (NodeContainer *nc : {&obuNodes, &rsuNodes})
+        for (uint32_t n = 0; n < nc->GetN (); ++n)
+          {
+            Ptr<Node> node = nc->Get (n);
+            Ptr<YansWifiPhy> phy = DynamicCast<YansWifiPhy> (DynamicCast<WifiNetDevice> (node->GetDevice (0))->GetPhy ());
+            xgcoex::idx[node->GetId ()] = xgcoex::sta.size ();
+            bool hasW = nc == &rsuNodes || (xgeq::mask[n] & xghyb::WIFI);
+            xgcoex::sta.push_back ({node->GetId (), node->GetObject<MobilityModel> (), hasW ? phy : nullptr, nullptr});
+            phy->TraceConnectWithoutContext ("PhyTxPsduBegin", MakeBoundCallback (&xgcoex::onWifiTx, xgcoex::sta.size () - 1,
+                                                                                  DynamicCast<WifiPhy> (phy)));
+          }
+      Ptr<WifiPhy> p0 = xgcoex::sta[0].w;
+      xgcoex::fW = p0->GetFrequency () * 1e6;
+      xgcoex::bwW = p0->GetChannelWidth () * 1e6;
+    }
   for (uint32_t n = 0; n < rsuNodes.GetN (); ++n)
     xgload::active.insert (rsuNodes.Get (n)->GetId ());
 
@@ -831,6 +1155,12 @@ main (int argc, char *argv[])
         lte_iot = urban ? 3 : 0;
       if (lte_iot > 0)
         Config::SetDefault ("ns3::LteEnbPhy::NoiseFigure", DoubleValue (5.0 + lte_iot));
+      // xgregorm: --lte-bw - sirka pasma bunky (ns-3 predvolene 25 PRB = 5 MHz; mestske bunky typicky 10-20 MHz)
+      if (lte_bw > 0)
+        {
+          Config::SetDefault ("ns3::LteEnbNetDevice::UlBandwidth", UintegerValue (lte_bw));
+          Config::SetDefault ("ns3::LteEnbNetDevice::DlBandwidth", UintegerValue (lte_bw));
+        }
       lteHelper = CreateObject<LteHelper> ();
       epcHelper = CreateObject<PointToPointEpcHelper> ();
       lteHelper->SetEpcHelper (epcHelper);
@@ -936,15 +1266,18 @@ main (int argc, char *argv[])
               }, ue));
         }
       epcHelper->AssignUeIpv4Address (ueDevs);
-      if (lte_bg_ue > 0)
+      if ((lte_bg_ue > 0 || phone_share > 0) && !xglbg::onT)
         {
-          epcHelper->AssignUeIpv4Address (bgDevs);
           xglbg::onT = CreateObject<ExponentialRandomVariable> ();
           xglbg::onT->SetAttribute ("Mean", DoubleValue (0.5));
           xglbg::onT->SetStream (3110);
           xglbg::offT = CreateObject<ExponentialRandomVariable> ();
           xglbg::offT->SetAttribute ("Mean", DoubleValue (0.5));
           xglbg::offT->SetStream (3111);
+        }
+      if (lte_bg_ue > 0)
+        {
+          epcHelper->AssignUeIpv4Address (bgDevs);
           for (uint32_t u = 0; u < bgNodes.GetN (); ++u)
             {
               Ptr<LteUeNetDevice> ue = DynamicCast<LteUeNetDevice> (bgDevs.Get (u));
@@ -960,12 +1293,36 @@ main (int argc, char *argv[])
               so->Bind ();
               so->Connect (InetSocketAddress (serverAddr, 5001));
               // start po pripojeni (1-2 s), zaciname vo faze OFF
-              Simulator::Schedule (Seconds (1.0 + pr->GetValue ()), &xglbg::burst, so, 0.0);
+              Simulator::Schedule (Seconds (1.0 + pr->GetValue ()), &xglbg::burst, so, 0.0, xglbg::kbps, UINT32_MAX);
             }
+        }
+      if (lte_bg_ue > 0 || phone_share > 0)
+        {
           // prijimac na serveri (inak by server posielal ICMP port unreachable)
           Ptr<Socket> sink = Socket::CreateSocket (server, UdpSocketFactory::GetTypeId ());
           sink->Bind (InetSocketAddress (Ipv4Address::GetAny (), 5001));
           sink->SetRecvCallback (MakeCallback (+[] (Ptr<Socket> s) { while (s->Recv ()) {} }));
+        }
+      // xgregorm: --phone-share - telefony pasazierov / infotainment v aute: uplink ON/OFF cez LTE zariadenie auta
+      // (realne je to iny UE v tej istej bunke; tu na UE auta, aby sa neprekrocil limit UE bunky ~320); spusti sa
+      // pri vstupe auta do mapy (setupNewNode)
+      if (phone_share > 0)
+        {
+          Ptr<UniformRandomVariable> phr = CreateObject<UniformRandomVariable> ();
+          phr->SetStream (3210);
+          xgphone::sock.assign (obuNodes.GetN (), nullptr);
+          for (uint32_t u = 0; u < obuNodes.GetN (); ++u)
+            if (phr->GetValue () < phone_share)
+              {
+                Ptr<Socket> so = Socket::CreateSocket (obuNodes.Get (u), UdpSocketFactory::GetTypeId ());
+                so->Bind ();
+                so->Connect (InetSocketAddress (serverAddr, 5001));
+                xgphone::sock[u] = so;
+                xgphone::n++;
+              }
+          xgphone::kbps = phone_kbps;
+          xgphone::start = CreateObject<UniformRandomVariable> ();
+          xgphone::start->SetStream (3211);
         }
       for (uint32_t u = 0; u < obuNodes.GetN (); ++u)
         {
@@ -994,13 +1351,27 @@ main (int argc, char *argv[])
           Config::ConnectWithoutContext ("/NodeList/*/DeviceList/*/LteUeRrc/RadioLinkFailure",
                                          MakeCallback (+[] (uint64_t, uint16_t, uint16_t) { g_ho[3]++; }));
         }
+      // xgregorm: pri telefonoch v aute idu CAM (UDP 9 na server) vlastnym V2X bearerom (QCI 79, 3GPP TS 23.203) -
+      // inak by cakali v tej istej fronte RLC za datami telefonov
+      if (phone_share > 0)
+        {
+          Ptr<EpcTft> tft = Create<EpcTft> ();
+          EpcTft::PacketFilter pf;
+          pf.direction = EpcTft::UPLINK;
+          pf.remotePortStart = pf.remotePortEnd = 9;
+          tft->Add (pf);
+          lteHelper->ActivateDedicatedEpsBearer (ueDevs, EpsBearer (EpsBearer::NGBR_V2X), tft);
+        }
     }
 
   /*** 5. NR-V2X sidelink (mode 2, bez gNB): auta aj RSU; nastavenie ako v2v-emergencyVehicleAlert-nrv2x ***/
   if (use_nr)
     {
       NodeContainer slNodes;
-      slNodes.Add (obuNodes);
+      // xgregorm: --equip - NR zariadenie len auta s NR-V2X (RSU vzdy)
+      for (uint32_t n = 0; n < obuNodes.GetN (); ++n)
+        if (xgeq::mask[n] & xghyb::NR)
+          slNodes.Add (obuNodes.Get (n));
       slNodes.Add (rsuNodes);
 
       // NR sidelink potrebuje vlastny NrPointToPointEpcHelper (LTE UE neprijme) a oba EPC helpery maju
@@ -1118,6 +1489,34 @@ main (int argc, char *argv[])
             "RxPscchTraceUe", MakeBoundCallback (+[] (uint32_t nd, const SlRxCtrlPacketTraceParams p) {
               xgload::nrRx[nd].push_back ({Simulator::Now ().GetSeconds (), (int) p.m_lengthSubChannel});
             }, slDevs.Get (n)->GetNode ()->GetId ()));
+      // xgregorm: --nr-cr - vlastne obsadenie kanala (CR): kazdy vlastny PSSCH = subkanaly (10 RB) x sloty
+      if (nr_cr)
+        {
+          xgdcc::nrCap () = xgload::nrSubch * xgload::nrSlotsPerSec;
+          bandSl.GetBwpAt (0, 0)->m_channel->TraceConnectWithoutContext ("TxSigParams", MakeCallback (+[] (Ptr<SpectrumSignalParameters> p) {
+            if (!DynamicCast<NrSpectrumSignalParametersSlDataFrame> (p) || !p->txPhy || !p->txPhy->GetDevice ())
+              return;
+            int rb = 0;
+            for (auto v = p->psd->ConstValuesBegin (); v != p->psd->ConstValuesEnd (); ++v)
+              rb += *v > 0;
+            double slots = std::max (1.0, std::round (p->duration.GetSeconds () * xgload::nrSlotsPerSec));
+            xgdcc::nrUsed (p->txPhy->GetDevice ()->GetNode ()->GetId (), std::ceil (rb / 10.0) * slots);
+          }));
+        }
+      if (xgcoex::on)
+        {
+          for (uint32_t n = 0; n < slDevs.GetN (); ++n)
+            xgcoex::sta[xgcoex::idx.at (slDevs.Get (n)->GetNode ()->GetId ())].n =
+                DynamicCast<NrUeNetDevice> (slDevs.Get (n))->GetPhy (0)->GetSpectrumPhy ();
+          bandSl.GetBwpAt (0, 0)->m_channel->TraceConnectWithoutContext ("TxSigParams", MakeCallback (&xgcoex::onNrTx));
+          xgcoex::fN = nr_freq;
+          xgcoex::bwN = nr_bandwidth * 1e5;
+          std::cout << "XGREGORM-COEX,W_MHZ:" << xgcoex::fW / 1e6 << "/" << xgcoex::bwW / 1e6 << ",NR_MHZ:" << xgcoex::fN / 1e6
+                    << "/" << xgcoex::bwN / 1e6 << ",OVERLAP_MHZ:"
+                    << xgcoex::ovl (xgcoex::fW - xgcoex::bwW / 2, xgcoex::fW + xgcoex::bwW / 2, xgcoex::fN - xgcoex::bwN / 2,
+                                    xgcoex::fN + xgcoex::bwN / 2) / 1e6
+                    << ",ACLR_DB:" << coex_aclr << ",CCA_ED_DBM:-65" << std::endl;
+        }
 
       int64_t stream = 1000;
       stream += nrHelper->AssignStreams (slDevs, stream);
@@ -1249,6 +1648,8 @@ main (int argc, char *argv[])
   clientHelper.SetAttribute ("XgQosRat", BooleanValue (qos_rat));
   clientHelper.SetAttribute ("XgQosMargin", DoubleValue (qos_margin));
   clientHelper.SetAttribute ("XgLatBudget", DoubleValue (lat_budget));
+  clientHelper.SetAttribute ("XgPredRat", BooleanValue (pred_rat));
+  clientHelper.SetAttribute ("XgPredHorizon", DoubleValue (pred_horizon));
 
   STARTUP_FCN setupNewNode = [&] (std::string vehicleID,TraciClient::StationTypeTraCI_t stationType) -> Ptr<Node>
     {
@@ -1261,8 +1662,20 @@ main (int argc, char *argv[])
           Ptr<NetDevice> ue = lteUeDevs.Get (nodeCounter);
           Simulator::Schedule (MilliSeconds (10), [lteHelper, ue] () { lteHelper->Attach (ue); });
         }
+      uint32_t pool = nodeCounter;
       ++nodeCounter;
       xgload::active.insert (includedNode->GetId ());
+      // xgregorm: --phone-share - telefony v aute zacnu vysielat 0.5-1.5 s po vstupe auta do mapy
+      if (pool < xgphone::sock.size () && xgphone::sock[pool] && xgphone::started.insert (pool).second)
+        Simulator::Schedule (Seconds (0.5 + xgphone::start->GetValue ()), &xglbg::burst, xgphone::sock[pool], 0.0,
+                             xgphone::kbps, includedNode->GetId ());
+      // xgregorm: --equip - priame technologie auta; auto bez V2X nema klienta (neposiela CAM)
+      int eq = xgeq::mask[pool];
+      xgstats::equip ()[std::stoul (vehicleID.substr (3))] = eq;
+      if (xgeq::on && !eq)
+        return includedNode;
+      if (xgeq::on)
+        clientHelper.SetAttribute ("XgPaths", UintegerValue (paths & (eq | xghyb::LTE)));
       ApplicationContainer ClientApp = clientHelper.Install (includedNode);
       ClientApp.Start (Seconds (0.0));
       ClientApp.Stop (simulationTime - Simulator::Now () - Seconds (0.1));
@@ -1272,6 +1685,8 @@ main (int argc, char *argv[])
   SHUTDOWN_FCN shutdownNode = [] (Ptr<Node> exNode,std::string vehicleID)
     {
       xgload::active.erase (exNode->GetId ());
+      if (exNode->GetNApplications () == 0) // xgregorm: auto bez V2X (--equip) nema klienta
+        return;
       Ptr<trafficManagerClient80211p> app = exNode->GetApplication(0)->GetObject<trafficManagerClient80211p>();
       if(app)
         app->StopApplicationNow ();
@@ -1295,9 +1710,20 @@ main (int argc, char *argv[])
       for (uint32_t n = 0; n < rsuNodes.GetN (); ++n)
         xgbg::install (rsuNodes.Get (n), true, false, spat_on, rnd);
       for (uint32_t n = 0; n < obuNodes.GetN (); ++n)
-        xgbg::install (obuNodes.Get (n), false, rnd->GetValue () < cpm_share, false, rnd);
+        {
+          // senzory (CPM) len auta s V2X; nahodne cislo sa taha vzdy (rovnaka postupnost ako bez --equip)
+          bool sensor = rnd->GetValue () < cpm_share;
+          xgbg::install (obuNodes.Get (n), false, sensor && xgeq::mask[n], false, rnd, xgeq::mask[n]);
+        }
     }
 
+  // xgregorm: --dcc / --nr-cr - CBR stanice ako priemer poslednych dvoch 100 ms okien (ETSI TS 102 687 CBR_L0_Hop)
+  xgdcc::wOn () = dcc && use_80211p && load_stats;
+  xgdcc::nrOn () = nr_cr && use_nr && load_stats;
+  if ((dcc && !xgdcc::wOn ()) || (nr_cr && !xgdcc::nrOn ()))
+    std::cout << "XGREGORM-DCC,off (needs the technology and --load-stats)" << std::endl;
+  xgdcc::cbrW () = [] (uint32_t n) { return 0.5 * (xgload::curW[n] + xgload::prevW[n]); };
+  xgdcc::cbrN () = [] (uint32_t n) { return 0.5 * (xgload::curN[n] + xgload::prevN[n]); };
   // xgregorm: zataz technologii kazdych 100 ms; vykonnost podla zataze odosielatela v case vyslania CAM
   if (xgload::useW)
     xgstats::loadFn ()[0] = [] (uint32_t n) { return xgload::curW[n]; };
@@ -1317,6 +1743,18 @@ main (int argc, char *argv[])
   Simulator::Destroy ();
 
   std::cout << "XGREGORM-RELAY,CAM:" << g_relay_n << std::endl;
+  if (xgphone::n)
+    std::cout << "XGREGORM-PHONE,VEH:" << xgphone::n << ",PKT:" << xglbg::phoneN << ",BYTES:" << xglbg::phoneN * xglbg::pkt << std::endl;
+  if (xgdcc::wOn () || xgdcc::nrOn ())
+    {
+      const auto &c = xgdcc::cnt ();
+      std::cout << "XGREGORM-DCC,NOW:" << c[0] << ",QUEUED:" << c[1] << ",FROMQ:" << c[2] << ",REPLACED:" << c[3]
+                << ",EXPIRED:" << c[4] << ",QDELAY_S:" << xgdcc::qDelay () << ",CAMSKIP:" << c[7] << ",CPMSKIP:" << c[8]
+                << ",NR_SENT:" << c[5] << ",NR_DROP:" << c[6] << ",CR_SUM:" << xgdcc::crSum () << ",STATE:";
+      for (int k = 0; k < 5; k++)
+        std::cout << (k ? "/" : "") << xgdcc::stateN ()[k];
+      std::cout << std::endl;
+    }
   if (lte_bg_ue > 0)
     std::cout << "XGREGORM-LTEBG,UE:" << lte_bg_ue << ",PKT:" << xglbg::txN << ",BYTES:" << xglbg::txN * xglbg::pkt << std::endl;
   if (spat_on || cpm_share > 0)
@@ -1387,6 +1825,21 @@ main (int argc, char *argv[])
   for (int c = 0; c < 2; c++)
     std::cout << ",ALT" << c << ":" << xgstats::lostAlt ()[c][0] << "/" << xgstats::lostAlt ()[c][1];
   std::cout << std::endl;
+  // vzajomne rusenie 802.11p a NR (za cely beh): pocet cudzich signalov, priemerny vykon, CCA, zapocitane do CBR
+  if (xgcoex::on)
+    std::cout << "XGREGORM-COEX,TO_NR:" << xgcoex::toNr << ",TO_NR_DBM:" << (xgcoex::toNr ? xgcoex::sumNrDbm / xgcoex::toNr : 0)
+              << ",TO_W:" << xgcoex::toW << ",TO_W_DBM:" << (xgcoex::toW ? xgcoex::sumWDbm / xgcoex::toW : 0)
+              << ",CCA:" << xgcoex::ccaHits << ",CBR_W:" << xgcoex::cbrW << ",CBR_NR:" << xgcoex::cbrN << std::endl;
+  // presnost predikcie (po warmup): E<k>:sucet |chyby| predikcie / "zostane ako teraz", B<k>: sucet chyb so znamienkom
+  if (pred_rat)
+    {
+      std::cout << "XGREGORM-PRED,CELLS:" << xgstats::rem ().size () << ",COVER:" << xgstats::predCover ()[0] << "/"
+                << xgstats::predCover ()[1];
+      for (int k = 0; k < 2; k++)
+        std::cout << ",N" << k << ":" << xgstats::predN ()[k] << ",E" << k << ":" << xgstats::predErr ()[k][0] << "/"
+                  << xgstats::predErr ()[k][1] << ",B" << k << ":" << xgstats::predBias ()[k][0] << "/" << xgstats::predBias ()[k][1];
+      std::cout << std::endl;
+    }
   // dorucenie podla vzdialenosti (po 50 m): B<index>:v2v_exp/v2v_rx/ul_exp/ul_rx
   if (range_stats)
     {
