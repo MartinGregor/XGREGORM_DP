@@ -50,6 +50,8 @@ Počet jadier druhého počítača nie je známy, `JOBS` nemá byť väčší ne
 
 ## 3. Prenos na druhý počítač
 
+**Presný aktuálny postup je v `xgregorm_PRENOS_NA_NOVY_PC.md`, má prednosť pred príkazmi nižšie.** Archívy sú v súkromnom GitHub Release `prenos-2026-11-02`.
+
 **Samotný `git clone` nestačí.** `.gitignore` vynecháva veľkú časť ns-3 (napr. `src/lte`, `src/core`, `src/wifi`,
 `src/internet`, `build-support`) a moja oprava `src/lte/model/nr-sl-ue-rrc.cc` je v gite len ako diff. Preto prenos cez **archív `~/VaN3Twin/xgregorm_prenos.tar.gz`**,
 ktorý obsahuje všetko okrem `build/`, `cmake-cache/` a starých `.pcap`.

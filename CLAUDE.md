@@ -1045,6 +1045,9 @@ python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --run hybrid -
   Logy presunuté z `~/VaN3Twin/xgregorm_logs/` do `xgregorm_logs/` v repozitári, `.gitignore` povoľuje ich `.log`. `ser.sh` má relatívne cesty a `JOBS`
   (behov naraz). Opravené: beh sa považoval za hotový podľa `Wall clock`, ten sa však vypíše aj po zabití simulácie; teraz sa vyžaduje aj `XGREGORM-V2V`.
   Zistené: `git clone` na prenos nestačí, `.gitignore` vynecháva veľkú časť ns-3 vrátane `src/lte`, preto archív.
+- **2026-11-02** – **Prenos: archívy v GitHub Release `prenos-2026-11-02`** (súkromný repozitár): `ns-3-dev` bez `build/` a celý `/usr/local` (SUMO 1.18.0, gRPC 1.60.0, len
+  Ubuntu 24.04). Zistené: gRPC je povinné pre `./ns3 configure` (`src/carla/CMakeLists.txt`), hoci CARLA nepoužívame. Postup pre nový počítač vrátane referenčného behu
+  (30 áut, 20 s: `XGREGORM-V2V,EXP:2129,RX:2129`) a `JOBS`: `xgregorm_PRENOS_NA_NOVY_PC.md`.
 - Pozn.: v sekcii „Tok komunikácie“ je prehľad, čo ide cez ns-3 (CAM, kábel RSU-RSU) a čo cez
   TraCI (RSU -> semafor, mapa).
 
