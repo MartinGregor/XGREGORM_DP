@@ -400,6 +400,8 @@ los (const Vector &a, const Vector &b)
   return true;
 }
 
+uint8_t curObjs = 0;
+
 void
 send (Station &s, int type, uint32_t bytes, int techMask)
 {
@@ -410,6 +412,7 @@ send (Station &s, int type, uint32_t bytes, int techMask)
   uint32_t size = bytes + kHdr + (cert ? secCert : secDigest);
   uint32_t id = s.node->GetId (), seq = ++s.seq;
   uint8_t buf[12] = {(uint8_t) type};
+  buf[2] = type == CPM ? curObjs : 0; // pocet objektov v CPM (obsah spravy, velkost paketu sa nemeni)
   std::memcpy (buf + 4, &id, 4);
   std::memcpy (buf + 8, &seq, 4);
   // prijemcovia do prrRange (poloha zo SUMO v okamihu vyslania), auta aj RSU okrem odosielatela, ktore tu
@@ -469,6 +472,8 @@ receive (uint32_t me, Ptr<Socket> sock)
           if (xgstats::zoneDrop ((int) buf[1], zp.x, zp.y))
             continue;
         }
+      if (xgstats::bgRxOn ())
+        xgstats::bgRxAdd (me, buf[0], buf[1], id, buf[2]);
       auto it = pend.find ({id, seq, (int) buf[1]});
       if (it != pend.end () && it->second.want.erase (me))
         dlv[buf[0]][buf[1]]++;
@@ -552,6 +557,7 @@ cpm (uint32_t id)
     }
   // ITS PDU 8 + management 25 + originating vehicle 15 + perceived object container 2 + 35 B na objekt
   // + informacie o senzoroch (2 senzory) 40 B raz za 1 s
+  curObjs = (uint8_t) n;
   if (mask)
     send (s, CPM, 50 + 35 * n + (sensorInfo ? 40 : 0), mask);
 }
@@ -731,7 +737,8 @@ main (int argc, char *argv[])
   double probe_hz = 0, cell_dist = 150;
   std::string feat_log, pred_model;
   double dcc_offload_ms = 0, dup_near = 0, geo_rat = 0;
-  bool oracle = false;
+  bool oracle = false, bandit = false, bandit_probe = false;
+  std::string pred_gbm;
   bool nb_equip = false, rsu_route = false;
   std::string rsu_equip;   // xgregorm: napad 3: vybava RSU po rade, opakuje sa, napr. "W,N,WN"
   std::string cpm_rat;     // xgregorm: napad 6: CPM vzdy touto technologiou (W, N)
@@ -869,7 +876,10 @@ main (int argc, char *argv[])
   cmd.AddValue ("oracle","Reference: vehicles know the --zones exactly (with --qos-rat; look-ahead = --pred-horizon s)",oracle);
   cmd.AddValue ("geo-rat","Clean policy: CAM over NR within this distance of the next traffic light [m]",geo_rat);
   cmd.AddValue ("cpm-rat","CPM always on this technology (W or N) if the vehicle has it; empty = main technology",cpm_rat);
+  cmd.AddValue ("bandit","Learning while driving (needs --clean and --qos-rat): reliability per situation from the vehicle's own reception",bandit);
   cmd.AddValue ("feat-log","Write the prediction dataset (CSV) to this file",feat_log);
+  cmd.AddValue ("bandit-probe","With --bandit keep the regular probes of the other technology",bandit_probe);
+  cmd.AddValue ("pred-gbm","Learned trees (xgregorm_gbm_export.py) replacing the current measurement in the quality rule; needs --clean and --qos-rat",pred_gbm);
   cmd.AddValue ("pred-model","Learned prediction model file (one line of coefficients per technology)",pred_model);
   cmd.AddValue ("wifi-bcast-rate", "802.11p rate of broadcast frames [Mbit/s]: 3, 6, 12 (0 = ns-3 default, the lowest rate, 3 Mbit/s; "
                 "--datarate does not apply to broadcast)", wifi_bcast_rate);
@@ -945,7 +955,15 @@ main (int argc, char *argv[])
   if (!feat_log.empty ())
     {
       xgstats::featLog () = new std::ofstream (feat_log);
-      *xgstats::featLog () << "t,sid,main,k,r,qexp,cbr,remr,remn,remc,nb,nbk,nbf,v,appr,dist,cumexp,cumok,x,y\n";
+      *xgstats::featLog () << "t,sid,main,k,r,qexp,cbr,remr,remn,remc,nb,nbk,nbf,v,appr,dist,cumexp,cumok,x,y,spatr,mapage,cpmn,spatn,cpmobj,sfresh,tsw,isg,nb30,nbstop,nbclose,nbfar,nbf30,dv,tstop\n";
+      xgstats::bgRxOn () = true;
+    }
+  if (!pred_gbm.empty ())
+    {
+      std::string err = xgstats::gbm ().load (pred_gbm, xgstats::kGbmNames);
+      if (!err.empty ())
+        NS_FATAL_ERROR ("--pred-gbm: " << err);
+      xgstats::bgRxOn () = true;
     }
   if (!pred_model.empty ())
     {
@@ -1822,6 +1840,8 @@ main (int argc, char *argv[])
   clientHelper.SetAttribute ("XgDupNear", DoubleValue (dup_near));
   clientHelper.SetAttribute ("XgGeoRat", DoubleValue (geo_rat));
   clientHelper.SetAttribute ("XgOracle", BooleanValue (oracle));
+  clientHelper.SetAttribute ("XgBandit", BooleanValue (bandit));
+  clientHelper.SetAttribute ("XgBanditProbe", BooleanValue (bandit_probe));
 
   STARTUP_FCN setupNewNode = [&] (std::string vehicleID,TraciClient::StationTypeTraCI_t stationType) -> Ptr<Node>
     {
@@ -1981,6 +2001,22 @@ main (int argc, char *argv[])
                     << ",LAT_P50_MS:" << 1000 * p.lat.pct (0.5) << ",LAT_P95_MS:" << 1000 * p.lat.pct (0.95)
                     << ",LAT_P99_MS:" << 1000 * p.lat.pct (0.99) << ",LAT_MAX_MS:" << 1000 * p.lat.max << std::endl;
         }
+    }
+  // xgregorm 2026-11-03: oneskorenie po technologiach cez vsetky kose zataze (2 = NR); kopie
+  for (int k = 0; k < 3; k++)
+    {
+      xgstats::Hist h;
+      for (int b = 0; b < xgstats::kLoadBins; b++)
+        {
+          const xgstats::Hist &q = xgstats::perf ()[k][b].lat;
+          for (size_t i = 0; i < h.b.size (); i++)
+            h.b[i] += q.b[i];
+          h.n += q.n;
+          h.sum += q.sum;
+          h.max = std::max (h.max, q.max);
+        }
+      std::cout << "XGREGORM-LATP,TECH:" << techName[k] << ",N:" << h.n << ",P50_MS:" << 1000 * h.pct (0.5) << ",P95_MS:" << 1000 * h.pct (0.95)
+                << ",P99_MS:" << 1000 * h.pct (0.99) << std::endl;
     }
   {
     const xgstats::Hist &h = xgstats::pir ();

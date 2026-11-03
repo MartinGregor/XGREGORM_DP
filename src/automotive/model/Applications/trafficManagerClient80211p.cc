@@ -190,6 +190,12 @@ namespace ns3
             BooleanValue (false), MakeBooleanAccessor (&trafficManagerClient80211p::m_rsu_route), MakeBooleanChecker ())
         .AddAttribute ("XgDupNear", "Clean policy: copy of the CAM on the other technology closer than this to the next traffic light [m]; 0 = off",
             DoubleValue (0), MakeDoubleAccessor (&trafficManagerClient80211p::m_dup_near), MakeDoubleChecker<double> (0))
+        .AddAttribute ("XgBandit", "Learning while driving (with XgQosRat and XgClean): reliability of both technologies per "
+            "situation learned from the CAMs the vehicle itself received, upper confidence bonus; probes only when the "
+            "other technology has not been measured recently",
+            BooleanValue (false), MakeBooleanAccessor (&trafficManagerClient80211p::m_bandit), MakeBooleanChecker ())
+        .AddAttribute ("XgBanditProbe", "With XgBandit keep the regular probes of the other technology",
+            BooleanValue (false), MakeBooleanAccessor (&trafficManagerClient80211p::m_bandit_probe), MakeBooleanChecker ())
         .AddAttribute ("XgOracle", "Reference only, not a realizable policy: the vehicle knows the --zones exactly and "
             "chooses the technology with the smaller loss at its position and at the route points of the next XgPredHorizon s",
             BooleanValue (false), MakeBooleanAccessor (&trafficManagerClient80211p::m_oracle), MakeBooleanChecker ())
@@ -708,7 +714,8 @@ namespace ns3
           clean |= other;
         if (direct && need && m_next_dist >= m_cell_dist)
           clean |= avail & xghyb::LTE;
-        if (m_probe_hz > 0 && other && now - m_probe_t >= 1.0 / m_probe_hz)
+        if (m_probe_hz > 0 && other && now - m_probe_t >= 1.0 / m_probe_hz
+            && (!m_bandit || m_bandit_probe || m_q_exp[other == xghyb::WIFI ? 0 : 1] < 10))
           {
             m_probe_due = true;
             m_probe_t = now;
@@ -876,7 +883,9 @@ namespace ns3
     // datova sada pre predikcny model a vstupy nauceneho modelu
     xgstats::PredIn in[2];
     bool useModel = m_xg_pred && !xgstats::predCoef ()[0].empty ();
-    if (xgstats::featLog () || useModel)
+    bool useGbm = !xgstats::gbm ().empty ();
+    double gbmX[2][xgstats::kGbmN];
+    if (xgstats::featLog () || useModel || useGbm)
       {
         double pq[2], pc[2], nb, nbk[2], nbf;
         int nq[2], nc[2];
@@ -884,11 +893,22 @@ namespace ns3
         xgNeighbours (&nb, nbk, &nbf, m_pred_h);
         double vv = m_client->TraCIAPI::vehicle.getSpeed (m_id);
         double cc[2] = {cw, cn};
+        xgstats::MsgFeat mf;
+        if (xgstats::featLog () || useGbm)
+          xgMsgFeatures (now, m_pred_h, mf);
         for (int k = 0; k < 2; k++)
           {
             double rr = m_q_exp[k] > 0 ? m_q_ok[k] / m_q_exp[k] : 0.5;
             in[k] = {rr, m_q_exp[k], cc[k], nq[k] ? pq[k] / nq[k] : 0, (double) nq[k], nc[k] ? pc[k] / nc[k] : cc[k],
                      nb, nbk[k], nbf, vv, m_on_approach ? 1.0 : 0.0, m_next_tls.empty () ? 300.0 : m_next_dist};
+            if (useGbm)
+              {
+                // poradie = xgstats::kGbmNames, overuje sa pri nacitani modelu; bez mapy kvality
+                const double kx[] = {in[k].r, in[k].qexp, in[k].cbr, nb, nbk[k], nbf, vv, in[k].appr, in[k].dist,
+                                     mf.spatr[k], mf.mapage[k], mf.cpmn[k], mf.spatn, mf.cpmobj, mf.sfresh, mf.tsw, mf.isg, mf.nb30,
+                                     mf.nbstop, mf.nbclose, mf.nbfar, mf.nbf30, mf.dv, mf.tstop};
+                std::copy (std::begin (kx), std::end (kx), gbmX[k]);
+              }
             if (xgstats::featLog ())
               {
                 auto me = xgstats::vehPos ().find (m_sid);
@@ -897,8 +917,23 @@ namespace ns3
                                      << in[k].remc << ',' << nb << ',' << nbk[k] << ',' << nbf << ',' << vv << ',' << in[k].appr
                                      << ',' << in[k].dist << ',' << m_qc_exp[k] << ',' << m_qc_ok[k] << ','
                                      << (me != xgstats::vehPos ().end () ? me->second.first : 0) << ','
-                                     << (me != xgstats::vehPos ().end () ? me->second.second : 0) << '\n';
+                                     << (me != xgstats::vehPos ().end () ? me->second.second : 0) << ','
+                                     << mf.spatr[k] << ',' << mf.mapage[k] << ',' << mf.cpmn[k] << ',' << mf.spatn << ',' << mf.cpmobj << ','
+                                     << mf.sfresh << ',' << mf.tsw << ',' << mf.isg << ',' << mf.nb30 << ',' << mf.nbstop << ','
+                                     << mf.nbclose << ',' << mf.nbfar << ',' << mf.nbf30 << ',' << mf.dv << ',' << mf.tstop << '\n';
               }
+          }
+      }
+    if (known && useGbm)
+      {
+        // xgregorm: naucene stromy (--pred-gbm): spolahlivost oboch technologii o 3 s, dalej rovnake pravidlo ako kvalita
+        for (int k = 0; k < 2; k++)
+          {
+            gbmX[k][24] = in[1 - k].r;
+            gbmX[k][25] = in[1 - k].qexp;
+            gbmX[k][26] = in[1 - k].cbr;
+            gbmX[k][27] = k;
+            r[k] = xgstats::gbm ().predict (gbmX[k]);
           }
       }
     if (known && m_xg_pred)
@@ -931,6 +966,41 @@ namespace ns3
           }
         m_pred_q.push_back (rec);
         lo = cur[io];
+      }
+    if (m_bandit && m_xg_qos)
+      {
+        // xgregorm: ucenie za jazdy. Situacia = len to, co auto samo vie: pred semaforom (mapa, vlastna poloha), stoji,
+        // husto (susedia z CAM). Pre kazdu situaciu a technologiu zabudajuci priemer vlastneho dorucenia; odhad je polovica
+        // sucasneho merania (ak je) a polovica situacie s bonusom za malo skusenosti. Dalej rovnake pravidlo ako kvalita.
+        int nbn = 0;
+        for (const auto &e : m_qst)
+          nbn += now - e.second.t <= 1.5;
+        int c = (m_on_approach && m_next_dist < 100 ? 1 : 0) | (m_client->TraCIAPI::vehicle.getSpeed (m_id) < 1 ? 2 : 0) | (nbn >= 20 ? 4 : 0);
+        double tot = 0;
+        for (int i = 0; i < 8; i++)
+          for (int k = 0; k < 2; k++)
+            {
+              m_bd_s[i][k] *= 0.98;
+              m_bd_n[i][k] *= 0.98;
+            }
+        for (int k = 0; k < 2; k++)
+          {
+            m_bd_s[m_bd_c][k] += m_bd_ok[k];
+            m_bd_n[m_bd_c][k] += m_bd_exp[k];
+            m_bd_ok[k] = m_bd_exp[k] = 0;
+            tot += m_bd_n[c][k];
+          }
+        m_bd_c = c;
+        bool any = false;
+        for (int k = 0; k < 2; k++)
+          {
+            double n = m_bd_n[c][k];
+            double rc = (n > 0 ? m_bd_s[c][k] / n : 0.5) + 0.1 * std::sqrt (std::log (1 + tot) / (1 + n / 10));
+            bool cur = m_q_exp[k] >= kQmin;
+            r[k] = cur ? 0.5 * m_q_ok[k] / m_q_exp[k] + 0.5 * rc : rc;
+            any = any || cur || n > 0;
+          }
+        known = any;
       }
     double gain = known ? r[io] - r[im] : 0;
     if (known && gain > m_qos_margin && lo < m_cbr_high)
@@ -1099,6 +1169,83 @@ namespace ns3
   }
 
   void
+  trafficManagerClient80211p::xgMsgFeatures (double now, double h, xgstats::MsgFeat &f)
+  {
+    // xgregorm: vstupy pre predikciu, len z prijatych sprav, vlastnej polohy a mapy (plan, cast 9)
+    auto bg = xgstats::bgRx ().find (GetNode ()->GetId ());
+    if (bg != xgstats::bgRx ().end ())
+      {
+        std::map<uint32_t, int> byRsu[2];
+        double last = -100;
+        for (int k = 0; k < 2; k++)
+          {
+            for (const auto &e : bg->second.spat[k])
+              if (now - e.first <= 1)
+                {
+                  byRsu[k][e.second]++;
+                  last = std::max (last, e.first);
+                }
+            int best = 0;
+            for (const auto &e : byRsu[k])
+              best = std::max (best, e.second);
+            f.spatr[k] = std::min (1.0, best / 10.0); // RSU vysiela 10 Hz: znamy pocet, teda meranie zadarmo
+            f.mapage[k] = std::min (5.0, now - bg->second.map[k]);
+            for (const auto &e : bg->second.cpm[k])
+              if (now - e.first <= 1)
+                {
+                  f.cpmn[k]++;
+                  f.cpmobj += e.second;
+                }
+          }
+        std::set<uint32_t> rsus;
+        for (int k = 0; k < 2; k++)
+          for (const auto &e : byRsu[k])
+            rsus.insert (e.first);
+        f.spatn = rsus.size ();
+        f.sfresh = last >= 0 && now - last <= 1;
+      }
+    TraCIAPI::VehicleScope &veh = m_client->TraCIAPI::vehicle;
+    double v = veh.getSpeed (m_id);
+    f.dv = v - m_prev_v;
+    m_prev_v = v;
+    if (v >= 1)
+      m_stop_since = -1;
+    else if (m_stop_since < 0)
+      m_stop_since = now;
+    f.tstop = m_stop_since < 0 ? 0 : now - m_stop_since;
+    // cas do zmeny a farba: obsah SPATEM, teda len ked auto SPATEM naozaj dostalo (zjednodusenie: citane zo SUMO v case
+    // vypoctu, nie zo spravy; zmena fazy RSU sa v programe SUMO prejavi az pri jej nastaveni)
+    if (f.sfresh && !m_next_tls.empty ())
+      {
+        std::vector<libsumo::TraCINextTLSData> nt = veh.getNextTLS (m_id);
+        if (!nt.empty ())
+          {
+            f.tsw = std::max (0.0, m_client->TraCIAPI::trafficlights.getNextSwitch (nt[0].id) - now);
+            f.isg = nt[0].state == 'G' || nt[0].state == 'g';
+          }
+      }
+    auto me = xgstats::vehPos ().find (m_sid);
+    if (me == xgstats::vehPos ().end ())
+      return;
+    double mx = me->second.first, my = me->second.second, fx = mx + m_my_vx * h, fy = my + m_my_vy * h;
+    for (const auto &e : m_qst)
+      {
+        const QSt &s = e.second;
+        if (now - s.t > 1.5)
+          continue;
+        double dx = s.x - mx, dy = s.y - my, d = std::hypot (dx, dy);
+        f.nb30 += d <= 30;
+        f.nbfar += d > 100 && d <= 200;
+        if (d <= 100)
+          {
+            f.nbstop += std::hypot (s.vx, s.vy) < 1;
+            f.nbclose += dx * (s.vx - m_my_vx) + dy * (s.vy - m_my_vy) < 0;
+          }
+        f.nbf30 += std::hypot (s.x + s.vx * h - fx, s.y + s.vy * h - fy) <= 30;
+      }
+  }
+
+  void
   trafficManagerClient80211p::xgNeighbours (double nb[1], double nbk[2], double nbf[1], double h)
   {
     // susedia z toho, co auto vie z ich CAM (poloha, rychlost, smer): teraz do 100 m, po technologiach podla ich znacky,
@@ -1253,6 +1400,11 @@ namespace ns3
           bool ok = r.got[k] && r.lat[k] <= m_lat_budget;
           m_q_exp[k] += e;
           m_q_ok[k] += ok;
+          if (m_bandit)
+            {
+              m_bd_exp[k] += e;
+              m_bd_ok[k] += ok;
+            }
           if (m_xg_pred || xgstats::featLog ())
             {
               // mapa kvality: meranie patri do bunky, kde auto (prijimac) prave je

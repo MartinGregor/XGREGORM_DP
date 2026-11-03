@@ -167,6 +167,14 @@ private:
   bool m_dcc_off_v = false;
   bool m_nb_equip = false, m_rsu_route = false;
   double m_dup_near = 0, m_geo_rat = 0;
+  // xgregorm 2026-11-03: vstupy z prijatych sprav (len do --feat-log) a ucenie za jazdy (XgBandit)
+  void xgMsgFeatures (double now, double h, xgstats::MsgFeat &f);
+  double m_stop_since = -1, m_prev_v = 0;
+  bool m_bandit = false;
+  bool m_bandit_probe = false;
+  double m_bd_exp[2] = {0, 0}, m_bd_ok[2] = {0, 0}; //!< CAM susedov za posledne vyhodnotenie
+  double m_bd_s[8][2] = {}, m_bd_n[8][2] = {};      //!< zabudajuce sucty podla situacie a technologie
+  int m_bd_c = 0;                                   //!< situacia v poslednom vyhodnoteni
   bool m_oracle = false; //!< referencia: auto presne pozna zony --zones (nie je realizovatelna politika)
   void xgRemAdd (double x, double y, int k, double exp, double ok, double cbr, double cbrN);
   void xgRemFlush (double now);

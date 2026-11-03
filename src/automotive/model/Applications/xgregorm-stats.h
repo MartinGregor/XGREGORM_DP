@@ -28,6 +28,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include "xgregorm-gbm.h"
 
 namespace ns3 {
 namespace xgstats {
@@ -282,12 +283,53 @@ zoneDrop (int k, double x, double y)
 }
 // datova sada pre ucenie predikcneho modelu (--feat-log): CSV, jeden riadok za auto a technologiu raz za 1 s
 inline std::ofstream *&featLog () { static std::ofstream *f = nullptr; return f; }
+// xgregorm 2026-11-03: co auto naozaj prijalo z prevadzky SPATEM, MAPEM, CPM (stratena sprava tu chyba); vstupy algoritmov
+// podla pravidla v plane, cast 9. Zapnute len pri --feat-log, inak sa nic neuklada.
+struct BgRx
+{
+  std::deque<std::pair<double, uint32_t>> spat[2]; // cas, RSU
+  std::deque<std::pair<double, int>> cpm[2];       // cas, pocet objektov v CPM
+  double map[2] = {-100, -100};                    // posledna MAPEM
+};
+inline bool &bgRxOn () { static bool b = false; return b; }
+inline std::map<uint32_t, BgRx> &bgRx () { static std::map<uint32_t, BgRx> m; return m; }
+inline void
+bgRxAdd (uint32_t node, int kind, int k, uint32_t from, int objs)
+{
+  double now = Simulator::Now ().GetSeconds ();
+  BgRx &b = bgRx ()[node];
+  if (kind == 0)
+    {
+      b.spat[k].push_back ({now, from});
+      while (!b.spat[k].empty () && now - b.spat[k].front ().first > 2)
+        b.spat[k].pop_front ();
+    }
+  else if (kind == 1)
+    b.map[k] = now;
+  else
+    {
+      b.cpm[k].push_back ({now, objs});
+      while (!b.cpm[k].empty () && now - b.cpm[k].front ().first > 2)
+        b.cpm[k].pop_front ();
+    }
+}
 // naucený model (--pred-model): spolahlivost technologie k = sigmoid (suma beta_i x_i); beta[k] prazdne = bez modelu
 inline std::array<std::vector<double>, 2> &predCoef () { static std::array<std::vector<double>, 2> c; return c; }
 struct PredIn
 {
   double r, qexp, cbr, remr, remn, remc, nb, nbk, nbf, v, appr, dist;
 };
+// vstupy z prijatych sprav a z vlastnej dynamiky, zapisuju sa do --feat-log
+struct MsgFeat
+{
+  double spatr[2] = {0, 0}, mapage[2] = {5, 5}, cpmn[2] = {0, 0};
+  double spatn = 0, cpmobj = 0, sfresh = 0, tsw = -1, isg = -1;
+  double nb30 = 0, nbstop = 0, nbclose = 0, nbfar = 0, nbf30 = 0, dv = 0, tstop = 0;
+};
+// xgregorm: naucene stromy (--pred-gbm), jeden model, technologia je priznak k
+constexpr int kGbmN = 28;
+inline const char *kGbmNames = "r,qexp,cbr,nb,nbk,nbf,v,appr,dist,spatr,mapage,cpmn,spatn,cpmobj,sfresh,tsw,isg,nb30,nbstop,nbclose,nbfar,nbf30,dv,tstop,or,oqexp,ocbr,k";
+inline xggbm::Model &gbm () { static xggbm::Model m; return m; }
 inline double
 predLogit (double p)
 {

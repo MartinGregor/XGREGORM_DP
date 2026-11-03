@@ -152,4 +152,16 @@ Zakázané sú polohy ostatných áut priamo zo SUMO, poloha zón a čokoľvek i
 4. **Simulácia siete:** do ns-3 idú len algoritmy, ktoré na záznamoch prekonajú mapu. Úspech je zlepšenie PRR oproti výberu podľa kvality, 95 % interval bez nuly, pri nehoršom CPM a LTE; prah aspoň 0.01 PRR. Neúspešné varianty sa uvedú tiež.
 5. Víťaz ide do finálnej série so seedmi 1-10. Výkon a zložitosť modelu v aute sa uvedú pri výsledku.
 
+**Séria `dev6` (2026-11-03, stanovené pred behmi; seedy 101-103, 120 s, od 30 s):** A = zóny ako dev4 (RSU 0 W, 2 N, 5 W, 8 N), B = iné miesta (1 W, 3 N, 6 W, 7 N), C = meniace sa v čase (do 60 s ako A, 60-90 s tie isté miesta s vymenenými technológiami, 90-120 s ako B; merajú sa zmeny v 60. a 90. s), T = bez zón. Politiky: Q kvalita, B bandit, PM mapa s hláseniami, MIX 50/50, O0 a O3 orákulum. Dáta na výber algoritmu: testy naprieč seedmi aj naprieč rozložením zón.
+**Odchýlka od časti 4:** S2 (hotspot chodcov) sa neposudzuje, chodci sú len na LTE a výber medzi 802.11p a NR priamo neovplyvňujú. S1 (vlna áut) zastupuje T, kde záťaž vzniká pri semaforoch; samostatná vlna áut sa zatiaľ nerobí.
+
 Horná hranica z časti 8a platí len pre zóny; pre preťaženie z premávky ju treba určiť zvlášť.
+
+**Séria `dev7` (2026-11-03, stanovené pred behmi; seedy 101-103, 120 s, od 30 s).** Výber na záznamoch (Denník 2026-11-03) dal jediného kandidáta: **GS = stromy (GBM) so vstupmi z prijatých správ, bez mapy kvality**, teda bez hlásení cez LTE. Kalman, MLP, GRU, logit a GBM bez správ do siete nejdú.
+- Model pre test na seede s je učený len na zvyšných dvoch seedoch (`xgregorm_logs/dev7_models/gs_s<seed>.txt`), na záznamoch AQ, BQ, CQ, TQ z dev6. Poradie vstupov overuje C++ pri načítaní. Rozhodnutie: predikcia na 3 s nahradí aktuálne meranie, ďalej rovnaké pravidlo ako Q (rozdiel aspoň 0.05, pravdepodobnosť zisk/0.4, skúšky 0.5 Hz).
+- Porovnania: AGS, BGS, CGS, TGS s Q z dev6 a **nový scenár D, ktorý model nevidel** (do 50 s RSU 0N 3W 6N 8W, 50-85 s 1N 2N 5W 7W, od 85 s 0W 3N 4W 7N; zmeny v 50. a 85. s), kde sú DGS, DQ, DMIX, DO3. Rozhodujúci je D: C bolo súčasťou učenia, hoci z iných seedov, takže výsledok CGS sám osebe nestačí.
+- Úspech podľa časti 9: PRR voči Q aspoň +0.01, 95 % interval bez nuly, nehoršie CPM a LTE. Model sa po pohľade na D nesmie preučiť ani meniť, ak sa to stane, je to nový model a treba nový nevidený scenár.
+- Známe obmedzenie: zóna znižuje príjem všetkých správ danej technológie v aute, takže aj SPATEM. Vstup `spatr` je preto v zónach veľmi priamy ukazovateľ. V T taký zásah nie je a tam výsledok ukáže, koľko model pomôže bez neho.
+- Bandit: AB2 a CB2 = bandit s plnými skúškami, oddeľujú, či za horšie PRR z dev6 môže úbytok skúšok, alebo samotné pravidlo.
+
+**Finálna séria, referencie `final1` (2026-11-03, stanovené pred dev7, nezávislé od jej výsledku; seedy 1-10, 120 s, od 30 s):** scenáre A, C, D, T × politiky Q, MIX, PM, spolu 120 behov, odhad 27 h. `xgregorm_logs/xgregorm_chain.sh` ich spustí sám po dobehnutí dev7, aby výpočet nestál, ak Claude práve nebeží. Po vyhodnotení dev7 sa doplní víťaz (`final2`, modely učené len na ladiacich seedoch) a referencia O3. Scenár B a čisté W, N sa do finálnej série nezaraďujú kvôli času; A a C pokrývajú zóny, W a N ostávajú z ladiacich sérií.

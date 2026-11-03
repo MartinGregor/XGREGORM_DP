@@ -404,3 +404,10 @@ src/automotive/examples/v2v-student-application-80211p-denm.cc
 # xgregorm: logy dlhych behov patria do repozitara, prepis konverzacie nie
 !xgregorm_logs/*.log
 xgregorm_logs/*.jsonl
+
+# xgregorm: vysledky serii v podpriecinkoch ano, zaznamy --feat-log su velke (dev6 161 MB, ostavaju na disku)
+!xgregorm_logs/**/*.log
+xgregorm_logs/dev6/*.csv
+xgregorm_logs/dev7/*.csv
+xgregorm_logs/final*/*.csv
+xgregorm_logs/*.out

@@ -157,7 +157,10 @@ ap.add_argument("--init-main", type=int, default=0, choices=[0, 1, 2],
 ap.add_argument("--probe-hz", type=float, default=0, help="clean policy: CAMs/s also on the other technology (for measuring it)")
 ap.add_argument("--cell-dist", type=float, default=150, help="clean policy: LTE copy on an approach farther than this from the RSU [m]")
 ap.add_argument("--rem-period", type=float, default=0, help="quality map: report period over LTE [s], 0 = instant shared memory")
+ap.add_argument("--bandit", type=int, default=0, choices=[0, 1], help="clean + --qos-rat: learning while driving from own reception")
 ap.add_argument("--feat-log", default="", help="hybrid: write the prediction dataset (CSV) to this file")
+ap.add_argument("--bandit-probe", type=int, default=0, choices=[0, 1], help="with --bandit keep the regular probes")
+ap.add_argument("--pred-gbm", default="", help="hybrid: learned trees (xgregorm_gbm_export.py), with --clean --qos-rat")
 ap.add_argument("--pred-model", default="", help="hybrid: learned prediction model file")
 ap.add_argument("--wifi-bcast-rate", type=int, default=0, choices=[0, 3, 6, 12],
                 help="hybrid: 802.11p rate of broadcast frames [Mbit/s]; 0 = ns-3 default (lowest, 3 Mbit/s)")
@@ -859,6 +862,8 @@ HYB = (f"{TM} --tls-radius={a.tls_radius}"
        f""
        + (f" --pred-rat=true --pred-horizon={a.pred_horizon}" if a.pred_rat else "")
        + (f" --oracle=true --pred-horizon={a.pred_horizon}" if a.oracle else "")
+       + (" --bandit=true" if a.bandit else "") + (" --bandit-probe=true" if a.bandit_probe else "")
+       + (f" --pred-gbm={a.pred_gbm}" if a.pred_gbm else "")
        + (f" --coex=true --coex-aclr={a.coex_aclr} --coex-wifi-ch={a.coex_wifi_ch}" if a.coex else "")
        + (f" --wifi-bcast-rate={a.wifi_bcast_rate}" if a.wifi_bcast_rate else "")
        + (f" --clean=true --init-main={a.init_main} --probe-hz={a.probe_hz} --cell-dist={a.cell_dist}" if a.clean else "")

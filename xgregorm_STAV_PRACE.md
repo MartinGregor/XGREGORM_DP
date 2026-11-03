@@ -3,6 +3,13 @@
 Zapísané 2026-11-02 po zastavení behov. Tento súbor hovorí, **kde sa práca zastavila, ako v nej pokračovať
 a čo všetko sa spravilo**. Podrobné tabuľky a závery sú v Denníku v `CLAUDE.md`, pravidlá projektu tiež tam.
 
+## 0. Aktuálny stav (2026-11-03, má prednosť pred zvyškom súboru)
+
+Platí plán `xgregorm_PLAN_PREDIKCIA.md` a fronta v jeho časti 9, výsledky v Denníku v `CLAUDE.md`. Séria `ser.sh` (RE až MP) a porovnanie DCC sa v starej konfigurácii **nedopúšťajú**: kalibrácia ukázala, že konfigurácia so 3 Mbit/s a NR 40 MHz bola skreslená. Základná konfigurácia je C6U + `--wifi-rx-min -88`.
+Počítač: Ryzen 7 9800X3D, WSL 12 vlákien, 20 GB (`.wslconfig` 22 GB, uplatní sa po `wsl --shutdown`). Hotové série: dev, dev2 až dev6 a výber algoritmu na záznamoch. Beží: `dev7` (30 behov, `xgregorm_logs/dev7.json`; po prerušení znova `xgregorm_logs/xgregorm_start.sh $PWD/xgregorm_logs/dev7.json`, hotové behy preskočí). Počas série sa nesmie meniť C++ ani `xgregorm_gen_scenario.py`. Po dev7 sám naštartuje `final1` (`xgregorm_logs/xgregorm_chain.sh`, 120 behov); ak bol WSL reštartovaný, spustiť `dev7` a `final1` znova tým istým spúšťačom.
+
+Časti 1 až 4 nižšie opisujú stav z 2026-11-02 a ostávajú ako história.
+
 ## 1. Kde sa to zastavilo
 
 Séria s plným realizmom bola zámerne zastavená **2026-11-02 o 15:39** kvôli prenosu na výkonnejší počítač.
