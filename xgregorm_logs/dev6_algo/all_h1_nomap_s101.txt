@@ -1,0 +1,48 @@
+== allA: train 125059 rows from 8 files, test 15623 from 1, H=1
+    gbm+msg importance: r, spatr, cpmn, dist, cpmobj, or, qexp, v
+    persistence    MAE 0.1001  (changing 0.1958)  chosen 0.7805  acc 0.846 (n=4494)
+    map avg        MAE 0.0973  (changing 0.1505)  chosen 0.7814  acc 0.845 (n=4494)
+    kalman         MAE 0.1013  (changing 0.1907)  chosen 0.7792  acc 0.832 (n=4494)
+    gbm            MAE 0.0875  (changing 0.1530)  chosen 0.7826  acc 0.853 (n=4494)
+    mlp            MAE 0.0921  (changing 0.1535)  chosen 0.7825  acc 0.850 (n=4494)
+    logit          MAE 0.0993  (changing 0.1774)  chosen 0.7810  acc 0.846 (n=4494)
+    gbm+msg        MAE 0.0853  (changing 0.1455)  chosen 0.7828  acc 0.854 (n=4494)
+    mlp+msg        MAE 0.0856  (changing 0.1392)  chosen 0.7821  acc 0.846 (n=4494)
+    logit+msg      MAE 0.0958  (changing 0.1612)  chosen 0.7804  acc 0.834 (n=4494)
+    bounds         best 0.7983  worst 0.4656
+== allB: train 125059 rows from 8 files, test 15442 from 1, H=1
+    gbm+msg importance: r, spatr, cpmn, dist, cpmobj, or, qexp, v
+    persistence    MAE 0.0944  (changing 0.1966)  chosen 0.8668  acc 0.674 (n=3691)
+    map avg        MAE 0.0911  (changing 0.1570)  chosen 0.8635  acc 0.671 (n=3691)
+    kalman         MAE 0.0972  (changing 0.1976)  chosen 0.8654  acc 0.665 (n=3691)
+    gbm            MAE 0.0851  (changing 0.1631)  chosen 0.8675  acc 0.682 (n=3691)
+    mlp            MAE 0.0863  (changing 0.1599)  chosen 0.8663  acc 0.682 (n=3691)
+    logit          MAE 0.0941  (changing 0.1776)  chosen 0.8653  acc 0.650 (n=3691)
+    gbm+msg        MAE 0.0832  (changing 0.1568)  chosen 0.8679  acc 0.687 (n=3691)
+    mlp+msg        MAE 0.0851  (changing 0.1510)  chosen 0.8655  acc 0.677 (n=3691)
+    logit+msg      MAE 0.0933  (changing 0.1683)  chosen 0.8632  acc 0.625 (n=3691)
+    bounds         best 0.9005  worst 0.7617
+== allC: train 125059 rows from 8 files, test 14971 from 1, H=1
+    gbm+msg importance: r, spatr, cpmn, dist, cpmobj, or, qexp, v
+    persistence    MAE 0.1081  (changing 0.2094)  chosen 0.7735  acc 0.837 (n=4098)
+    map avg        MAE 0.1395  (changing 0.2030)  chosen 0.7347  acc 0.756 (n=4098)
+    kalman         MAE 0.1067  (changing 0.1965)  chosen 0.7776  acc 0.833 (n=4098)
+    gbm            MAE 0.0959  (changing 0.1700)  chosen 0.7771  acc 0.836 (n=4098)
+    mlp            MAE 0.0957  (changing 0.1599)  chosen 0.7814  acc 0.838 (n=4098)
+    logit          MAE 0.1066  (changing 0.1914)  chosen 0.7754  acc 0.838 (n=4098)
+    gbm+msg        MAE 0.0862  (changing 0.1433)  chosen 0.7878  acc 0.855 (n=4098)
+    mlp+msg        MAE 0.0851  (changing 0.1342)  chosen 0.7882  acc 0.851 (n=4098)
+    logit+msg      MAE 0.1001  (changing 0.1681)  chosen 0.7837  acc 0.846 (n=4098)
+    bounds         best 0.8050  worst 0.4539
+== allT: train 125059 rows from 8 files, test 16417 from 1, H=1
+    gbm+msg importance: r, spatr, cpmn, dist, cpmobj, or, qexp, v
+    persistence    MAE 0.0847  (changing 0.1872)  chosen 0.8831  acc 0.610 (n=4125)
+    map avg        MAE 0.0851  (changing 0.1526)  chosen 0.8820  acc 0.607 (n=4125)
+    kalman         MAE 0.0858  (changing 0.1859)  chosen 0.8829  acc 0.612 (n=4125)
+    gbm            MAE 0.0784  (changing 0.1558)  chosen 0.8823  acc 0.610 (n=4125)
+    mlp            MAE 0.0803  (changing 0.1533)  chosen 0.8819  acc 0.608 (n=4125)
+    logit          MAE 0.0867  (changing 0.1646)  chosen 0.8797  acc 0.570 (n=4125)
+    gbm+msg        MAE 0.0780  (changing 0.1541)  chosen 0.8839  acc 0.619 (n=4125)
+    mlp+msg        MAE 0.0812  (changing 0.1485)  chosen 0.8810  acc 0.592 (n=4125)
+    logit+msg      MAE 0.0873  (changing 0.1577)  chosen 0.8787  acc 0.556 (n=4125)
+    bounds         best 0.9187  worst 0.8200
