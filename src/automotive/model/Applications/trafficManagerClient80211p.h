@@ -2,6 +2,7 @@
 #define trafficManagerClient80211p_H
 
 
+#include "ns3/xgregorm-stats.h" // xgregorm
 #include "ns3/application.h"
 #include "ns3/asn_utils.h"
 
@@ -137,7 +138,8 @@ private:
   int m_rx_mark = -1;                  //!< znacka prave spracuvaneho prijateho paketu (-1 = ziadna)
   uint8_t m_tx_seq = 0;
   struct QRec { int seq; bool has[2]; double t0; bool got[2]; double lat[2]; };
-  struct QSt { std::deque<QRec> recs; int seq = -1; bool has[2] = {false, false}; double t = -10; };
+  struct QSt { std::deque<QRec> recs; int seq = -1; bool has[2] = {false, false}; double t = -10;
+               double x = 0, y = 0, vx = 0, vy = 0, pt = -10; };
   std::map<unsigned long, QSt> m_qst;  //!< odosielatel -> CAM cakajuce na vyhodnotenie + posledna vyhodnotena
   void xgQosFinish (unsigned long sender, QSt &st, const QRec &r);
   double m_q_exp[2] = {0, 0}, m_q_ok[2] = {0, 0}; //!< klzave sucty (~2 s): ocakavane / dorucene nacas
@@ -147,12 +149,32 @@ private:
   // z mapy kvality (xgstats::rem) v bodoch trasy auta; rozhodnutie inak rovnake ako pravidlo kvality
   bool m_xg_pred = false;
   double m_pred_h = 3;
-  void xgPredict (double q[2], int nq[2], double c[2], int nc[2]);
+  void xgPredict (double q[2], int nq[2], double c[2], int nc[2], std::vector<std::pair<double, double>> *pts = nullptr);
   double m_qc_exp[2] = {0, 0}, m_qc_ok[2] = {0, 0}; //!< celkove sucty od zaciatku (vyhodnotenie predikcie)
   struct PRec { double t; double pred[2]; double now[2]; double e0[2]; double o0[2]; bool map[2]; };
   std::deque<PRec> m_pred_q;           //!< predikcie cakajuce na vyhodnotenie (po XgPredHorizon s)
   std::vector<std::string> m_route;
   uint64_t m_pred_sw = 0;              //!< presuny hlavnej technologie podla predikcie
+  // xgregorm: cista politika (XgClean): kazda CAM jednou priamou technologiou, bez kopii a bez beaconu RSU; LTE len na
+  // vzdialenom prijazde (> XgCellDist od RSU). Kvalita druhej technologie sa zistuje riedkymi skuskami (XgProbeHz)
+  bool m_xg_clean = false;
+  uint32_t m_init_main = 0;            //!< pociatocna hlavna technologia: 0 802.11p, 1 NR, 2 nahodne pre auto
+  double m_probe_hz = 0, m_cell_dist = 150, m_probe_t = -10;
+  bool m_probe_due = false;            //!< dalsia CAM ide aj druhou technologiou
+  // xgregorm: dalsie sposoby vyberu (plan, cast 8): 1 DCC po spravach, 2 vybava susedov, 3 vybava RSU na trase,
+  // 4 selektivna kopia pri krizovatke, 5 pri krizovatke technologia odolnejsia za rohom
+  double m_dcc_off_t = -1;
+  bool m_dcc_off_v = false;
+  bool m_nb_equip = false, m_rsu_route = false;
+  double m_dup_near = 0, m_geo_rat = 0;
+  bool m_oracle = false; //!< referencia: auto presne pozna zony --zones (nie je realizovatelna politika)
+  void xgRemAdd (double x, double y, int k, double exp, double ok, double cbr, double cbrN);
+  void xgRemFlush (double now);
+  xgstats::RemBuf m_rem_buf;
+  double m_rem_last = 0;
+  Ptr<Socket> m_rem_sock;
+  void xgNeighbours (double nb[1], double nbk[2], double nbf[1], double h);
+  double m_my_x = 0, m_my_y = 0, m_my_vx = 0, m_my_vy = 0, m_my_t = -10;
 };
 }
 #endif // trafficManagerClient80211p_H

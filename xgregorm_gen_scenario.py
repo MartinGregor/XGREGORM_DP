@@ -132,6 +132,35 @@ ap.add_argument("--coex", type=int, default=0, choices=[0, 1],
                 help="hybrid: mutual interference of 802.11p and NR-V2X in the 5.9 GHz band (802.11p on --coex-wifi-ch, "
                      "NR 40 MHz at 5890 MHz = co-channel); 802.11p defers to NR energy above -65 dBm (CCA-ED)")
 ap.add_argument("--coex-aclr", type=float, default=30, help="coexistence: adjacent channel leakage ratio [dB]")
+ap.add_argument("--ped", type=int, default=0,
+                help="hybrid: pedestrians walking on the sidewalks with a phone: each one LTE UE (phone uplink + VAM over LTE). "
+                     "Sidewalk mobility in ns-3, not in SUMO: cars do not react to them. LTE only for now (see xgregorm_PLAN_PREDIKCIA.md)")
+ap.add_argument("--ped-kbps", type=float, default=20, help="pedestrians: mean phone uplink [kbit/s]")
+ap.add_argument("--ped-vam-hz", type=float, default=1, help="pedestrians: VAM over LTE per second")
+ap.add_argument("--ped-hotspot", type=float, default=0,
+                help="pedestrians: 0 = evenly on the sidewalks; R > 0 = start within R metres of the map centre (crowd)")
+ap.add_argument("--dcc-offload", type=float, default=0, help="clean: CAM/CPM over NR when the DCC gate would hold them longer [ms]")
+ap.add_argument("--nb-equip", type=int, default=0, choices=[0, 1], help="clean: technology by the equipment of the neighbours")
+ap.add_argument("--rsu-equip", default="", help="equipment of the RSUs in turn, repeated, e.g. W,N,WN")
+ap.add_argument("--rsu-route", type=int, default=0, choices=[0, 1], help="clean: on an approach the technology of the next RSU")
+ap.add_argument("--dup-near", type=float, default=0, help="clean: CAM copy within this distance of the next traffic light [m]")
+ap.add_argument("--oracle", type=int, default=0, help="reference: vehicles know the --zones exactly (with --qos-rat; look-ahead --pred-horizon)")
+ap.add_argument("--geo-rat", type=float, default=0, help="clean: CAM over NR within this distance of the next traffic light [m]")
+ap.add_argument("--cpm-rat", default="", help="CPM always on this technology (W or N)")
+ap.add_argument("--zones", default="", help="hybrid: local degradation, rsuIndex:radius:t0:t1:W|N:loss+...")
+ap.add_argument("--wifi-rx-min", type=float, default=0,
+                help="hybrid: 802.11p preamble detection threshold [dBm], 0 = ns-3 default -82; EN 302 663 at 6 Mbit/s: -88")
+ap.add_argument("--clean", type=int, default=0, choices=[0, 1],
+                help="hybrid: clean policy - every CAM on one direct technology, no copies, no RSU beacon, LTE only far from the RSU")
+ap.add_argument("--init-main", type=int, default=0, choices=[0, 1, 2],
+                help="clean policy: initial main technology, 0 = 802.11p, 1 = NR-V2X, 2 = random per vehicle")
+ap.add_argument("--probe-hz", type=float, default=0, help="clean policy: CAMs/s also on the other technology (for measuring it)")
+ap.add_argument("--cell-dist", type=float, default=150, help="clean policy: LTE copy on an approach farther than this from the RSU [m]")
+ap.add_argument("--rem-period", type=float, default=0, help="quality map: report period over LTE [s], 0 = instant shared memory")
+ap.add_argument("--feat-log", default="", help="hybrid: write the prediction dataset (CSV) to this file")
+ap.add_argument("--pred-model", default="", help="hybrid: learned prediction model file")
+ap.add_argument("--wifi-bcast-rate", type=int, default=0, choices=[0, 3, 6, 12],
+                help="hybrid: 802.11p rate of broadcast frames [Mbit/s]; 0 = ns-3 default (lowest, 3 Mbit/s)")
 ap.add_argument("--coex-wifi-ch", type=int, default=180, help="coexistence: 802.11p channel (180 = 5900 MHz)")
 ap.add_argument("--nr-freq", type=float, default=5.89e9, help="hybrid: NR-V2X sidelink centre frequency [Hz]")
 ap.add_argument("--nr-bw", type=float, default=0, help="hybrid: NR-V2X sidelink bandwidth [MHz] (0 = 40, authors)")
@@ -750,6 +779,50 @@ def diagnostika(dlzka=600):
 if a.diag:
     diagnostika(min(600, int(a.sim_time) + 300))
 
+# xgregorm: --ped - chodci na chodnikoch: chodnik = 3 m vpravo od osi krajneho pruhu; na konci ulice chodec pocka na
+# prechod (0-30 s, cervena) a pokracuje nahodnou nadvazujucou ulicou. Vystup: riadok chodca "t x y t x y ..." pre ns-3
+if a.ped:
+    import random as _r
+    import xml.etree.ElementTree as _ET
+    _rng = _r.Random(a.seed if a.seed is not None else 1)
+    _hr = {}
+    for _e in _ET.parse(net_f).getroot().findall("edge"):
+        if _e.get("function") == "internal":
+            continue
+        _l = _e.findall("lane")
+        _s = [tuple(map(float, p.split(","))) for p in _l[0].get("shape").split()]
+        _o = []
+        for _i, (_x, _y) in enumerate(_s):
+            _a, _b = _s[max(_i - 1, 0)], _s[min(_i + 1, len(_s) - 1)]
+            _d = math.hypot(_b[0] - _a[0], _b[1] - _a[1]) or 1
+            _o.append((_x + (_b[1] - _a[1]) / _d * 3, _y - (_b[0] - _a[0]) / _d * 3))
+        _hr.setdefault(_e.get("from"), []).append((_e.get("to"), _o))
+    _vsetky = [(u, h) for u, hs in _hr.items() for h in hs if math.hypot(h[1][0][0] - h[1][-1][0], h[1][0][1] - h[1][-1][1]) < 400]
+    _cx = sum(h[1][0][0] for _, h in _vsetky) / len(_vsetky)
+    _cy = sum(h[1][0][1] for _, h in _vsetky) / len(_vsetky)
+    with open(os.path.join(out, f"{P}peds.txt"), "w") as f:
+        for _p in range(a.ped):
+            _kand = _vsetky
+            if a.ped_hotspot > 0:
+                _kand = [(u, h) for u, h in _vsetky if math.hypot(h[1][0][0] - _cx, h[1][0][1] - _cy) < a.ped_hotspot] or _vsetky
+            _u, _h = _rng.choice(_kand)
+            _t, _v = 0.0, _rng.uniform(1.0, 1.6)
+            _w = [(0.0, _h[1][0][0], _h[1][0][1])]
+            while _t < a.sim_time + 1:
+                for _a, _b in zip(_h[1], _h[1][1:]):
+                    _t += math.hypot(_b[0] - _a[0], _b[1] - _a[1]) / _v
+                    _w.append((_t, _b[0], _b[1]))
+                _t += _rng.uniform(0, 30)
+                _w.append((_t, _h[1][-1][0], _h[1][-1][1]))
+                _dalej = [h for h in _hr.get(_h[0], []) if h[0] != _u] or _hr.get(_h[0], [])
+                if not _dalej:
+                    break
+                _u, _h = _h[0], _rng.choice(_dalej)
+                _t += 1.0
+                _w.append((_t, _h[1][0][0], _h[1][0][1]))
+            f.write(" ".join(f"{t:.2f} {x:.2f} {y:.2f}" for t, x, y in _w) + "\n")
+    print(f"  pedestrians  : {a.ped} on the sidewalks (LTE phones, not in SUMO), hotspot radius {a.ped_hotspot} m")
+
 # ============================================================== 5) COMMANDS
 S = out + "/"
 ZAKLAD = (f"--sumo-folder={S} --mob-trace={P}cars.rou.xml --sumo-config={cfg_f} "
@@ -772,6 +845,7 @@ HYB = (f"{TM} --tls-radius={a.tls_radius}"
        f" --beacon-ms={a.beacon_ms} --nr-sensing={'true' if a.nr_sensing else 'false'}"
        f" --range-stats={'true' if a.range_stats else 'false'} --channel={a.channel}"
        + (f" --buildings-file={bud_f}" if a.channel == "urban" else "")
+       + (f" --lte-bg-ue={a.ped} --lte-bg-kbps={a.ped_kbps} --peds-file={os.path.join(out, P + 'peds.txt')} --ped-vam-hz={a.ped_vam_hz}" if a.ped else "")
        + f" --load-stats={'true' if a.load_stats else 'false'}"
        f" --color-tech={'true' if a.colorful else 'false'} --live-period={a.live}"
        f" --enb={a.enb} --enb-isd={a.enb_isd} --lte-ue-power={a.lte_ue_power}"
@@ -781,9 +855,21 @@ HYB = (f"{TM} --tls-radius={a.tls_radius}"
        + f" --hyb-range={a.hyb_range} --hyb-qmin={a.hyb_qmin} --hyb-dwell={a.hyb_dwell}"
        f" --load-rat={'true' if a.load_rat else 'false'} --cbr-high={a.cbr_high} --cbr-low={a.cbr_low} --lte-high={a.lte_high}"
        f" --qos-rat={'true' if a.qos_rat else 'false'} --qos-margin={a.qos_margin} --lat-budget={a.lat_budget}"
-       f" --lte-bg-ue={a.lte_bg_ue} --lte-bg-kbps={a.lte_bg_kbps}"
+       + (f" --lte-bg-ue={a.lte_bg_ue} --lte-bg-kbps={a.lte_bg_kbps}" if not a.ped else "") +
+       f""
        + (f" --pred-rat=true --pred-horizon={a.pred_horizon}" if a.pred_rat else "")
+       + (f" --oracle=true --pred-horizon={a.pred_horizon}" if a.oracle else "")
        + (f" --coex=true --coex-aclr={a.coex_aclr} --coex-wifi-ch={a.coex_wifi_ch}" if a.coex else "")
+       + (f" --wifi-bcast-rate={a.wifi_bcast_rate}" if a.wifi_bcast_rate else "")
+       + (f" --clean=true --init-main={a.init_main} --probe-hz={a.probe_hz} --cell-dist={a.cell_dist}" if a.clean else "")
+       + (f" --rem-period={a.rem_period}" if a.rem_period else "")
+       + (f" --wifi-rx-min={a.wifi_rx_min}" if a.wifi_rx_min else "")
+       + (f" --zones={a.zones}" if a.zones else "")
+       + (f" --dcc-offload={a.dcc_offload}" if a.dcc_offload else "") + (" --nb-equip=true" if a.nb_equip else "")
+       + (f" --rsu-equip={a.rsu_equip}" if a.rsu_equip else "") + (" --rsu-route=true" if a.rsu_route else "")
+       + (f" --dup-near={a.dup_near}" if a.dup_near else "") + (f" --geo-rat={a.geo_rat}" if a.geo_rat else "")
+       + (f" --cpm-rat={a.cpm_rat}" if a.cpm_rat else "")
+       + (f" --feat-log={a.feat_log}" if a.feat_log else "") + (f" --pred-model={a.pred_model}" if a.pred_model else "")
        + (f" --nr-freq={a.nr_freq}" if a.nr_freq != 5.89e9 else "") + (f" --nr-bw={a.nr_bw}" if a.nr_bw else "")
        + (f" --equip={a.equip}" if a.equip else "")
        + (f" --phone-share={a.phone_share} --phone-kbps={a.phone_kbps}" if a.phone_share else "")

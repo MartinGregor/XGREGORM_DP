@@ -125,12 +125,14 @@ inline std::array<uint64_t, 5> &stateN () { static std::array<uint64_t, 5> a {};
 inline double &qDelay () { static double d = 0; return d; }
 inline double &crSum () { static double d = 0; return d; }
 
-// trvanie ramca 802.11p (OFDM 6 Mbit/s, 10 MHz): preambula + SIGNAL 40 us, symbol 8 us = 24 bitov dat;
-// MAC hlavicka + LLC + FCS 36 B, SERVICE 16 + tail 6 bitov
+// trvanie ramca 802.11p (OFDM, 10 MHz): preambula + SIGNAL 40 us, symbol 8 us; bity dat na symbol podla rychlosti
+// broadcastu (--wifi-bcast-rate): 3 Mbit/s = 24 (predvolene ns-3, pozn. xgregorm 2026-11-02: povodny komentar tu chybne
+// uvadzal 6 Mbit/s), 6 Mbit/s = 48. MAC hlavicka + LLC + FCS 36 B, SERVICE 16 + tail 6 bitov
+inline double &bitsPerSymbol () { static double b = 24; return b; }
 inline double
 airtime (uint32_t bytes)
 {
-  return 40e-6 + std::ceil ((22 + 8.0 * (bytes + 36)) / 24.0) * 8e-6;
+  return 40e-6 + std::ceil ((22 + 8.0 * (bytes + 36)) / bitsPerSymbol ()) * 8e-6;
 }
 inline int stateOf (double c) { return c < 0.30 ? 0 : c < 0.40 ? 1 : c < 0.50 ? 2 : c < 0.65 ? 3 : 4; }
 inline double
@@ -241,6 +243,17 @@ wSend (Ptr<Socket> s, Ptr<Packet> p, int kind)
   schedule (n, w);
   return p->GetSize ();
 }
+// xgregorm: napad 1 - za ako dlho by sa sprava dostala cez branu DCC (zatvorena brana + cakajuce spravy po ~Toff stavu)
+inline double &offload () { static double b = 0; return b; } // rozpocet [s]; 0 = vypnute
+inline double
+gateWait (uint32_t n)
+{
+  if (!wOn ())
+    return 0;
+  WSt &w = wst ()[n];
+  return std::max (0.0, w.open - Simulator::Now ().GetSeconds ()) + w.q.size () * toff (w.state, 0);
+}
+inline uint64_t &offloadN () { static uint64_t c = 0; return c; }
 // vlastne obsadenie NR (subkanaly x sloty) pri kazdom vlastnom PSSCH - vola scenar
 inline void
 nrUsed (uint32_t n, double occ)

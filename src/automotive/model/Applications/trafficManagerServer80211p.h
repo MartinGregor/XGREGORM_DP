@@ -104,6 +104,7 @@ class trafficManagerServer80211p : public Application
     double m_coord_lookahead; //!< xgregorm: count announced vehicles this many s before arrival (0 = at once)
     uint64_t m_coord_rx; //!< xgregorm
     uint32_t m_xg_beacon_ms; //!< xgregorm: perioda beaconu adaptivneho hybridu [ms]
+  int m_xg_rsu_eq = 5; //!< xgregorm: technologie RSU (1 802.11p, 4 NR)
     Ptr<Socket> m_xg_socket; //!< xgregorm
     EventId m_xg_beacon_ev; //!< xgregorm
     std::set<unsigned long> m_xg_heard; //!< xgregorm: CAM pocute od posledneho beaconu

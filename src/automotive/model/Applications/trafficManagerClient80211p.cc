@@ -163,7 +163,38 @@ namespace ns3
             "Prediction: horizon [s]; one route point per second",
             DoubleValue (3.0),
             MakeDoubleAccessor (&trafficManagerClient80211p::m_pred_h),
-            MakeDoubleChecker<double> (1, 10));
+            MakeDoubleChecker<double> (0, 10))
+        .AddAttribute ("XgClean",
+            "Clean policy: every CAM on one direct technology, no copies and no RSU beacon; LTE only on an approach farther than XgCellDist from the RSU",
+            BooleanValue (false),
+            MakeBooleanAccessor (&trafficManagerClient80211p::m_xg_clean),
+            MakeBooleanChecker ())
+        .AddAttribute ("XgInitMain",
+            "Clean policy: initial main technology: 0 = 802.11p, 1 = NR-V2X, 2 = random per vehicle (50/50)",
+            UintegerValue (0),
+            MakeUintegerAccessor (&trafficManagerClient80211p::m_init_main),
+            MakeUintegerChecker<uint32_t> (0, 2))
+        .AddAttribute ("XgProbeHz",
+            "Clean policy: CAMs per second also sent on the other direct technology to measure it (0 = none)",
+            DoubleValue (0),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_probe_hz),
+            MakeDoubleChecker<double> (0, 10))
+        .AddAttribute ("XgCellDist",
+            "Clean policy: distance from the RSU on an approach beyond which the CAM goes also over LTE [m]",
+            DoubleValue (150),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_cell_dist),
+            MakeDoubleChecker<double> (0))
+        .AddAttribute ("XgNbEquip", "Clean policy: choose the technology by the equipment of the neighbours (both only if some neighbours hear only 802.11p and others only NR)",
+            BooleanValue (false), MakeBooleanAccessor (&trafficManagerClient80211p::m_nb_equip), MakeBooleanChecker ())
+        .AddAttribute ("XgRsuRoute", "Clean policy: on an approach use the technology of the next RSU (known from the map)",
+            BooleanValue (false), MakeBooleanAccessor (&trafficManagerClient80211p::m_rsu_route), MakeBooleanChecker ())
+        .AddAttribute ("XgDupNear", "Clean policy: copy of the CAM on the other technology closer than this to the next traffic light [m]; 0 = off",
+            DoubleValue (0), MakeDoubleAccessor (&trafficManagerClient80211p::m_dup_near), MakeDoubleChecker<double> (0))
+        .AddAttribute ("XgOracle", "Reference only, not a realizable policy: the vehicle knows the --zones exactly and "
+            "chooses the technology with the smaller loss at its position and at the route points of the next XgPredHorizon s",
+            BooleanValue (false), MakeBooleanAccessor (&trafficManagerClient80211p::m_oracle), MakeBooleanChecker ())
+        .AddAttribute ("XgGeoRat", "Clean policy: closer than this to the next traffic light (blind corner) the CAM goes over NR [m]; 0 = off",
+            DoubleValue (0), MakeDoubleAccessor (&trafficManagerClient80211p::m_geo_rat), MakeDoubleChecker<double> (0));
         return tid;
   }
 
@@ -270,6 +301,7 @@ namespace ns3
         {
           // cesty, ktorymi CAM naozaj odisla (zvolene, v aute dostupne a nevypadnute)
           sent = xgEffectivePath ();
+          m_probe_due = false; // skuska (ak bola) prave odisla
           for (int b : {xghyb::WIFI, xghyb::LTE, xghyb::NR})
             if (sent & b)
               m_hyb_last_tx[xghyb::idx (b)] = t;
@@ -328,8 +360,26 @@ namespace ns3
         // vytazenia bunky zalohu vypina postupne cast aut, nie vsetky naraz
         if (m_xg_load)
           m_lte_thr = m_lte_high + 0.4 * (m_load_rnd->GetValue () - 0.5);
+        if (m_xg_clean)
+          {
+            if (!m_load_rnd)
+              m_load_rnd = CreateObject<UniformRandomVariable> ();
+            double u0 = m_load_rnd->GetValue ();
+            m_main = m_init_main == 1 || (m_init_main == 2 && u0 < 0.5) ? xghyb::NR : xghyb::WIFI;
+            if (!(m_hyb_mask & m_main))
+              m_main = xgOtherDirect (m_main);
+            m_hyb_path = m_hyb_base = m_hyb_mask & m_main;
+            if (m_probe_hz > 0) // skusky aut nie su v rovnakom case
+              m_probe_t = Simulator::Now ().GetSeconds () - m_load_rnd->GetValue () / m_probe_hz;
+          }
+        if (lte && xgstats::remPeriod () > 0)
+          {
+            m_rem_sock = Socket::CreateSocket (GetNode (), UdpSocketFactory::GetTypeId ());
+            m_rem_sock->Bind ();
+            m_rem_sock->Connect (InetSocketAddress (m_server_addr, 5001));
+          }
         Ptr<XgHybridSocket> hs = Create<XgHybridSocket> (m_socket, lte, nr, [this] () { return xgEffectivePath (); });
-        if (m_xg_qos)
+        if (m_xg_qos || !xgstats::zones ().empty ())
           {
             // pravidlo kvality: CAM nesie v poli Reserved hlavicky GeoNet technologie a poradove cislo, prijem
             // 802.11p aj NR ide najprv cez klienta (precita znacku), potom do GeoNet
@@ -509,6 +559,8 @@ namespace ns3
   trafficManagerClient80211p::xgPathNow ()
   {
     // cesty, ktorymi by prave odisla CAM, bez skusky 802.11p z NR (raz za 1 s jedna CAM) - pre farbu a priebezny vypis
+    if (m_xg_clean)
+      return m_hyb_base;
     int p = xgEffectivePath ();
     if (m_xg_hybrid == 2 && (p & xghyb::NR) && !(m_hyb_base & xghyb::WIFI))
       p &= ~xghyb::WIFI;
@@ -538,6 +590,22 @@ namespace ns3
     int direct = avail & (xghyb::WIFI | xghyb::NR);
     if (direct && !(path & (xghyb::WIFI | xghyb::NR)))
       path |= (direct & xghyb::WIFI) ? xghyb::WIFI : xghyb::NR;
+    if (m_xg_clean && m_probe_due)
+      path |= direct; // skuska: tato CAM ide oboma priamymi technologiami
+    // napad 1: 802.11p by CAM drzalo na brane DCC dlhsie nez rozpocet -> tato CAM ide cez NR. Rozhodnutie plati pre
+    // cely okamih odoslania (po odoslani je brana zatvorena, vypis ciest musi vidiet to iste)
+    if (m_xg_clean && xgdcc::offload () > 0 && (path & xghyb::WIFI) && !(path & xghyb::NR) && (avail & xghyb::NR))
+      {
+        double now = Simulator::Now ().GetSeconds ();
+        if (now != m_dcc_off_t)
+          {
+            m_dcc_off_t = now;
+            m_dcc_off_v = xgdcc::gateWait (GetNode ()->GetId ()) > xgdcc::offload ();
+            xgdcc::offloadN () += m_dcc_off_v && xgstats::measuring ();
+          }
+        if (m_dcc_off_v)
+          path = (path & ~xghyb::WIFI) | xghyb::NR;
+      }
     return path;
   }
 
@@ -579,12 +647,78 @@ namespace ns3
         if (direct & m_main)
           prim = m_main;
       }
+    if (m_xg_clean && (direct & m_main))
+      prim = m_main;
     int other = direct & xgOtherDirect (prim);
     int path;
     int probe = 0;
     bool confirmed = true;
     if (need)
       m_hyb_need_t = now;
+    if (m_xg_clean)
+      {
+        // cista politika: jedna priama technologia; LTE (V2N) len tam, kam RSU podla mapy priamo nedosiahne
+        // napad 2: vybava susedov (v realite schopnost v CAM): komu auto dosiahne
+        if (m_nb_equip && (direct & xghyb::WIFI) && (direct & xghyb::NR))
+          {
+            int only[2] = {0, 0};
+            for (const auto &e : m_qst)
+              if (now - e.second.t <= 1.5)
+                {
+                  int q = xgstats::eqOf (e.first);
+                  only[0] += q == xghyb::WIFI;
+                  only[1] += q == xghyb::NR;
+                }
+            prim = only[0] > only[1] ? xghyb::WIFI : only[1] > only[0] ? xghyb::NR : prim;
+            other = direct & xgOtherDirect (prim);
+          }
+        // napad 3: ku ktorej RSU idem a akou technologiou ju dosiahnem (staticka mapa)
+        if (m_rsu_route && need)
+          {
+            auto rq = xgstats::rsuEqTls ().find (m_next_tls);
+            if (rq != xgstats::rsuEqTls ().end () && !(rq->second & prim) && (rq->second & direct))
+              {
+                prim = rq->second & direct;
+                other = direct & xgOtherDirect (prim);
+              }
+          }
+        // napad 5: pri slepej krizovatke NR
+        if (m_geo_rat > 0 && need && m_next_dist < m_geo_rat && (direct & xghyb::NR))
+          {
+            prim = xghyb::NR;
+            other = direct & xghyb::WIFI;
+          }
+        int clean = direct ? prim : now - m_hyb_need_t < m_hyb_dwell ? avail & xghyb::LTE : 0;
+        // napad 2: niektori susedia pocuju len jednu a ini len druhu technologiu: kopia
+        if (m_nb_equip && other)
+          {
+            int only[2] = {0, 0};
+            for (const auto &e : m_qst)
+              if (now - e.second.t <= 1.5)
+                {
+                  int q = xgstats::eqOf (e.first);
+                  only[0] += q == xghyb::WIFI;
+                  only[1] += q == xghyb::NR;
+                }
+            if (only[0] > 0 && only[1] > 0)
+              clean |= other;
+          }
+        // napad 4: selektivna kopia pri krizovatke
+        if (m_dup_near > 0 && other && need && m_next_dist < m_dup_near)
+          clean |= other;
+        if (direct && need && m_next_dist >= m_cell_dist)
+          clean |= avail & xghyb::LTE;
+        if (m_probe_hz > 0 && other && now - m_probe_t >= 1.0 / m_probe_hz)
+          {
+            m_probe_due = true;
+            m_probe_t = now;
+            m_hyb_probes += xgstats::measuring ();
+          }
+        if (clean != m_hyb_base)
+          m_hyb_switch += xgstats::measuring ();
+        m_hyb_base = m_hyb_path = clean;
+        return;
+      }
     if (!direct)
       // CAM cez LTE dostanu len radice semaforov - kto nie je potrebny, neposiela; po opusteni prijazdu este
       // XgHybDwell s, aby radic videl, ze auto odislo (inak by ho dalej pocital na prijazde)
@@ -655,20 +789,17 @@ namespace ns3
         }
     m_load_init = true;
     double now = Simulator::Now ().GetSeconds ();
-    if (m_xg_pred)
+    if (m_xg_pred || xgstats::featLog ())
       {
         // mapa kvality: vzorka zataze kanala 802.11p a NR (100 ms) v bunke, kde auto prave je
         auto me = xgstats::vehPos ().find (m_sid);
         if (me != xgstats::vehPos ().end ())
           {
-            xgstats::RemCell *c = xgstats::remAt (me->second.first, me->second.second, true);
             for (int k = 0; k < 2; k++)
               if (xgstats::loadFn ()[k ? 2 : 0])
-                {
-                  c->cbr[k] += xgstats::loadFn ()[k ? 2 : 0] (node);
-                  c->cbrN[k] += 1;
-                }
+                xgRemAdd (me->second.first, me->second.second, k, 0, 0, xgstats::loadFn ()[k ? 2 : 0] (node), 1);
           }
+        xgRemFlush (now);
         // vyhodnotenie predikcii: spolahlivost namerana autom za horizont vs. predikcia a vs. "zostane ako teraz"
         while (!m_pred_q.empty () && now - m_pred_q.front ().t >= m_pred_h - 1e-9)
           {
@@ -708,6 +839,28 @@ namespace ns3
     if (now - m_load_eval_t < m_load_period)
       return;
     m_load_eval_t = now;
+    if (m_oracle)
+      {
+        // referencia pre predikciu: dokonala znalost zon, bez merania a bez postupneho presunu aut
+        double pq[2], pc[2], loss[2] = {0, 0};
+        int nq[2], nc[2];
+        std::vector<std::pair<double, double>> pts;
+        auto me = xgstats::vehPos ().find (m_sid);
+        if (me != xgstats::vehPos ().end ())
+          pts.push_back (me->second);
+        xgPredict (pq, nq, pc, nc, &pts);
+        for (const auto &pt : pts)
+          for (const xgstats::Zone &z : xgstats::zones ())
+            if (now >= z.t0 && now < z.t1 && std::hypot (pt.first - z.x, pt.second - z.y) <= z.r)
+              loss[z.k] += z.p;
+        int best = loss[0] < loss[1] ? xghyb::WIFI : loss[1] < loss[0] ? xghyb::NR : m_main;
+        if (best != m_main)
+          {
+            m_main = best;
+            m_pred_sw += xgstats::measuring ();
+          }
+        return;
+      }
     double cw = m_load_avg[0], cn = m_load_avg[2];
     double target = (m_cbr_high + m_cbr_low) / 2;
     double u = m_load_rnd->GetValue ();
@@ -716,24 +869,65 @@ namespace ns3
     // technologia zvlast; prejde na druhu, ak je spolahlivejsia aspon o XgQosMargin a nie je zahltena, s
     // pravdepodobnostou zisk / 0.4 (pri zisku 0.2 polovica aut za 1 s - aby sa nepresunuli vsetky naraz)
     int im = m_main == xghyb::WIFI ? 0 : 1, io = 1 - im;
-    const double kQmin = 20; // najmenej ocakavanych CAM v klzavom okne, inak je kvalita nezname
-    bool known = m_xg_qos && m_q_exp[0] >= kQmin && m_q_exp[1] >= kQmin;
+    const double kQmin = m_xg_clean ? 10 : 20; // najmenej ocakavanych CAM v klzavom okne, inak je kvalita nezname
+    bool known = m_xg_qos && !m_nb_equip && m_q_exp[0] >= kQmin && m_q_exp[1] >= kQmin;
     double r[2] = {known ? m_q_ok[0] / m_q_exp[0] : 0, known ? m_q_ok[1] / m_q_exp[1] : 0};
     double lo = io == 0 ? cw : cn;
+    // datova sada pre predikcny model a vstupy nauceneho modelu
+    xgstats::PredIn in[2];
+    bool useModel = m_xg_pred && !xgstats::predCoef ()[0].empty ();
+    if (xgstats::featLog () || useModel)
+      {
+        double pq[2], pc[2], nb, nbk[2], nbf;
+        int nq[2], nc[2];
+        xgPredict (pq, nq, pc, nc);
+        xgNeighbours (&nb, nbk, &nbf, m_pred_h);
+        double vv = m_client->TraCIAPI::vehicle.getSpeed (m_id);
+        double cc[2] = {cw, cn};
+        for (int k = 0; k < 2; k++)
+          {
+            double rr = m_q_exp[k] > 0 ? m_q_ok[k] / m_q_exp[k] : 0.5;
+            in[k] = {rr, m_q_exp[k], cc[k], nq[k] ? pq[k] / nq[k] : 0, (double) nq[k], nc[k] ? pc[k] / nc[k] : cc[k],
+                     nb, nbk[k], nbf, vv, m_on_approach ? 1.0 : 0.0, m_next_tls.empty () ? 300.0 : m_next_dist};
+            if (xgstats::featLog ())
+              {
+                auto me = xgstats::vehPos ().find (m_sid);
+                *xgstats::featLog () << now << ',' << m_sid << ',' << (m_main == xghyb::NR) << ',' << k << ',' << in[k].r << ','
+                                     << in[k].qexp << ',' << in[k].cbr << ',' << in[k].remr << ',' << in[k].remn << ','
+                                     << in[k].remc << ',' << nb << ',' << nbk[k] << ',' << nbf << ',' << vv << ',' << in[k].appr
+                                     << ',' << in[k].dist << ',' << m_qc_exp[k] << ',' << m_qc_ok[k] << ','
+                                     << (me != xgstats::vehPos ().end () ? me->second.first : 0) << ','
+                                     << (me != xgstats::vehPos ().end () ? me->second.second : 0) << '\n';
+              }
+          }
+      }
     if (known && m_xg_pred)
       {
         // predikcia (XgPredRat): body trasy o 1, 2, ... XgPredHorizon s; spolahlivost a zataz kazdej technologie =
         // priemer vlastneho sucasneho merania a hodnot mapy v tych bodoch (bunka bez dost dat sa vynecha)
         double pq[2], pc[2];
         int nq[2], nc[2];
-        xgPredict (pq, nq, pc, nc);
+        if (useModel)
+          nq[0] = nq[1] = nc[0] = nc[1] = 0, pq[0] = pq[1] = pc[0] = pc[1] = 0;
+        else
+          xgPredict (pq, nq, pc, nc);
         PRec rec {now, {0, 0}, {r[0], r[1]}, {m_qc_exp[0], m_qc_exp[1]}, {m_qc_ok[0], m_qc_ok[1]}, {nq[0] > 0, nq[1] > 0}};
         double cur[2] = {cw, cn};
         for (int k = 0; k < 2; k++)
           {
-            r[k] = (r[k] + pq[k]) / (1 + nq[k]);
+            if (useModel)
+              {
+                // naučený model: spolahlivost na horizonte; zataz cielovej technologie z mapy (ak ju ma) v priemere so sucasnou
+                r[k] = xgstats::predModel (k, in[k]);
+                cur[k] = (cur[k] + in[k].remc) / 2;
+                rec.map[k] = in[k].remn > 0;
+              }
+            else
+              {
+                r[k] = (r[k] + pq[k]) / (1 + nq[k]);
+                cur[k] = (cur[k] + pc[k]) / (1 + nc[k]);
+              }
             rec.pred[k] = r[k];
-            cur[k] = (cur[k] + pc[k]) / (1 + nc[k]);
           }
         m_pred_q.push_back (rec);
         lo = cur[io];
@@ -772,7 +966,7 @@ namespace ns3
   }
 
   void
-  trafficManagerClient80211p::xgPredict (double q[2], int nq[2], double c[2], int nc[2])
+  trafficManagerClient80211p::xgPredict (double q[2], int nq[2], double c[2], int nc[2], std::vector<std::pair<double, double>> *pts)
   {
     // xgregorm: body, kde auto bude o 1, 2, ... XgPredHorizon s: pri sucasnej rychlosti pozdlz jeho trasy (ako navigacia;
     // pruhy trasy z mapy SUMO, dalsie cesty po pravom pruhu - bunka 20 m je hrubsia nez sirka cesty). Pre kazdu
@@ -843,6 +1037,8 @@ namespace ns3
           }
         if (!ok)
           break; // trasa konci skor nez horizont
+        if (pts)
+          pts->push_back ({x, y});
         xgstats::RemCell *cell = xgstats::remAt (x, y, false);
         if (!cell)
           continue;
@@ -862,12 +1058,86 @@ namespace ns3
       }
   }
 
+  void
+  trafficManagerClient80211p::xgRemAdd (double x, double y, int k, double exp, double ok, double cbr, double cbrN)
+  {
+    // meranie do mapy kvality: bez hlaseni rovno do zdielanej mapy, s --rem-period do pamate auta (odide hlasenim)
+    if (xgstats::remPeriod () <= 0 || !m_rem_sock)
+      {
+        xgstats::RemCell *c = xgstats::remAt (x, y, true);
+        c->exp[k] += exp;
+        c->ok[k] += ok;
+        c->cbr[k] += cbr;
+        c->cbrN[k] += cbrN;
+        return;
+      }
+    xgstats::RemDelta &d = m_rem_buf[{(int) std::floor (x / xgstats::remCell ()), (int) std::floor (y / xgstats::remCell ())}];
+    d.exp[k] += exp;
+    d.ok[k] += ok;
+    d.cbr[k] += cbr;
+    d.cbrN[k] += cbrN;
+  }
+
+  void
+  trafficManagerClient80211p::xgRemFlush (double now)
+  {
+    // hlasenie cez LTE: hlavicka 20 B + 16 B na bunku (id bunky, 2 technologie: spolahlivost, pocet, CBR) + 44 B BTP/GN a IP/UDP
+    // sa nepouzije - ide cez IP; +93 B digest podpisu ako ostatne spravy. Do mapy sa dostane o remDelay neskor.
+    if (xgstats::remPeriod () <= 0 || !m_rem_sock || now - m_rem_last < xgstats::remPeriod () || m_rem_buf.empty ())
+      return;
+    m_rem_last = now;
+    uint32_t bytes = 20 + 16 * m_rem_buf.size () + 93;
+    m_rem_sock->Send (Create<Packet> (bytes));
+    if (xgstats::measuring ())
+      {
+        xgstats::remTx ()[0]++;
+        xgstats::remTx ()[1] += bytes;
+      }
+    xgstats::RemBuf b;
+    b.swap (m_rem_buf);
+    Simulator::Schedule (Seconds (xgstats::remDelay ()), [b] () { xgstats::remApply (b); });
+  }
+
+  void
+  trafficManagerClient80211p::xgNeighbours (double nb[1], double nbk[2], double nbf[1], double h)
+  {
+    // susedia z toho, co auto vie z ich CAM (poloha, rychlost, smer): teraz do 100 m, po technologiach podla ich znacky,
+    // a odhad o h s (poloha + rychlost * h, u mna aj u nich; "lokalna dynamicka mapa")
+    double now = Simulator::Now ().GetSeconds ();
+    auto me = xgstats::vehPos ().find (m_sid);
+    nb[0] = nbk[0] = nbk[1] = nbf[0] = 0;
+    if (me == xgstats::vehPos ().end ())
+      return;
+    double mx = me->second.first, my = me->second.second;
+    if (m_my_t >= 0 && now > m_my_t)
+      {
+        m_my_vx = (mx - m_my_x) / (now - m_my_t);
+        m_my_vy = (my - m_my_y) / (now - m_my_t);
+      }
+    m_my_x = mx, m_my_y = my, m_my_t = now;
+    double fx = mx + m_my_vx * h, fy = my + m_my_vy * h;
+    for (const auto &e : m_qst)
+      {
+        const QSt &s = e.second;
+        if (now - s.t > 1.5)
+          continue;
+        if (std::hypot (s.x - mx, s.y - my) <= 100)
+          {
+            nb[0]++;
+            nbk[0] += s.has[0];
+            nbk[1] += s.has[1];
+          }
+        if (std::hypot (s.x + s.vx * h - fx, s.y + s.vy * h - fy) <= 100)
+          nbf[0]++;
+      }
+  }
+
   int
   trafficManagerClient80211p::xgMark ()
   {
     // znacka odosielanej CAM: priame technologie, ktorymi auto prave posiela (bez skusky 802.11p z NR - ta nie je
     // suvisly prud) + poradove cislo CAM mod 64
-    int p = xgPathNow ();
+    int p = m_xg_clean ? xgEffectivePath () : xgPathNow ();
     int m = ((p & xghyb::WIFI) ? 0x80 : 0) | ((p & xghyb::NR) ? 0x40 : 0) | (m_tx_seq & 63);
     m_tx_seq++;
     return m;
@@ -882,6 +1152,10 @@ namespace ns3
     Address from;
     while ((p = socket->RecvFrom (from)))
       {
+        // xgregorm: --zones - lokalne zhorsenie prijmu
+        auto mz = xgstats::vehPos ().find (m_sid);
+        if (mz != xgstats::vehPos ().end () && xgstats::zoneDrop (socket == m_socket ? 0 : 1, mz->second.first, mz->second.second))
+          continue;
         m_rx_mark = -1;
         if (p->GetSize () >= 6)
           {
@@ -952,6 +1226,21 @@ namespace ns3
     // susedia do 100 m (ako skutocne PRR); poloha odosielatela je v jeho CAM, v simulacii zo vzorky SUMO (~100 ms)
     auto &vp = xgstats::vehPos ();
     auto me = vp.find (m_sid), he = vp.find (sender);
+    if (he != vp.end ())
+      {
+        // poloha a rychlost suseda (v realite v jeho CAM) pre odhad susedov o chvilu
+        if (st.pt >= 0 && r.t0 - st.pt >= 0.05)
+          {
+            st.vx = (he->second.first - st.x) / (r.t0 - st.pt);
+            st.vy = (he->second.second - st.y) / (r.t0 - st.pt);
+          }
+        if (st.pt < 0 || r.t0 - st.pt >= 0.05)
+          {
+            st.x = he->second.first;
+            st.y = he->second.second;
+            st.pt = r.t0;
+          }
+      }
     bool near = me != vp.end () && he != vp.end ()
                 && std::hypot (me->second.first - he->second.first, me->second.second - he->second.second) <= 100;
     // NR sidelink bearer vznika az v case nrFrom (autori: 2 s) - dovtedy sa NR nemeria (artefakt nastavenia)
@@ -964,14 +1253,12 @@ namespace ns3
           bool ok = r.got[k] && r.lat[k] <= m_lat_budget;
           m_q_exp[k] += e;
           m_q_ok[k] += ok;
-          if (m_xg_pred)
+          if (m_xg_pred || xgstats::featLog ())
             {
               // mapa kvality: meranie patri do bunky, kde auto (prijimac) prave je
               m_qc_exp[k] += e;
               m_qc_ok[k] += ok;
-              xgstats::RemCell *c = xgstats::remAt (me->second.first, me->second.second, true);
-              c->exp[k] += e;
-              c->ok[k] += ok;
+              xgRemAdd (me->second.first, me->second.second, k, e, ok, 0, 0);
             }
           if (r.t0 >= xgstats::warmup ())
             {

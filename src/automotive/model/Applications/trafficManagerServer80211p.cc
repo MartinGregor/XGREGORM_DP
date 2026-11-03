@@ -97,7 +97,7 @@ namespace ns3
             "Adaptive hybrid: period of the RSU beacon listing the CAMs heard over each direct technology [ms]",
             UintegerValue (200),
             MakeUintegerAccessor (&trafficManagerServer80211p::m_xg_beacon_ms),
-            MakeUintegerChecker<uint32_t> (1))
+            MakeUintegerChecker<uint32_t> (0))
         .AddAttribute ("XgHybrid",
             "Hybrid 802.11p + LTE: 1 = also receive CAMs relayed from the cellular network over the wired backhaul "
             "(UDP port 9); 2 = in addition send beacons with the list of CAMs heard over 802.11p (link-quality "
@@ -286,6 +286,8 @@ namespace ns3
 
     // xgregorm: merania (presnost informacie RSU, uplink) - len citanie zo SUMO
     m_xg_rsu.id = m_id;
+    if (!xgstats::rsuEqIdx ().empty ())
+      m_xg_rsu_eq = xgstats::rsuEqIdx ()[std::stol (m_id.substr (4)) % xgstats::rsuEqIdx ().size ()];
     m_xg_rsu.x = rsuPosXY.x;
     m_xg_rsu.y = rsuPosXY.y;
     if (!m_tls_lane_map.empty ())
@@ -294,6 +296,8 @@ namespace ns3
         for (auto &e : m_tls_lane_map.begin ()->second)
           m_xg_rsu.approaches.insert (e);
       }
+    if (!m_xg_rsu.tls.empty ())
+      xgstats::rsuEqTls ()[m_xg_rsu.tls] = m_xg_rsu_eq;
     m_xg_rsu.believedEdge = &m_veh_position;
     xgstats::registerRsu (&m_xg_rsu, m_client);
 
@@ -315,8 +319,9 @@ namespace ns3
         xremote.SetProtocol (XG_ETHERTYPE);
         m_xg_socket->Connect (xremote);
         Ptr<UniformRandomVariable> off = CreateObject<UniformRandomVariable> ();
-        m_xg_beacon_ev = Simulator::Schedule (MilliSeconds (off->GetInteger (0, m_xg_beacon_ms)),
-                                              &trafficManagerServer80211p::xgSendBeacon, this);
+        if (m_xg_beacon_ms > 0) // xgregorm: 0 = bez beaconu (cista politika XgClean)
+          m_xg_beacon_ev = Simulator::Schedule (MilliSeconds (off->GetInteger (0, m_xg_beacon_ms)),
+                                                &trafficManagerServer80211p::xgSendBeacon, this);
       }
 
     // xgregorm: hybrid - CAM, ktore auta poslali cez LTE, preposiela server v sieti po kabli; idu do tej
@@ -445,6 +450,12 @@ namespace ns3
     if (InetSocketAddress::IsMatchingType (address))
       path = Ipv4Mask ("255.255.255.0").IsMatch (InetSocketAddress::ConvertFrom (address).GetIpv4 (),
                                                   Ipv4Address ("10.10.0.0")) ? 1 : 2;
+    // xgregorm: --zones - lokalne zhorsenie prijmu aj na RSU
+    if (m_xg_hybrid && path != 1 && xgstats::zoneDrop (path == 0 ? 0 : 1, m_xg_rsu.x, m_xg_rsu.y))
+      return;
+    // xgregorm: napad 3 - RSU bez technologie jej CAM neprijme
+    if (m_xg_hybrid && !xgstats::rsuEqIdx ().empty () && ((path == 0 && !(m_xg_rsu_eq & xghyb::WIFI)) || (path == 2 && !(m_xg_rsu_eq & xghyb::NR))))
+      return;
     xgstats::onCamRx (&m_xg_rsu, stationId, gdt, path);
     if (m_xg_hybrid)
       {

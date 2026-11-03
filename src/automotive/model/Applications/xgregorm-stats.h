@@ -17,6 +17,7 @@
 #ifndef XGREGORM_STATS_H
 #define XGREGORM_STATS_H
 
+#include <fstream>
 #include "ns3/simulator.h"
 #include "ns3/traci-client.h"
 #include <map>
@@ -229,6 +230,87 @@ remAt (double x, double y, bool create)
       c.t = now;
     }
   return &c;
+}
+// xgregorm 2026-11-02: hlasenia do mapy kvality (--rem-period X > 0): auto meria do vlastnej pamate a raz za X s posle
+// hlasenie cez LTE (skutocny paket); do mapy sa dostane az potom. 0 = okamzita zdielana pamat (idealizacia, starsie behy).
+inline double &remPeriod () { static double p = 0; return p; }
+inline double &remDelay () { static double d = 0.05; return d; }
+inline std::array<uint64_t, 2> &remTx () { static std::array<uint64_t, 2> a {}; return a; } // hlasenia, bajty (po warmup)
+struct RemDelta
+{
+  double exp[2] = {0, 0}, ok[2] = {0, 0}, cbr[2] = {0, 0}, cbrN[2] = {0, 0};
+};
+using RemBuf = std::map<std::pair<int, int>, RemDelta>;
+inline void
+remApply (const RemBuf &b)
+{
+  for (const auto &e : b)
+    {
+      RemCell *c = remAt ((e.first.first + 0.5) * remCell (), (e.first.second + 0.5) * remCell (), true);
+      for (int k = 0; k < 2; k++)
+        {
+          c->exp[k] += e.second.exp[k];
+          c->ok[k] += e.second.ok[k];
+          c->cbr[k] += e.second.cbr[k];
+          c->cbrN[k] += e.second.cbrN[k];
+        }
+    }
+}
+// xgregorm: napad 3 - vybava RSU: index RSU -> technologie (1 802.11p, 4 NR); prazdne = vsetky oba; semafor -> vybava (mapa)
+inline std::vector<int> &rsuEqIdx () { static std::vector<int> v; return v; }
+inline std::map<std::string, int> &rsuEqTls () { static std::map<std::string, int> m; return m; }
+// xgregorm: lokalne zhorsenie (--zones): v kruhu sa prijem technologie k v danom case strati s pravdepodobnostou p.
+// Kontrolovany experiment (rusenie, stavba, lokalny vypadok), nie fyzikalny model; zhorsenie je viazane na miesto, takze
+// sa ho mapa kvality moze naucit. Plati pre prijem CAM (auta, RSU) aj dalsej prevadzky.
+struct Zone
+{
+  double x, y, r, t0, t1, p;
+  int k;
+};
+inline std::vector<Zone> &zones () { static std::vector<Zone> z; return z; }
+inline Ptr<UniformRandomVariable> &zoneRnd () { static Ptr<UniformRandomVariable> r; return r; }
+inline bool
+zoneDrop (int k, double x, double y)
+{
+  if (zones ().empty ())
+    return false;
+  double now = Simulator::Now ().GetSeconds ();
+  for (const Zone &z : zones ())
+    if (z.k == k && now >= z.t0 && now < z.t1 && std::hypot (x - z.x, y - z.y) <= z.r)
+      return zoneRnd ()->GetValue () < z.p;
+  return false;
+}
+// datova sada pre ucenie predikcneho modelu (--feat-log): CSV, jeden riadok za auto a technologiu raz za 1 s
+inline std::ofstream *&featLog () { static std::ofstream *f = nullptr; return f; }
+// naucený model (--pred-model): spolahlivost technologie k = sigmoid (suma beta_i x_i); beta[k] prazdne = bez modelu
+inline std::array<std::vector<double>, 2> &predCoef () { static std::array<std::vector<double>, 2> c; return c; }
+struct PredIn
+{
+  double r, qexp, cbr, remr, remn, remc, nb, nbk, nbf, v, appr, dist;
+};
+inline double
+predLogit (double p)
+{
+  p = std::min (0.98, std::max (0.02, p));
+  return std::log (p / (1 - p));
+}
+// ROVNAKE priznaky musi pocitat xgregorm_pred_train.py (funkcia features)
+inline std::array<double, 12>
+predFeatures (const PredIn &i)
+{
+  double lr = predLogit (i.r);
+  return {1.0, lr, i.remn > 0 ? predLogit (i.remr) : lr, i.remn > 0 ? 1.0 : 0.0, i.cbr, i.remc,
+          std::min (i.nb, 40.0) / 20, std::min (i.nbk, 40.0) / 20, std::min (i.nbf, 40.0) / 20, i.v / 14,
+          i.appr, std::min (i.dist, 300.0) / 300};
+}
+inline double
+predModel (int k, const PredIn &i)
+{
+  std::array<double, 12> x = predFeatures (i);
+  double s = 0;
+  for (size_t j = 0; j < x.size () && j < predCoef ()[k].size (); j++)
+    s += predCoef ()[k][j] * x[j];
+  return 1 / (1 + std::exp (-s));
 }
 // presnost predikcie (len po warmup): predikovana spolahlivost na nasledujuci horizont vs. potom namerana autom;
 // [k][0] = predikcia z mapy, [k][1] = "zostane ako teraz" (sucasne meranie, zaklad pre porovnanie)
