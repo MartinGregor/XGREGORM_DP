@@ -253,7 +253,7 @@ python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --run hybrid -
   História začína čistým snapshotom VaN3Twin `0e70bb36` bez histórie autorov; README autorov je
   v `README_VaN3Twin.md`. Lokálna vetva `master` + remote `origin` = pôvodný VaN3Twin, do `dp` nepushovať.
 - Novinky od autorov preberať len ako zmeny súborov, nikdy merge z `origin` (natiahol by ich históriu).
-- **Pred každým commitom/pushom sa opýtaj.** Zmeny v projekte zapisuj do tohto súboru (Denník nižšie).
+- Pred commitom/pushom sa opýtaj; **výnimka od používateľa z 2026-11-03: počas tejto fronty sa po etapách commituje a pushuje do `dp/main` bez pýtania**, rozbehnuté série a dočasné priečinky sa nepridávajú. Zmeny v projekte zapisuj do tohto súboru (Denník nižšie).
 - `*:Zone.Identifier` (metadáta Windows) sú v `.gitignore`.
 
 ## Denník zmien a overení
@@ -1094,6 +1094,20 @@ python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --run hybrid -
 
   Bez učenia na rovnakom scenári (samostatný rez, GBM s mapou): A -> B oproti persistencii −0.0005, A + B -> C **−0.016** (so správami −0.007), teda **presun na nevidené podmienky je hlavná slabina** a modely musia vidieť aj zmeny. GRU a logit nepriniesli výhodu oproti GBM. MLP so správami je pri učení na všetkých scenároch v C mierne lepší (bez mapy 0.7967 oproti 0.7951), v A, B a T je však horší (0.7914, 0.8669, 0.8803 oproti 0.7918, 0.8690, 0.8822), preto ostáva GBM. Na neznáme rozloženie boli GRU aj MLP horšie než persistencia (GRU A -> B −0.0056). Do siete nejdú. Kalman je prakticky ako persistencia (C +0.0023). Najsilnejšie vstupy bez mapy: `r`, `spatr` (SPATEM po technológiách), `dist`, `cpmn`, `cpmobj`. V T nepredikuje nič: model získa +0.0008, presnosť rozhodnutia 0.61 oproti 0.59, hoci teoretický strop je +0.0285 (strop je optimistický, obsahuje aj náhodný šum vzoriek). **Horná hranica pre T zo záznamov teda existuje, ale z dostupných vstupov sa nedá využiť.** Stromy: 200 stromov, 6200 listov, 28 vstupov, na záznamoch C++ a Python bez rozdielu (65 tisíc riadkov), súbor 0.4 MB, jedna predikcia ~200 porovnaní × hĺbka stromu.
   Nové voľby `--pred-gbm` (stromy, `xgregorm-gbm.h`, `xgregorm_gbm_export.py`) a `--bandit-probe`. Referencia po prebudovaní bez zmeny (`EXP:2129,RX:2129`, `N:2966,BYTES:323086`). Spustená séria `dev7` (plán, časť 9).
+- **2026-11-04** – **Siedma ladiaca séria `dev7`: naučené stromy a bandit v simulácii siete** (30 behov, žiadny nezlyhal, 23:17-05:52, 6 naraz, seedy 101-103, 120 s, od 30 s, 0 porušení ETSI; definícia pred behmi v pláne, časť 9). Q pri A, B, C, T je z dev6. Priemer, PRR / CPM spolu / uplink / presuny na auto za min:
+
+  | | MIX | Q | GS | O3 | B2 |
+  |---|---|---|---|---|---|
+  | A | – | 0.780 / 0.713 / 0.900 / 0.98 | 0.769 / 0.695 / 0.896 / 0.35 | – | 0.771 / 0.699 / 0.895 / 0.94 |
+  | B | – | 0.883 / 0.814 / 0.931 / 1.37 | 0.878 / 0.810 / 0.925 / 0.35 | – | – |
+  | C | – | 0.789 / 0.711 / 0.898 / 1.22 | 0.779 / 0.697 / 0.889 / 0.66 | – | 0.780 / 0.704 / 0.891 / 1.32 |
+  | T | – | 0.908 / 0.833 / 0.958 / 1.69 | 0.905 / 0.838 / 0.958 / 0.18 | – | – |
+  | **D** (nevidený) | 0.734 / 0.704 / 0.841 | 0.821 / 0.755 / 0.906 / 1.14 | **0.808** / 0.743 / 0.897 / 0.54 | 0.841 / 0.814 / 0.938 / 0.66 | – |
+
+  Párovo, PRR, 95 % interval, n = 3: **D (rozhodujúci): GS − Q −0.0133 (−0.0187, −0.0080)**, CPM −0.012 (−0.032, +0.007), uplink −0.009 (−0.017, −0.001); Q − MIX +0.0866 (+0.0744, +0.0988); O3 − Q +0.0199 (+0.0130, +0.0269), CPM +0.059. A: GS − Q −0.0113 (−0.0178, −0.0049). B: −0.0048 (−0.0315, +0.0219). C: −0.0093 (−0.0258, +0.0071). T: −0.0038 (−0.0058, −0.0018), CPM +0.004 (−0.005, +0.014), presuny 1.69 -> 0.18 na auto za min. Bandit s plnými skúškami: AB2 − AQ −0.0087 (−0.0168, −0.0006), AB2 − AB +0.0230 (+0.0106, +0.0355), CB2 − CQ −0.0091 (−0.0223, +0.0041), CB2 − CB +0.0261 (+0.0245, +0.0276).
+  PRR v úsekoch D, 30-50 / 50-65 / 65-85 / 85-100 / 100-120 s: MIX 0.641 / 0.778 / 0.771 / 0.777 / 0.762; Q 0.752 / 0.809 / 0.863 / 0.863 / 0.867; GS 0.731 / **0.821** / 0.837 / 0.864 / 0.842; O3 0.790 / 0.844 / 0.859 / 0.882 / 0.871. C, 30-60 / 60-75 / 75-90 / 90-105 / 105-120 s: Q 0.757 / 0.747 / 0.814 / 0.857 / 0.856; GS 0.745 / **0.778** / 0.817 / 0.830 / 0.806.
+  **Závery:** (1) **GS kritérium nesplnil, v D je preukázateľne horší než Q.** Výber podľa aktuálnej kvality ostáva najlepšou realizovateľnou politikou. (2) GS má menej ako polovicu presunov a tesne po zmene zón je lepší (C 60-75 s +0.031, D 50-65 s +0.012, jeden úsek a 3 seedy, bez testu po úsekoch), v ustálenom stave však stráca (C 105-120 s −0.050, D 100-120 s −0.025). (3) **Rozpor záznamy a sieť:** tie isté modely na záznamoch DQ, ktoré nevideli, volia lepšie než persistencia (po seedoch 0.8234 / 0.8137 / 0.8359 oproti 0.8194 / 0.8068 / 0.8311), MAE 0.076-0.079 oproti 0.101-0.105. Na záznamoch z vlastných behov DGS je to podobne (+0.003 až +0.006), no PRR v sieti klesne. Lepšia predikcia sa teda do siete neprenáša. Možné vysvetlenie, zatiaľ neoverené: spoľahlivosť v zázname je to, čo auto samo prijíma, a do PRR sa premieta nepriamo; predikcia zužuje rozdiel medzi technológiami (rozdiel aspoň 0.05 v 50-55 % oproti 72-74 % prípadov v D, v T 12-17 % oproti 47-51 %), takže auto reaguje pomalšie. (4) **Bandit neuspel ani s plnými skúškami:** väčšinu straty z dev6 vysvetľuje úbytok skúšok (+0.023 a +0.026), samotné pravidlo však ani potom Q neprekoná (A preukázane horšie). Úloha uzavretá. (5) Model sa po pohľade na D nemenil a menený nebude. Záznamy: `xgregorm_logs/dev7/`, CSV len na disku.
+  Spustené: `final1` (120 behov), po nej reťazou `xgregorm_chain2.sh` `final2` a `idea1` až `idea5`, definície v pláne, časť 9. Bez zásahu do C++.
 - Pozn.: v sekcii „Tok komunikácie“ je prehľad, čo ide cez ns-3 (CAM, kábel RSU-RSU) a čo cez
   TraCI (RSU -> semafor, mapa).
 
