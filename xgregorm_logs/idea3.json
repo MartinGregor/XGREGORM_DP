@@ -1,0 +1,18 @@
+{
+ "out": "idea3",
+ "jobs": 6,
+ "seeds": [
+  201,
+  202,
+  203,
+  204,
+  205
+ ],
+ "base": "--map city-center --vehicles 140 --sim-time 120 --warmup 30 --run hybrid --channel urban --security 1 --spat 1 --cpm-share 1.0 --coex 1 --dcc 1 --nr-cr 1 --phone-share 0.5 --phone-kbps 20 --lte-bw 50 --wifi-bcast-rate 6 --nr-freq 5.885e9 --nr-bw 20 --wifi-rx-min -88",
+ "configs": {
+  "RF1": "--clean 1 --init-main 0 --rsu-equip W,N",
+  "I3a": "--clean 1 --init-main 0 --rsu-equip W,N --rsu-route 1",
+  "RF2": "--clean 1 --init-main 0 --rsu-equip W,N,WN",
+  "I3b": "--clean 1 --init-main 0 --rsu-equip W,N,WN --rsu-route 1"
+ }
+}

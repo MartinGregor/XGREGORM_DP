@@ -3,10 +3,11 @@
 Zapísané 2026-11-02 po zastavení behov. Tento súbor hovorí, **kde sa práca zastavila, ako v nej pokračovať
 a čo všetko sa spravilo**. Podrobné tabuľky a závery sú v Denníku v `CLAUDE.md`, pravidlá projektu tiež tam.
 
-## 0. Aktuálny stav (2026-11-03, má prednosť pred zvyškom súboru)
+## 0. Aktuálny stav (2026-11-04, má prednosť pred zvyškom súboru)
 
 Platí plán `xgregorm_PLAN_PREDIKCIA.md` a fronta v jeho časti 9, výsledky v Denníku v `CLAUDE.md`. Séria `ser.sh` (RE až MP) a porovnanie DCC sa v starej konfigurácii **nedopúšťajú**: kalibrácia ukázala, že konfigurácia so 3 Mbit/s a NR 40 MHz bola skreslená. Základná konfigurácia je C6U + `--wifi-rx-min -88`.
-Počítač: Ryzen 7 9800X3D, WSL 12 vlákien, 20 GB (`.wslconfig` 22 GB, uplatní sa po `wsl --shutdown`). Hotové série: dev, dev2 až dev6 a výber algoritmu na záznamoch. Beží: `dev7` (30 behov, `xgregorm_logs/dev7.json`; po prerušení znova `xgregorm_logs/xgregorm_start.sh $PWD/xgregorm_logs/dev7.json`, hotové behy preskočí). Počas série sa nesmie meniť C++ ani `xgregorm_gen_scenario.py`. Po dev7 sám naštartuje `final1` (`xgregorm_logs/xgregorm_chain.sh`, 120 behov); ak bol WSL reštartovaný, spustiť `dev7` a `final1` znova tým istým spúšťačom.
+Počítač: Ryzen 7 9800X3D, WSL 12 vlákien, 20 GB (`.wslconfig` 22 GB, uplatní sa po `wsl --shutdown`). Hotové série: dev, dev2 až dev7 a výber algoritmu na záznamoch. Výsledok dev7: naučené stromy aj bandit kritérium nesplnili, najlepšia realizovateľná politika ostáva Q.
+**Beží (od 2026-11-04 05:52, odhad spolu ~71 h):** `final1` (120 behov), potom sama `final2` (80) a `idea1` až `idea5` (40, 20, 20, 15, 15), reťaz `xgregorm_logs/xgregorm_chain2.sh`. Po prerušení, napr. reštarte Windows: `xgregorm_logs/xgregorm_start.sh $PWD/xgregorm_logs/<seria>.json` pre rozbehnutú sériu a potom znova `xgregorm_chain2.sh` na pozadí; hotové behy sa preskočia. Počas behu sa nesmie meniť C++ ani `xgregorm_gen_scenario.py`. Skripty vyhodnotenia meniť možno.
 
 Časti 1 až 4 nižšie opisujú stav z 2026-11-02 a ostávajú ako história.
 

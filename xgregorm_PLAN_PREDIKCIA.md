@@ -165,3 +165,22 @@ Horná hranica z časti 8a platí len pre zóny; pre preťaženie z premávky ju
 - Bandit: AB2 a CB2 = bandit s plnými skúškami, oddeľujú, či za horšie PRR z dev6 môže úbytok skúšok, alebo samotné pravidlo.
 
 **Finálna séria, referencie `final1` (2026-11-03, stanovené pred dev7, nezávislé od jej výsledku; seedy 1-10, 120 s, od 30 s):** scenáre A, C, D, T × politiky Q, MIX, PM, spolu 120 behov, odhad 27 h. `xgregorm_logs/xgregorm_chain.sh` ich spustí sám po dobehnutí dev7, aby výpočet nestál, ak Claude práve nebeží. Po vyhodnotení dev7 sa doplní víťaz (`final2`, modely učené len na ladiacich seedoch) a referencia O3. Scenár B a čisté W, N sa do finálnej série nezaraďujú kvôli času; A a C pokrývajú zóny, W a N ostávajú z ladiacich sérií.
+
+**Výsledok `dev7` (2026-11-04, Denník):** GS kritérium nesplnil, D: GS − Q −0.0133 PRR (−0.0187, −0.0080). Bandit neuspel ani s plnými skúškami. **Víťaz nad Q teda nie je.** Do finálnej série ide GS ako neúspešný kandidát, aby sa výsledok potvrdil na nových seedoch, nie ako víťaz.
+
+**Finálna séria, `final2` (2026-11-04, stanovené pred behmi; seedy 1-10, rovnaké podmienky ako `final1`, 80 behov, odhad 18 h):**
+- `DGS`, `TGS`: modely z dev7 **bez zmeny a bez preučenia**, seed s používa `gs_s(101 + (s−1) mod 3)` (`xgregorm_logs/dev7_models/final2/`), aby žiadny model nebol vybraný podľa výsledku na D. Porovnanie s `DQ`, `TQ` z `final1`.
+- `AO0`, `AO3`, `CO0`, `CO3`, `DO0`, `DO3`: referencie podľa časti 8a. O3 − O0 je hranica pozerania dopredu, O3 − Q ostáva zmes hodnoty znalosti a chýbajúcich skúšok. T nemá zóny, orákulum tam nemá čo poznať, preto sa nespúšťa. Odchýlka oproti pôvodnému zámeru: pridané O0, bez neho sa hranica z časti 8a nedá určiť.
+- Vyhodnotenie: párovo, n = 10, 95 % interval, Holm pre vedľajšie metriky, kritérium ako v časti 9. Rozhodne sa bez ohľadu na smer výsledku.
+
+**Samostatné overenie nápadov 1-5, `idea1` až `idea5` (2026-11-04, stanovené pred behmi; vlastné seedy 201-205, nikdy nepoužité na ladenie, základ ako finálna séria bez zón, 120 s, od 30 s; 115 behov, odhad 26 h):**
+
+| Séria | Referencie | Varianty | Poznámka |
+|---|---|---|---|
+| `idea1` | FW, FN, MIX, Q, ALL (`--policy all`) | I1a, I1b, I1c = `--dcc-offload` 20, 50, 100 ms | spoločné základy z časti 8 pre všetky nápady |
+| `idea2` | EF1, EF2 = rovnaká zmes bez výberu | I2a, I2b = `--nb-equip 1`; zmes 1 W 0.3, N 0.2, WN 0.3, NONE 0.2; zmes 2 W 0.25, N 0.25, WN 0.5 | referencie FW a pod. tu neplatia, výbava je iná |
+| `idea3` | RF1, RF2 = RSU bez výberu podľa trasy | I3a, I3b = `--rsu-route 1`; RSU W,N a W,N,WN | |
+| `idea4` | FW z `idea1` | I4a, I4b, I4c = `--dup-near` 30, 60, 100 m | |
+| `idea5` | FW z `idea1` | I5a, I5b, I5c = `--geo-rat` 30, 60, 100 m | |
+
+Každá varianta vychádza z 802.11p (`--clean 1 --init-main 0`), ako v `dev`. Úspech voči vlastnej referencii: PRR aspoň +0.01, 95 % interval bez nuly (n = 5), nehoršie CPM a LTE, pri viacerých variantoch Holm. Porovnanie s Q sa uvedie tiež, nápady 2 a 3 majú inú výbavu, takže s Q sa porovnať priamo nedajú. Hodnoty 50 a 60 sú z `dev`, ostatné sú zvolené vopred, bez ladenia. Nápad 6 ostáva len v ladiacej sérii.
