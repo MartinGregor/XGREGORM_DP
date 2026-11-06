@@ -99,12 +99,12 @@ Všetky budú porovnané s rovnakými základmi (čisté 802.11p, čisté NR, 50
 
 | # | Mechanizmus | Princíp | Stav |
 |---|---|---|---|
-| 1 | DCC po správach | Správa, ktorá by čakala na 802.11p dlhšie než rozpočet, ide cez NR | vo fronte |
-| 2 | Výbava susedov | Technológia podľa toho, kam dosiahne viac susedov (zistené z prijatých CAM) | vo fronte |
-| 3 | Výbava RSU na trase | Zo statickej mapy vie auto technológiu ďalšej RSU a prepne vopred | vo fronte |
-| 4 | Selektívna redundancia | Kópia len pri slepej križovatke alebo konfliktnom aute | vo fronte |
-| 5 | Geometria LOS/NLOS | Pred slepou križovatkou technológia odolnejšia za rohom | vo fronte |
-| 6 | Typ správy | CAM, CPM a ďalšie každá technológiou, ktorá jej najviac vyhovuje | vo fronte |
+| 1 | DCC po správach | Správa, ktorá by čakala na 802.11p dlhšie než rozpočet, ide cez NR | overené 2026-11-06: 20 a 50 ms splnené, 100 ms nie |
+| 2 | Výbava susedov | Technológia podľa toho, kam dosiahne viac susedov (zistené z prijatých CAM) | overené 2026-11-06: splnené |
+| 3 | Výbava RSU na trase | Zo statickej mapy vie auto technológiu ďalšej RSU a prepne vopred | overené 2026-11-06: splnené |
+| 4 | Selektívna redundancia | Kópia len pri slepej križovatke alebo konfliktnom aute | overené 2026-11-06: splnené |
+| 5 | Geometria LOS/NLOS | Pred slepou križovatkou technológia odolnejšia za rohom | overené 2026-11-06: splnené |
+| 6 | Typ správy | CAM, CPM a ďalšie každá technológiou, ktorá jej najviac vyhovuje | overené 2026-11-06 (I6R): PRR splnené, CPM horšie než MIX |
 
 Ďalšie nápady, zatiaľ nezaradené: koordinácia cez RSU, minimalizácia veku informácie, kontextový bandit, požadovaný dosah, cesta V2N.
 
@@ -192,3 +192,12 @@ Každá varianta vychádza z 802.11p (`--clean 1 --init-main 0`), ako v `dev`. �
 **Výsledok finálnej série (2026-11-06, Denník):** všetky reaktívne politiky (Q, PM, GS) sú voči 50/50 preukázateľne lepšie vo všetkých scenároch. Q ostáva najlepšia realizovateľná, PM je horšia pri zmenách v čase, GS o 0.005 horšie v D aj T. O3 − O0 je nad prahom 0.01 len v A (+0.011), v C a D pod ním. Nasleduje overenie nápadov `idea1` až `idea6`.
 
 **Zmena spúšťania (2026-11-06):** `idea2` až `idea6` bežia ako jedna séria `idea26` (`xgregorm_logs/idea26.json`, rovnaké konfigurácie, seedy a základ, len spojené), lebo na konci malých sérií stálo 4-5 zo 6 jadier. Na obsahu ani vyhodnotení sa nič nemení, výsledky sú v `xgregorm_logs/idea26/`.
+
+**Výsledok overenia nápadov (2026-11-06, Denník, `xgregorm_idea_eval.py`):** kritérium voči vlastnej referencii splnili I1a, I1b, I2a, I2b, I3a, I3b, I4a-c, I5a-c a I6R voči FW; nesplnilo I1c. I6R má voči MIX horšie CPM (−0.020) a v zónach D voči Q PRR bez preukázaného rozdielu a CPM −0.122. Voči Q: I1a rovnaké PRR aj CPM bez skúšok, I4c +0.010 PRR s CPM ako FW, I6R +0.048 PRR bez zón.
+
+**Celkový záver fronty (2026-11-06, rámec používateľa):**
+1. Bez akejkoľvek reaktívnej logiky (FW, FN, MIX) je PRR najnižšie. Každý overený mechanizmus okrem I1c ho preukázateľne zlepší: reaktívny výber podľa kvality (Q), mapa (PM), naučené stromy (GS) aj nápady 1-6.
+2. Pri lokálnych a meniacich sa zhoršeniach (zóny A, C, D) je najsilnejší reaktívny výber Q (+0.08 až +0.13 PRR voči MIX). Statické pravidlá ako I6R sa nevedia prispôsobiť, mapa zaostáva po zmenách.
+3. Bez zón dávajú jednoduché pravidlá bez merania výsledky ako Q (I1a) alebo lepšie (I6R pri PRR, I4c tesne), každé s inou cenou v CPM a SPATEM.
+4. Predikcia: horná hranica výhľadu je malá (O3 − O0 +0.007 až +0.011), mapa ani naučené stromy ju v sieti nevyužili.
+5. Pri nekompatibilnej výbave (nápady 2 a 3) prináša výber najväčšie zisky: PRR +0.10 až +0.14, vek informácie RSU z 5-7 s na 0.4 s.

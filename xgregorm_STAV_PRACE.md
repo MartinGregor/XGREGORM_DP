@@ -3,7 +3,11 @@
 Zapísané 2026-11-02 po zastavení behov. Tento súbor hovorí, **kde sa práca zastavila, ako v nej pokračovať
 a čo všetko sa spravilo**. Podrobné tabuľky a závery sú v Denníku v `CLAUDE.md`, pravidlá projektu tiež tam.
 
-## 0. Aktuálny stav (2026-11-04, má prednosť pred zvyškom súboru)
+## 0. Aktuálny stav (2026-11-06 23:30, má prednosť pred zvyškom súboru)
+
+**Fronta je dokončená.** Dobehli všetky série vrátane `idea1` a `idea26` (spolu 130 behov, žiadny nezlyhal), nič nebeží. Výsledky nápadov 1-6 sú v Denníku 2026-11-06 a celkový záver fronty v pláne za časťou 9. Ďalší krok rozhodne používateľ (písanie práce alebo nové série). Odstavec nižšie ostáva ako história.
+
+## 0a. Stav z 2026-11-04
 
 Platí plán `xgregorm_PLAN_PREDIKCIA.md` a fronta v jeho časti 9, výsledky v Denníku v `CLAUDE.md`. Séria `ser.sh` (RE až MP) a porovnanie DCC sa v starej konfigurácii **nedopúšťajú**: kalibrácia ukázala, že konfigurácia so 3 Mbit/s a NR 40 MHz bola skreslená. Základná konfigurácia je C6U + `--wifi-rx-min -88`.
 Počítač: Ryzen 7 9800X3D, WSL 12 vlákien, 20 GB (`.wslconfig` 22 GB, uplatní sa po `wsl --shutdown`). Hotové série: dev, dev2 až dev7, výber algoritmu na záznamoch a finálna séria `final1` + `final2` (záverečné porovnanie v Denníku 2026-11-06). Výsledok dev7: naučené stromy aj bandit kritérium nesplnili, najlepšia realizovateľná politika ostáva Q.

@@ -1133,6 +1133,38 @@ python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --run hybrid -
   Vedľajšie metriky: Q − MIX má v A, C, D aj CPM spolu +0.056 až +0.116 a uplink +0.069 až +0.094 (Holm p < 0.001), vek informácie RSU −0.29 až −0.40 s, doručenie SPATEM −0.005 až −0.007 (A a D Holm p < 0.05). V T je CPM −0.004 (Holm p = 0.15), uplink +0.008. PM − MIX a GS − MIX v T: CPM −0.007 (Holm p = 0.002). LTE (bajty CAM, PRB) sa nemení v žiadnom porovnaní. PM − Q v C a D má aj horšie CPM (−0.036, −0.022). GS − Q: CPM v D −0.006 (Holm p = 0.28), v T bez rozdielu, presuny −0.6 a −1.5 na auto za min. O* − Q obsahuje aj chýbajúce skúšky (CPM O0 − Q +0.033 až +0.053).
   PRR v úsekoch D (30-50 / 50-65 / 65-85 / 85-100 / 100-120 s): MIX 0.665 / 0.749 / 0.773 / 0.784 / 0.753; Q 0.745 / 0.801 / 0.861 / 0.858 / 0.867; PM 0.742 / 0.781 / 0.833 / 0.834 / 0.858; GS 0.731 / **0.815** / 0.854 / 0.861 / 0.850; O0 0.777 / 0.844 / 0.863 / 0.876 / 0.867; O3 0.794 / 0.845 / 0.865 / 0.875 / 0.872. C (30-60 / 60-75 / 75-90 / 90-105 / 105-120 s): MIX 0.607 / 0.604 / 0.697 / 0.779 / 0.769; Q 0.761 / 0.725 / 0.843 / 0.851 / 0.864; PM 0.764 / **0.609** / 0.766 / 0.855 / 0.865; O0 0.775 / 0.768 / 0.834 / 0.867 / 0.868; O3 0.790 / 0.772 / 0.840 / 0.869 / 0.870.
   **Závery (potvrdené na nezávislých seedoch):** (1) **Každý reaktívny výber je preukázateľne lepší než stav bez reaktívnej logiky** (50/50): Q +0.081 až +0.134 PRR so zónami, +0.021 bez nich, a v zónach výrazne lepšie aj CPM, uplink a vek informácie. Rovnako PM aj GS. (2) Z realizovateľných politík je najlepšie Q. Mapa je pri zmenách v čase preukázateľne horšia (C −0.029, D −0.015) pre staré hodnoty po zmene (C 60-75 s 0.609 oproti 0.725), pri stálych zónach rovnaká ako Q s o 29 % menej presunmi. GS je o 0.005 horšie v D aj T (dev7 −0.013 a −0.004, smer potvrdený), s polovičným až šestinovým počtom presunov a lepšie tesne po zmene (D 50-65 s +0.014, bez testu po úsekoch). (3) **Horná hranica predikcie:** pozeranie dopredu (O3 − O0) dá najviac +0.007 až +0.011 PRR. Podľa časti 8a je nad prahom 0.01 len v A (+0.0109, dolná hranica intervalu 0.008), v C a D pod ním. Okamžitá znalosť stavu bez skúšok (O0 − Q, +0.010 až +0.021) je väčšia než prínos výhľadu. Priestor medzi Q a dokonalou znalosťou je 0.020 až 0.028 PRR. (4) Bez zón (T) je zisk akéhokoľvek výberu malý, okolo +0.02 PRR, pri miernom zhoršení CPM. Záznamy: `xgregorm_logs/final1/`, `xgregorm_logs/final2/`.
+- **2026-11-06** – **Overenie nápadov 1-6, `idea1` + `idea26`** (130 behov, žiadny nezlyhal, 2026-11-06 01:00 až 23:15, seedy 201-205, ktoré sa nikdy nepoužili na ladenie, základ ako finálna séria bez zón, 120 s, od 30 s, 0 porušení ETSI; definície pred behmi v pláne, časť 9; skript `xgregorm_idea_eval.py`). Priemer, PRR / CPM spolu / uplink (LTE: bajty CAM a PRB sa nemenia okrem ALL):
+
+  | referencie | PRR / CPM / uplink | nápad | PRR / CPM / uplink |
+  |---|---|---|---|
+  | FW (len 802.11p) | 0.855 / 0.773 / 0.922 | I1a / I1b / I1c (DCC offload 20 / 50 / 100 ms) | 0.908 / 0.853 / 0.954; 0.883 / 0.839 / 0.937; 0.853 / 0.795 / 0.920 |
+  | FN (len NR) | 0.752 / 0.735 / 0.860 | I4a / I4b / I4c (kópia blízko 30 / 60 / 100 m) | 0.887 / 0.771 / 0.945; 0.901 / 0.771 / 0.957; 0.918 / 0.770 / 0.974 |
+  | MIX (50/50) | 0.890 / 0.853 / 0.955 | I5a / I5b / I5c (geometria 30 / 60 / 100 m) | 0.885 / 0.837 / 0.948; 0.889 / 0.847 / 0.951; 0.893 / 0.854 / 0.954 |
+  | Q (kvalita) | 0.908 / 0.843 / 0.960 | I6R (CAM cez NR, CPM cez 802.11p) | **0.956** / 0.833 / 0.975 |
+  | ALL (každá CAM všetkým) | 0.945 / 0.739 / 0.998, CAM cez LTE 4.2x | | |
+  | EF1 / EF2 (zmes výbavy) | 0.622 / 0.836 / 0.951; 0.648 / 0.825 / 0.943 | I2a / I2b (výbava susedov) | 0.719 / 0.832 / 0.970; 0.790 / 0.822 / 0.971 |
+  | RF1 / RF2 (RSU W,N / W,N,WN) | 0.861 / 0.793 / 0.603, vek 7.4 s; 0.860 / 0.788 / 0.684, vek 5.4 s | I3a / I3b (RSU na trase) | 0.879 / 0.822 / 0.794, vek 0.43 s; 0.877 / 0.804 / 0.840, vek 0.38 s |
+  | DMIX / DQ (zóny D) | 0.727 / 0.693 / 0.831; 0.817 / 0.766 / 0.903 | DI6R | 0.836 / 0.644 / 0.860 |
+
+  Párovo, PRR, 95 % interval, n = 5, Holm cez varianty nápadu (všetky uvedené úspechy majú upravené p < 0.01):
+
+  | rozdiel voči vlastnej referencii | PRR | CPM spolu | kritérium | voči Q (PRR) |
+  |---|---|---|---|---|
+  | I1a − FW | +0.053 (+0.043, +0.063) | +0.080 | **splnené** | +0.000 (−0.008, +0.009) |
+  | I1b − FW | +0.028 (+0.018, +0.038) | +0.066 | **splnené** | −0.025 |
+  | I1c − FW | −0.002 (−0.006, +0.003) | +0.022 | nesplnené | −0.055 |
+  | I2a − EF1 | +0.097 (+0.080, +0.114) | −0.004 (Holm p = 0.19) | **splnené** | – (iná výbava) |
+  | I2b − EF2 | +0.142 (+0.120, +0.165) | −0.002 (Holm p = 0.14) | **splnené** | – |
+  | I3a − RF1 | +0.018 (+0.012, +0.025) | +0.029, uplink +0.191, vek −6.9 s | **splnené** | – |
+  | I3b − RF2 | +0.017 (+0.014, +0.020) | +0.015, uplink +0.156, vek −5.1 s | **splnené** | – |
+  | I4a / I4b / I4c − FW | +0.032 / +0.046 / +0.063 | −0.002 až −0.003 (n. s.), SPATEM −0.006 až −0.008 | **splnené** | −0.021 / −0.007 / **+0.010** (+0.005, +0.015), CPM −0.073 |
+  | I5a / I5b / I5c − FW | +0.030 / +0.034 / +0.038 | +0.064 / +0.074 / +0.081 | **splnené** | −0.023 / −0.019 / −0.015 |
+  | I6R − FW | +0.101 (+0.095, +0.107) | +0.060 | **splnené** | **+0.048** (+0.045, +0.051), CPM −0.010 (Holm p = 0.21) |
+  | I6R − MIX | +0.066 (+0.065, +0.068) | **−0.020** (Holm p = 0.014) | PRR áno, CPM horšie | |
+  | DI6R − DMIX | +0.109 (+0.079, +0.139) | −0.049 (Holm p = 0.065) | PRR áno, CPM nejasné | DI6R − DQ +0.018 (−0.016, +0.053), CPM **−0.122**, uplink −0.043 |
+
+  Referencie navzájom: Q − FW +0.053, Q − MIX +0.018 (CPM −0.010), MIX − FW +0.035, FN − FW −0.103, ALL − FW +0.090 a ALL − Q +0.037 pri CPM −0.104, SPATEM −0.117 a 4.2x viac CAM cez LTE.
+  **Závery:** (1) Každý nápad okrem I1c splnil vopred stanovené kritérium voči svojej referencii bez reaktívnej logiky. (2) Najväčší zisk bez zón: I6R (+0.101 PRR voči FW, +0.048 voči Q), za cenu CPM o 0.010-0.020 horšieho než pri MIX a Q; v zónach (D) sa I6R nevie prispôsobiť: PRR je ako DQ, CPM o 0.122 horšie. Statické rozdelenie podľa typu správy je teda dobré pri stálych podmienkach, reaktívny výber pri meniacich sa. (3) I1a (správa ide cez NR, keď by na 802.11p čakala na DCC dlhšie než 20 ms) dosiahne PRR aj CPM ako Q bez merania kvality a bez skúšok (0 presunov, 0 skúšok). (4) I4c je jediná varianta s PRR nad Q (+0.010) pri nehoršom LTE, ale CPM zostáva ako pri FW (Q −0.073). (5) Nápady 2 a 3 riešia nekompatibilnú výbavu: výber podľa susedov +0.10 až +0.14 PRR, výber podľa RSU na trase uplink +0.16 až +0.19 a vek informácie RSU z 5-7 s na 0.4 s. (6) Pri I4 je SPATEM o 0.006-0.008 horší, pri I2 CPM bodovo mierne horšie, ale nepreukázane. Záznamy: `xgregorm_logs/idea1/`, `xgregorm_logs/idea26/`.
 - Pozn.: v sekcii „Tok komunikácie“ je prehľad, čo ide cez ns-3 (CAM, kábel RSU-RSU) a čo cez
   TraCI (RSU -> semafor, mapa).
 
