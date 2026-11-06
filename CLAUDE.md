@@ -1108,6 +1108,31 @@ python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --run hybrid -
   PRR v úsekoch D, 30-50 / 50-65 / 65-85 / 85-100 / 100-120 s: MIX 0.641 / 0.778 / 0.771 / 0.777 / 0.762; Q 0.752 / 0.809 / 0.863 / 0.863 / 0.867; GS 0.731 / **0.821** / 0.837 / 0.864 / 0.842; O3 0.790 / 0.844 / 0.859 / 0.882 / 0.871. C, 30-60 / 60-75 / 75-90 / 90-105 / 105-120 s: Q 0.757 / 0.747 / 0.814 / 0.857 / 0.856; GS 0.745 / **0.778** / 0.817 / 0.830 / 0.806.
   **Závery:** (1) **GS kritérium nesplnil, v D je preukázateľne horší než Q.** Výber podľa aktuálnej kvality ostáva najlepšou realizovateľnou politikou. (2) GS má menej ako polovicu presunov a tesne po zmene zón je lepší (C 60-75 s +0.031, D 50-65 s +0.012, jeden úsek a 3 seedy, bez testu po úsekoch), v ustálenom stave však stráca (C 105-120 s −0.050, D 100-120 s −0.025). (3) **Rozpor záznamy a sieť:** tie isté modely na záznamoch DQ, ktoré nevideli, volia lepšie než persistencia (po seedoch 0.8234 / 0.8137 / 0.8359 oproti 0.8194 / 0.8068 / 0.8311), MAE 0.076-0.079 oproti 0.101-0.105. Na záznamoch z vlastných behov DGS je to podobne (+0.003 až +0.006), no PRR v sieti klesne. Lepšia predikcia sa teda do siete neprenáša. Možné vysvetlenie, zatiaľ neoverené: spoľahlivosť v zázname je to, čo auto samo prijíma, a do PRR sa premieta nepriamo; predikcia zužuje rozdiel medzi technológiami (rozdiel aspoň 0.05 v 50-55 % oproti 72-74 % prípadov v D, v T 12-17 % oproti 47-51 %), takže auto reaguje pomalšie. (4) **Bandit neuspel ani s plnými skúškami:** väčšinu straty z dev6 vysvetľuje úbytok skúšok (+0.023 a +0.026), samotné pravidlo však ani potom Q neprekoná (A preukázane horšie). Úloha uzavretá. (5) Model sa po pohľade na D nemenil a menený nebude. Záznamy: `xgregorm_logs/dev7/`, CSV len na disku.
   Spustené: `final1` (120 behov), po nej reťazou `xgregorm_chain2.sh` `final2` a `idea1` až `idea5`, definície v pláne, časť 9. Bez zásahu do C++.
+- **2026-11-06** – **Finálna séria `final1` + `final2`, záverečné porovnanie** (200 behov, žiadny nezlyhal, 2026-11-04 05:52 až 2026-11-06 ~01:00, seedy 1-10, ktoré sa nikdy nepoužili na ladenie, 120 s, od 30 s, 0 porušení ETSI; definície v pláne, časť 9; skript `xgregorm_final_eval.py`). Priemer, PRR / CPM spolu / uplink / presuny na auto za min:
+
+  | | MIX | Q | PM | GS | O0 | O3 |
+  |---|---|---|---|---|---|---|
+  | A | 0.653 / 0.607 / 0.808 | 0.787 / 0.723 / 0.902 / 1.00 | 0.788 / 0.723 / 0.905 / 0.71 | – | 0.796 / 0.756 / 0.911 | 0.807 / 0.768 / 0.925 |
+  | C | 0.661 / 0.615 / 0.807 | 0.790 / 0.721 / 0.899 / 1.32 | 0.761 / 0.685 / 0.874 / 1.14 | – | 0.805 / 0.758 / 0.919 | 0.814 / 0.765 / 0.928 |
+  | D | 0.734 / 0.700 / 0.836 | 0.815 / 0.756 / 0.905 / 1.23 | 0.800 / 0.734 / 0.892 / 0.93 | 0.810 / 0.750 / 0.900 / 0.62 | 0.836 / 0.809 / 0.931 | 0.842 / 0.814 / 0.939 |
+  | T | 0.884 / 0.844 / 0.951 | 0.906 / 0.840 / 0.959 / 1.80 | 0.903 / 0.837 / 0.957 / 0.72 | 0.901 / 0.837 / 0.956 / 0.25 | – | – |
+
+  Párovo, PRR, 95 % interval, n = 10 (Holm pre vedľajšie metriky):
+
+  | rozdiel | A | C | D | T |
+  |---|---|---|---|---|
+  | **Q − MIX** | +0.134 (+0.125, +0.143) | +0.129 (+0.121, +0.137) | +0.081 (+0.074, +0.088) | +0.021 (+0.018, +0.024) |
+  | PM − MIX | +0.136 (+0.125, +0.146) | +0.100 (+0.094, +0.107) | +0.066 (+0.059, +0.073) | +0.019 (+0.016, +0.022) |
+  | GS − MIX | – | – | +0.076 (+0.067, +0.085) | +0.017 (+0.015, +0.018) |
+  | PM − Q | +0.001 (−0.003, +0.006) | **−0.029** (−0.033, −0.025) | **−0.015** (−0.020, −0.010) | −0.003 (−0.006, +0.001) |
+  | GS − Q | – | – | **−0.005** (−0.010, −0.000) | **−0.005** (−0.008, −0.001) |
+  | O0 − Q | +0.010 (+0.006, +0.013) | +0.016 (+0.009, +0.022) | +0.021 (+0.017, +0.025) | – |
+  | **O3 − O0** | +0.011 (+0.008, +0.014) | +0.009 (+0.005, +0.012) | +0.007 (+0.005, +0.008) | – |
+  | O3 − Q | +0.020 (+0.018, +0.023) | +0.024 (+0.017, +0.031) | +0.028 (+0.025, +0.031) | – |
+
+  Vedľajšie metriky: Q − MIX má v A, C, D aj CPM spolu +0.056 až +0.116 a uplink +0.069 až +0.094 (Holm p < 0.001), vek informácie RSU −0.29 až −0.40 s, doručenie SPATEM −0.005 až −0.007 (A a D Holm p < 0.05). V T je CPM −0.004 (Holm p = 0.15), uplink +0.008. PM − MIX a GS − MIX v T: CPM −0.007 (Holm p = 0.002). LTE (bajty CAM, PRB) sa nemení v žiadnom porovnaní. PM − Q v C a D má aj horšie CPM (−0.036, −0.022). GS − Q: CPM v D −0.006 (Holm p = 0.28), v T bez rozdielu, presuny −0.6 a −1.5 na auto za min. O* − Q obsahuje aj chýbajúce skúšky (CPM O0 − Q +0.033 až +0.053).
+  PRR v úsekoch D (30-50 / 50-65 / 65-85 / 85-100 / 100-120 s): MIX 0.665 / 0.749 / 0.773 / 0.784 / 0.753; Q 0.745 / 0.801 / 0.861 / 0.858 / 0.867; PM 0.742 / 0.781 / 0.833 / 0.834 / 0.858; GS 0.731 / **0.815** / 0.854 / 0.861 / 0.850; O0 0.777 / 0.844 / 0.863 / 0.876 / 0.867; O3 0.794 / 0.845 / 0.865 / 0.875 / 0.872. C (30-60 / 60-75 / 75-90 / 90-105 / 105-120 s): MIX 0.607 / 0.604 / 0.697 / 0.779 / 0.769; Q 0.761 / 0.725 / 0.843 / 0.851 / 0.864; PM 0.764 / **0.609** / 0.766 / 0.855 / 0.865; O0 0.775 / 0.768 / 0.834 / 0.867 / 0.868; O3 0.790 / 0.772 / 0.840 / 0.869 / 0.870.
+  **Závery (potvrdené na nezávislých seedoch):** (1) **Každý reaktívny výber je preukázateľne lepší než stav bez reaktívnej logiky** (50/50): Q +0.081 až +0.134 PRR so zónami, +0.021 bez nich, a v zónach výrazne lepšie aj CPM, uplink a vek informácie. Rovnako PM aj GS. (2) Z realizovateľných politík je najlepšie Q. Mapa je pri zmenách v čase preukázateľne horšia (C −0.029, D −0.015) pre staré hodnoty po zmene (C 60-75 s 0.609 oproti 0.725), pri stálych zónach rovnaká ako Q s o 29 % menej presunmi. GS je o 0.005 horšie v D aj T (dev7 −0.013 a −0.004, smer potvrdený), s polovičným až šestinovým počtom presunov a lepšie tesne po zmene (D 50-65 s +0.014, bez testu po úsekoch). (3) **Horná hranica predikcie:** pozeranie dopredu (O3 − O0) dá najviac +0.007 až +0.011 PRR. Podľa časti 8a je nad prahom 0.01 len v A (+0.0109, dolná hranica intervalu 0.008), v C a D pod ním. Okamžitá znalosť stavu bez skúšok (O0 − Q, +0.010 až +0.021) je väčšia než prínos výhľadu. Priestor medzi Q a dokonalou znalosťou je 0.020 až 0.028 PRR. (4) Bez zón (T) je zisk akéhokoľvek výberu malý, okolo +0.02 PRR, pri miernom zhoršení CPM. Záznamy: `xgregorm_logs/final1/`, `xgregorm_logs/final2/`.
 - Pozn.: v sekcii „Tok komunikácie“ je prehľad, čo ide cez ns-3 (CAM, kábel RSU-RSU) a čo cez
   TraCI (RSU -> semafor, mapa).
 
