@@ -1,0 +1,32 @@
+{
+ "out": "idea26",
+ "jobs": 6,
+ "seeds": [
+  201,
+  202,
+  203,
+  204,
+  205
+ ],
+ "base": "--map city-center --vehicles 140 --sim-time 120 --warmup 30 --run hybrid --channel urban --security 1 --spat 1 --cpm-share 1.0 --coex 1 --dcc 1 --nr-cr 1 --phone-share 0.5 --phone-kbps 20 --lte-bw 50 --wifi-bcast-rate 6 --nr-freq 5.885e9 --nr-bw 20 --wifi-rx-min -88",
+ "configs": {
+  "EF1": "--clean 1 --init-main 0 --equip W:0.3,N:0.2,WN:0.3,NONE:0.2",
+  "I2a": "--clean 1 --init-main 0 --nb-equip 1 --equip W:0.3,N:0.2,WN:0.3,NONE:0.2",
+  "EF2": "--clean 1 --init-main 0 --equip W:0.25,N:0.25,WN:0.5",
+  "I2b": "--clean 1 --init-main 0 --nb-equip 1 --equip W:0.25,N:0.25,WN:0.5",
+  "RF1": "--clean 1 --init-main 0 --rsu-equip W,N",
+  "I3a": "--clean 1 --init-main 0 --rsu-equip W,N --rsu-route 1",
+  "RF2": "--clean 1 --init-main 0 --rsu-equip W,N,WN",
+  "I3b": "--clean 1 --init-main 0 --rsu-equip W,N,WN --rsu-route 1",
+  "I4a": "--clean 1 --init-main 0 --dup-near 30",
+  "I4b": "--clean 1 --init-main 0 --dup-near 60",
+  "I4c": "--clean 1 --init-main 0 --dup-near 100",
+  "I5a": "--clean 1 --init-main 0 --geo-rat 30",
+  "I5b": "--clean 1 --init-main 0 --geo-rat 60",
+  "I5c": "--clean 1 --init-main 0 --geo-rat 100",
+  "I6R": "--clean 1 --init-main 1 --cpm-rat W",
+  "DI6R": "--zones 0:150:0:50:N:0.7+3:150:0:50:W:0.7+6:150:0:50:N:0.7+8:150:0:50:W:0.7+1:150:50:85:N:0.7+2:150:50:85:N:0.7+5:150:50:85:W:0.7+7:150:50:85:W:0.7+0:150:85:999:W:0.7+3:150:85:999:N:0.7+4:150:85:999:W:0.7+7:150:85:999:N:0.7 --clean 1 --init-main 1 --cpm-rat W",
+  "DQ": "--zones 0:150:0:50:N:0.7+3:150:0:50:W:0.7+6:150:0:50:N:0.7+8:150:0:50:W:0.7+1:150:50:85:N:0.7+2:150:50:85:N:0.7+5:150:50:85:W:0.7+7:150:50:85:W:0.7+0:150:85:999:W:0.7+3:150:85:999:N:0.7+4:150:85:999:W:0.7+7:150:85:999:N:0.7 --clean 1 --init-main 2 --qos-rat 1 --probe-hz 0.5",
+  "DMIX": "--zones 0:150:0:50:N:0.7+3:150:0:50:W:0.7+6:150:0:50:N:0.7+8:150:0:50:W:0.7+1:150:50:85:N:0.7+2:150:50:85:N:0.7+5:150:50:85:W:0.7+7:150:50:85:W:0.7+0:150:85:999:W:0.7+3:150:85:999:N:0.7+4:150:85:999:W:0.7+7:150:85:999:N:0.7 --clean 1 --init-main 2"
+ }
+}
