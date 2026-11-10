@@ -4,7 +4,11 @@
 (7. 10. 2026) po vyhodnotenie niekoľkodňovej fronty behov (7. 11. 2026). Každé číslo je prevzaté
 z Denníka v `CLAUDE.md` alebo z `xgregorm_PLAN_PREDIKCIA.md`, nič nie je dopočítané navyše.
 
-## Obsah
+**`xgregorm_vysvetlenie_prace.docx`** (Word) vysvetľuje celú prácu úplne jednoducho, bez skratiek:
+o čom je, opravy na začiatku, hustota vs. záťaž vs. kvalita, ako sa dokazuje prínos, zóny, alternatívy,
+výsledky, použiteľnosť v praxi a sľubné smery. Zdroj textu: `zdroj/vysvetlenie.md`.
+
+## Obsah prezentácie
 
 | Časť | Snímky | Čo obsahuje |
 |---|---|---|
@@ -41,3 +45,15 @@ NODE_PATH=$PWD/node_modules node build.js ../xgregorm_priebeh_prace.pptx
 na inom počítači treba túto cestu v hlavičke skriptu upraviť alebo riadok s `applyTheme` vynechať.
 Kontrola: validátor Office XML (bez chýb) a náhľad (bez pretečenia textu). Vizuálna kontrola
 v LibreOffice nebola možná, grafy sa preto overili len obsahom, nie vykreslením.
+
+### Word s vysvetlením
+
+```bash
+cd xgregorm_prezentacia
+npm install docx@9.0.2                                      # do ľubovoľného priečinka, cestu dať do NODE_PATH
+NODE_PATH=<node_modules> node zdroj/build_docx.js zdroj/vysvetlenie.md xgregorm_vysvetlenie_prace.docx
+~/xg_venv/bin/python zdroj/fix_docx.py xgregorm_vysvetlenie_prace.docx   # odstráni nepripojený fontTable.xml
+```
+
+Text sa upravuje v `zdroj/vysvetlenie.md` (nadpisy `#`, zoznamy, tabuľky, **tučné**, *kurzíva*). Overené validátorom
+Office XML; vizuálne vykreslenie nebolo možné (bez LibreOffice).
