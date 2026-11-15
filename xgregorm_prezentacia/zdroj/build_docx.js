@@ -1,9 +1,11 @@
-// Prevod vysvetlenie.md -> Word (.docx). Pouzitie: NODE_PATH=<node_modules s docx@8.5.0> node build_docx.js vysvetlenie.md out.docx
+// Prevod Markdown -> Word (.docx). Pouzitie: NODE_PATH=<node_modules s docx@9.0.2> node build_docx.js a.md [b.md ...] out.docx
+// Kazdy dalsi subor zacina na novej strane.
 // Podporuje: # / ## / ### nadpisy, odseky, zoznamy "- " a "1. ", tabulky "| ... |", **tucne**, *kurziva*.
 const fs = require('fs');
 const d = require('docx');
-const [src, out] = process.argv.slice(2);
-const lines = fs.readFileSync(src, 'utf8').split('\n');
+const args = process.argv.slice(2);
+const out = args.pop();
+const lines = args.map(f => fs.readFileSync(f, 'utf8')).join('\n').split('\n');
 
 const DK = '0B3C49', ACC = '2A9D8F', LIGHT = 'E3F1EF', BORDER = 'B8C2C7';
 const PAGE_W = 11906, MARGIN = 1300, TEXT_W = PAGE_W - 2 * MARGIN;
@@ -21,12 +23,15 @@ function runs(text, base = {}) {
 
 let numInst = 0;
 const children = [];
+let afterTitle = false;
 let i = 0;
 while (i < lines.length) {
   const l = lines[i];
   if (!l.trim()) { i++; continue; }
+  const wasTitle = afterTitle; afterTitle = false;
   if (l.startsWith('# ')) {
-    children.push(new d.Paragraph({ heading: d.HeadingLevel.TITLE, children: runs(l.slice(2)) }));
+    children.push(new d.Paragraph({ heading: d.HeadingLevel.TITLE, pageBreakBefore: children.length > 0, children: runs(l.slice(2)) }));
+    afterTitle = true; i++; continue;
   } else if (l.startsWith('## ')) {
     children.push(new d.Paragraph({ heading: d.HeadingLevel.HEADING_1, children: runs(l.slice(3)) }));
   } else if (l.startsWith('### ')) {
@@ -75,7 +80,7 @@ while (i < lines.length) {
     }
     continue;
   } else {
-    const first = children.length === 1; // podnadpis pod titulom
+    const first = wasTitle; // podnadpis pod titulom
     children.push(new d.Paragraph({ spacing: { after: 140 }, children: runs(l, first ? { italics: true, color: '5C7480' } : {}) }));
   }
   i++;
