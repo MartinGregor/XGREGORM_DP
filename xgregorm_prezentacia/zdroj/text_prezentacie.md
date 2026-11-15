@@ -1,6 +1,6 @@
 # Text k prezentácii: výber siete podľa nameranej kvality
 
-Čo povedať pri každej snímke prezentácie xgregorm_priebeh_prace.pptx (15 snímok). Ten istý text je aj v poznámkach pre prednášajúceho v PowerPointe. Čísla sú prevzaté z Denníka v CLAUDE.md, porovnanie s jednou sieťou a so „všetkým naraz“ je prepočítané z logov série idea1 (náhody 201–205).
+Čo povedať pri každej snímke prezentácie xgregorm_priebeh_prace.pptx (15 snímok). Ten istý text je aj v poznámkach pre prednášajúceho v PowerPointe. Čísla sú prevzaté z Denníka v CLAUDE.md. Porovnanie s jednou sieťou a so „všetkým naraz“, podiel áut na sieťach a počty správ sú prepočítané z logov série idea1 (mesto bez zón, náhody 201–205, priemer 5 behov).
 
 ## Snímka 1: Výber siete pre komunikáciu áut podľa nameranej kvality
 
@@ -14,9 +14,9 @@ Prácu som robil v piatich krokoch. Najprv som musel opraviť chyby v simulátor
 
 Auto niekoľkokrát za sekundu vysiela správu o polohe: kde je, ako rýchlo ide a kam. Okrem nej posiela správy zo senzorov a križovatky posielajú stav semafora. Na to má tri siete. **Wi-Fi pre autá** (802.11p) je veľmi rýchla, ale má krátky dosah a budovy ju tlmia. **Priame 5G** (NR-V2X) dosiahne ďalej, je však pomalšie a pri veľa autách sa správy zrážajú. **Mobilná sieť** (LTE) dosiahne všade, ale ide cez vysielač a server, takže susedné autá správu priamo nedostanú. Žiadna sieť nie je najlepšia všade, preto treba vyberať.
 
-## Snímka 4: Simulácia mesta
+## Snímka 4: Simulácia mesta a scenáre
 
-Všetko beží v simulácii. Program SUMO simuluje premávku, program ns-3 rádiá. Spája ich projekt VaN3Twin od iných autorov, do ktorého som dopisoval vlastné časti. Mapa je centrum mesta s 9 križovatkami so semaformi a pri každej stojí **cestná jednotka** (na obrázkoch RSU), ktorá riadi semafor. Jazdí 140 áut, beh trvá 120 sekúnd a meria sa od 30. sekundy, keď sa premávka rozbehne. Aby to bolo realistické, sú tam budovy, mestský model šírenia signálu, podpis správ, senzorové správy všetkých áut, vzájomné rušenie Wi-Fi a 5G a pravidlá proti preplneniu kanála podľa normy. Hlavné číslo je **spoľahlivosť doručenia**: zo 100 správ o polohe, ktoré mali prísť autám do 100 metrov, koľko naozaj prišlo.
+Všetko beží v simulácii. Program SUMO simuluje premávku, program ns-3 rádiá a spája ich projekt VaN3Twin od iných autorov, do ktorého som dopisoval vlastné časti. Mapa je centrum mesta s 9 križovatkami so semaformi a pri každej stojí **cestná jednotka** (na obrázku RSU), ktorá riadi semafor. Jazdí 140 áut, beh trvá 120 sekúnd a meria sa od 30. sekundy. Sú tam budovy, mestský model šírenia signálu, podpis správ, senzorové správy všetkých áut, rušenie medzi Wi-Fi a 5G a pravidlá proti preplneniu kanála podľa normy. Aby bolo vidno, kedy výber pomáha, pridal som **zóny**: kruhy s polomerom 150 metrov, kde jedna sieť stratí 70 % správ (na obrázku tyrkysová je zlá Wi-Fi, oranžová zlé 5G). V scenári A sú zóny stále, v C sa v 60. sekunde vymenia, D má rozloženie, ktoré žiadna metóda nevidela, a T zóny nemá. Hlavné číslo je **spoľahlivosť doručenia**: zo 100 správ o polohe, ktoré mali prísť autám do 100 metrov, koľko prišlo. Porovnávam vždy v pároch s rovnakou náhodou, s viacerými náhodami a s 95 % intervalom istoty.
 
 ## Snímka 5: Krok 1, opravil som chyby v simulátore
 
@@ -44,17 +44,17 @@ Rozhoduje sa raz za sekundu. Na začiatku má polovica áut ako hlavnú sieť Wi
 
 Ak to platí, auto prepne len s určitou pravdepodobnosťou: **zisk delený 0,4**. Keď napríklad 5G doručuje o 20 bodov lepšie, za sekundu prepne polovica áut. Je to preto, aby celé mesto neskočilo naraz na jednu sieť a nepreplnilo ju.
 
-## Snímka 10: Ako som to testoval
+## Snímka 10: Koľko áut je na ktorej sieti
 
-Aby bolo vidno, kedy výber pomáha, urobil som **zóny**: kruhy s polomerom 150 metrov okolo niektorých križovatiek, kde jedna sieť stratí 70 % správ. V dvoch zónach je zlá Wi-Fi, v dvoch 5G. Predstavujú miesta, ako je priestor za budovou, rušenie alebo výpadok. V scenári A sú zóny stále. V scenári C sa v 60. sekunde vymenia. Scenár D má iné rozloženie, ktoré žiadna metóda predtým nevidela. Scenár T nemá zóny vôbec, je to len samotné mesto. Každé porovnanie som zopakoval s 10 rôznymi náhodami a porovnával som v pároch s rovnakou náhodou, s 95 % intervalom istoty. Kritérium úspechu som stanovil vopred a na ladenie som použil iné náhody než na finálne meranie.
+Tento graf ukazuje, akú hlavnú sieť mali autá. Pri pevných voľbách je to jednoduché: všetky autá na Wi-Fi, všetky na 5G, alebo náhodne polovica a polovica (v behoch presne 47,7 % Wi-Fi a 52,3 % 5G). Pri „všetkom naraz“ posiela každé auto oboma sieťami. Výber podľa kvality začne ako polovica a polovica, no za prvých päť sekúnd sa veľa áut presunie na Wi-Fi. Potom sa to ustáli okolo 60 % Wi-Fi a 40 % 5G (priemer od 30. sekundy 59,6 % a 40,4 %). Prečo práve tak? Kanál 5G sa pri tejto záťaži plní rýchlejšie a pri polovici áut je obsadený v priemere 36 % času, teda nad hranicou 30 %. Správy sa na ňom zrážajú, autá to namerajú a prejdú na Wi-Fi. Keď obsadenosť 5G klesne k 30 %, presuny sa zastavia, lebo pravidlo nepustí autá na preplnenú sieť. Pri výbere podľa kvality je 5G obsadené v priemere 29 % času, pri samotnom 5G a pri všetkom naraz 57 %. Výber podľa kvality teda sám nájde rozdelenie, pri ktorom ani jedna sieť nie je zahltená.
 
-## Snímka 11: Výsledok bez zón, kvalita oproti pevným voľbám
+## Snímka 11: Kam sa správy strácajú
 
-Toto je hlavné porovnanie v meste bez zón, s 5 náhodami. Keď majú všetky autá len priame 5G, doručí sa 75,2 % správ o polohe. Pri samotnej Wi-Fi je to 85,5 % a pri náhodnom rozdelení pol na pol 89,0 %. **Výber podľa kvality dosiahne 90,8 %.** Je to o 15,6 bodu viac než pri samotnom 5G, o 5,3 bodu viac než pri samotnej Wi-Fi a o 1,8 bodu viac než pri náhodnom rozdelení. Všetky tri rozdiely sú preukázané. Senzorové správy sa pri výbere podľa kvality doručujú lepšie než pri jednej sieti, ale o 1 bod horšie než pri náhodnom rozdelení. Keby autá mali len mobilnú sieť, susedné autá by si nedoručili nič, lebo správa ide len na server. To ukázal už skorší test. Posielanie všetkými sieťami naraz dá 94,5 %, ale za cenu, ktorú ukazuje ďalšia snímka.
+To isté v počte správ. Každé auto pošle v priemere 3,4 správy o polohe za sekundu a každú má dostať asi 9 susedov do 100 metrov. Za 90 sekúnd merania je to asi 385 tisíc doručení v jednom behu. Graf ukazuje, koľko z nich prišlo a koľko sa stratilo. Pri samotnom 5G sa stratí 95 tisíc, teda štvrtina, lebo kanál je zahltený a správy sa zrážajú. Pri samotnej Wi-Fi sa stratí 56 tisíc, hlavne kvôli budovám. Pri náhodnom rozdelení 42 tisíc a pri **výbere podľa kvality 36 tisíc, teda zo 100 doručení sa stratí 9**. Pri všetkom naraz sa stratí 21 tisíc, ale tam má každá správa dva pokusy, cez Wi-Fi aj cez 5G. Rozdiely výberu podľa kvality oproti pevným voľbám sú v tabuľke a všetky sú preukázané.
 
-## Snímka 12: Cena posielania všetkými sieťami naraz
+## Snímka 12: Prečo „všetko naraz“ dá viac správ o polohe, ale horšie ostatné
 
-Posielať každú správu všetkými tromi sieťami vyzerá ako najistejšie riešenie, ale má veľkú cenu. Cez mobilnú sieť ide 4,2-krát viac správ. Kanály sú preplnenejšie, takže oproti výberu podľa kvality sa doručí o 10,4 bodu menej senzorových správ a o 11,7 bodu menej správ zo semaforov. Správy o polohe sú síce o 3,7 bodu lepšie a do cestnej jednotky o 3,8 bodu, ale ostatné služby výrazne trpia. Výber podľa kvality posiela každú správu len jednou priamou sieťou a mobilnú sieť nezaťažuje viac než pevné voľby.
+Ako je možné, že pri všetkom naraz príde 94,5 % správ o polohe, ale senzorové správy vychádzajú horšie? Je to tým, ako sa počítajú. **Správa o polohe sa počíta ako doručená, ak príde aspoň jedna z jej kópií.** Pri všetkom naraz ide každá cez Wi-Fi aj cez 5G, takže má dva pokusy, a keď jedna kópia zlyhá, druhá ju často zachráni. **Senzorové správy a správy zo semafora sa počítajú za každú kópiu zvlášť.** Pri všetkom naraz idú aj senzorové správy oboma sieťami, takže na kanáloch je dvakrát toľko prevádzky a 5G je obsadené 57 % času namiesto 29 %. Preto sa každá jednotlivá kópia doručí horšie: senzorová správa cez 5G v 73 % prípadov namiesto 92 %, cez Wi-Fi v 74 % namiesto 80 %. Rovnako dopadnú správy zo semafora. Koľko senzorových správ prišlo aspoň jednou kópiou, simulácia nemerala, preto netvrdím, že senzory celkovo dopadli horšie. Isté je, že všetko naraz zahltí kanály, každá kópia trpí a cez mobilnú sieť ide 4,2-krát viac správ.
 
 ## Snímka 13: Výsledok so zónami
 
@@ -66,7 +66,7 @@ Skúšal som, či by pomohlo predpovedať kvalitu dopredu. **Mapa kvality**, do 
 
 ## Snímka 15: Záver a čo ďalej
 
-Opravil som simulátor a ukázal, že nepriame ukazovatele, ako je hustota a vyťaženie, nepomáhajú. Výber podľa priamo nameranej kvality je preukázateľne lepší než jedna sieť aj než náhodné rozdelenie a na rozdiel od posielania všetkými sieťami nepoškodzuje ostatné služby. Najviac pomáha tam, kde sa kvalita sietí v meste líši. Ďalej ho chcem zlepšovať:
+Opravil som simulátor a ukázal, že nepriame ukazovatele, ako je hustota a vyťaženie, nepomáhajú. Výber podľa priamo nameranej kvality je preukázateľne lepší než jedna sieť aj než náhodné rozdelenie. Sám nájde rozdelenie áut, pri ktorom nie je zahltená ani jedna sieť, a na rozdiel od posielania všetkými sieťami kanály nepreplní. Najviac pomáha tam, kde sa kvalita sietí v meste líši. Ďalej ho chcem zlepšovať:
 
 1. kombinovať ho s pevným rozdelením podľa druhu správy,
 2. znížiť počet skúšobných správ,
