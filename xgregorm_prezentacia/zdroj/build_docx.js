@@ -1,6 +1,6 @@
 // Prevod Markdown -> Word (.docx). Pouzitie: NODE_PATH=<node_modules s docx@9.0.2> node build_docx.js a.md [b.md ...] out.docx
 // Kazdy dalsi subor zacina na novej strane.
-// Podporuje: # / ## / ### nadpisy, odseky, zoznamy "- " a "1. ", tabulky "| ... |", **tucne**, *kurziva*.
+// Podporuje: # / ## / ### nadpisy, odseky, zoznamy "- " a "1. " (aj vnorene "   - " pod cislovanym), tabulky "| ... |", **tucne**, *kurziva*.
 const fs = require('fs');
 const d = require('docx');
 const args = process.argv.slice(2);
@@ -74,8 +74,11 @@ while (i < lines.length) {
     continue;
   } else if (/^\d+\. /.test(l)) {
     const inst = numInst++;
-    while (i < lines.length && /^\d+\. /.test(lines[i])) {
-      children.push(new d.Paragraph({ numbering: { reference: 'num', level: 0, instance: inst }, spacing: { after: 80 }, children: runs(lines[i].replace(/^\d+\. /, '')) }));
+    while (i < lines.length && (/^\d+\. /.test(lines[i]) || /^\s+- /.test(lines[i]))) {
+      if (/^\s+- /.test(lines[i])) // vnoreny bod pod cislovanym
+        children.push(new d.Paragraph({ numbering: { reference: 'bul', level: 1 }, spacing: { after: 40 }, children: runs(lines[i].replace(/^\s+- /, '')) }));
+      else
+        children.push(new d.Paragraph({ numbering: { reference: 'num', level: 0, instance: inst }, spacing: { after: 80 }, children: runs(lines[i].replace(/^\d+\. /, '')) }));
       i++;
     }
     continue;
@@ -100,7 +103,7 @@ const doc = new d.Document({
   },
   numbering: {
     config: [
-      { reference: 'bul', levels: [{ level: 0, format: d.LevelFormat.BULLET, text: '•', alignment: d.AlignmentType.LEFT, style: { paragraph: { indent: { left: 500, hanging: 280 } } } }] },
+      { reference: 'bul', levels: [{ level: 0, format: d.LevelFormat.BULLET, text: '•', alignment: d.AlignmentType.LEFT, style: { paragraph: { indent: { left: 500, hanging: 280 } } } }, { level: 1, format: d.LevelFormat.BULLET, text: '–', alignment: d.AlignmentType.LEFT, style: { paragraph: { indent: { left: 950, hanging: 280 } } } }] },
       { reference: 'num', levels: [{ level: 0, format: d.LevelFormat.DECIMAL, text: '%1.', alignment: d.AlignmentType.LEFT, style: { paragraph: { indent: { left: 500, hanging: 320 } } } }] },
     ],
   },

@@ -53,13 +53,73 @@ Vo finálnych behoch **nie**. Hlavná sieť je vždy Wi-Fi alebo 5G, lebo len ti
 
 Len na mobilnej sieti by auto ostalo iba pri výpadku oboch priamych sietí. To som testoval v októbri: auto vtedy hneď prejde na mobilnú sieť, cestná jednotka o ňom ďalej vie, ale susedné autá ho nepočujú (doručenie autám 0 %).
 
-## 4. Čo je obsadenosť kanála a prečo také čísla
+## 4. Ako ide správa cez mobilnú sieť a čo v nej je
+
+**Nie je to satelit.** Mobilná sieť (LTE) je pozemná: vysielače na strechách (bunky) sú prepojené káblami s centrálou operátora. Starlink ani iný satelit sa v práci nepoužíva.
+
+**Postup jednej správy:**
+
+1. Auto má modem mobilnej siete, rovnako ako telefón. Keď chce poslať správu, najprv **požiada vysielač o povolenie**.
+2. Vysielač (v simulácii jeden, v strede mesta, 25 m vysoko, pásmo 10 MHz, čo je 50 blokov) **každú milisekundu rozdelí bloky** medzi zariadenia, ktoré chcú vysielať. Auto dostane svoje bloky a v nich pošle správu. Tie isté bloky v tom čase nepoužíva nikto iný, preto sa správy **nezrážajú**. Za to treba čakať na pridelenie.
+3. Vysielač pošle správu po kábli do jadra mobilnej siete (centrála operátora) a odtiaľ na server. V simulácii to trvá 5 ms.
+4. Server ju pošle po kábli (100 Mbit/s, 1 ms) do cestných jednotiek pri križovatkách.
+5. **Späť k autám nejde nič.** Autá cez mobilnú sieť nedostávajú správy o iných autách.
+
+**Čo posiela:** tú istú správu o polohe ako cez Wi-Fi a 5G (poloha, rýchlosť, smer, rozmery…), zabalenú ako internetový paket. Senzorové správy cez mobilnú sieť nejdú.
+
+**Na čo ju cestná jednotka potrebuje:** cestná jednotka je zároveň radič semafora.
+
+1. Z polohy a smeru auta zistí, na ktorom príjazde ku križovatke auto je.
+2. Spočíta autá na každom príjazde.
+3. Podľa toho predĺži alebo skráti zelenú. Dĺžka zelenej je úmerná počtu áut, pri veľkej nerovnováhe prepne skôr. Je to algoritmus autorov VaN3Twin.
+
+Keď o aute nevie, semafor riadi podľa neúplného obrazu.
+
+**Kedy auto posiela aj mobilnou sieťou:** len keď je na príjazde ku križovatke ďalej než 150 m od nej, lebo tam ho priame siete cestnej jednotky nemusia dosiahnuť. Navyše tak ide asi štvrtina správ o polohe, približne 10 tisíc za beh. Pri všetkých spôsoboch výberu je to rovnako, okrem „všetkého naraz“ (42 tisíc).
+
+**Môže sa mobilná sieť zahltiť? Áno.** Bunku zdieľajú:
+
+- kópie správ o polohe,
+- telefóny v polovici áut (69 áut × 20 kbit/s, asi 22 tisíc paketov po 1000 B za beh),
+- pri predikcii aj hlásenia do mapy kvality.
+
+| | výber podľa kvality | všetko naraz |
+|---|---|---|
+| vyťaženie bunky (podiel pridelených blokov) | 44 % | 49 % |
+| podiel času nad 30 % | 93 % | 99,9 % |
+| oneskorenie: polovica správ do | 22 ms | 26 ms |
+| oneskorenie: najpomalších 5 % správ viac ako | 1,1 s | 1,0 s |
+
+V skoršom teste s 250 autami, ktoré posielali všetko len mobilnou sieťou, bolo oneskorenie 289 ms a stále rástlo. Bunka v simulácii zvládne najviac asi 280–320 zariadení.
+
+**Pozor na číslo vyťaženia:** plánovač v ns-3 rozdelí celé pásmo medzi tých, čo práve vysielajú, aj keď im stačí menej. Vyťaženie blokov preto nadhodnocuje skutočnú potrebu. Pre mobilnú sieť je spoľahlivejšie sledovať oneskorenie a počet správ.
+
+## 5. Čo je obsadenosť kanála a prečo také čísla
 
 **Obsadenosť** hovorí, aký podiel času je kanál zaneprázdnený, teda niekto v okolí práve vysiela. Je to ako vysielačka: kým hovorí jeden, ostatní čakajú alebo sa prekrikujú. Aj Wi-Fi teda môže byť obsadená, keď v okolí vysiela veľa áut.
 
 - **Wi-Fi** meria každé auto podľa normy ETSI: podiel času, keď počuje signál silnejší než −85 dBm.
 - **5G** sa v simulácii dá len odhadnúť: podiel políčok (slot × subkanál), v ktorých auto zachytilo vysielanie.
 - Hranica 30 % je z noriem pre obe siete. Nad ňou sa kanál považuje za preplnený.
+
+**Ako presne sa počíta obsadenosť Wi-Fi** (meranie podľa normy ETSI TS 102 687):
+
+1. Pri každom vyslaní akéhokoľvek rámca Wi-Fi simulácia vypočíta pre každé auto, aký silný signál k nemu dorazí. Použije ten istý model útlmu ako rádio.
+2. Ak je signál silnejší než −85 dBm, celé trvanie rámca sa autu započíta ako „obsadené“. Vlastné vysielanie sa započíta tiež.
+3. Každých 100 ms sa obsadený čas vydelí 100 ms. Výsledok je obsadenosť pre toto auto.
+4. Čísla v tabuľkách sú priemer cez všetky autá a všetky 100 ms úseky.
+
+Príklad: správa o polohe trvá asi 0,4 ms. Keď auto za 100 ms počuje 25 takých správ, je kanál obsadený 10 ms, teda 10 %. Pri rušení sa pripočítajú aj signály 5G zo susedného pásma. Zjednodušenie: viac slabých signálov pod −85 dBm sa nesčíta.
+
+**Ako sa odhaduje obsadenosť 5G:**
+
+1. Kanál je mriežka políčok: 2 subkanály × 400 slotov za 100 ms, teda 800 políčok.
+2. Pred každou správou ide krátka riadiaca informácia, ktoré políčka správa zaberá. Auto, ktoré ju zachytí, si tie políčka označí ako obsadené.
+3. Obsadenosť je počet označených políčok delený 800.
+
+Je to dolný odhad, lebo vysielania, ktoré auto nezachytilo (kolízie, veľká vzdialenosť), chýbajú. Norma meria inak, silu signálu v každom políčku. To by si vyžadovalo zásah do modulu 5G v ns-3, ktorý som zámerne nerobil.
+
+**Mobilná sieť:** koľko z 50 blokov vysielač pridelil v každej milisekunde (viac v časti 4).
 
 **Čísla Wi-Fi a 5G sa nedajú porovnávať 1 : 1.** Merajú sa inak a 5G má v našom nastavení len 2 subkanály, takže každá správa zaberie celé políčko. Porovnávať treba vždy tú istú sieť medzi rôznymi spôsobmi výberu.
 
@@ -77,7 +137,7 @@ Len na mobilnej sieti by auto ostalo iba pri výpadku oboch priamych sietí. To 
 | podľa kvality | asi 60 % áut + semafory | asi 40 % áut + semafory | 8,8 % | 29,4 % |
 | všetko naraz | všetky autá + semafory | všetky autá + semafory | 12,7 % | 56,9 % |
 
-## 5. Ako budovy tlmia signál
+## 6. Ako budovy tlmia signál
 
 Signál z antény slabne so vzdialenosťou. Koľko slabne, závisí od toho, či medzi vysielačom a prijímačom stojí budova.
 
@@ -103,7 +163,7 @@ Wi-Fi pre autá potrebuje na príjem aspoň −88 dBm (norma ETSI EN 302 663 pri
 
 V skoršom teste s 280 autami v mestskom kanáli sa kópia správy cez Wi-Fi do 100 m doručila asi v 75 % prípadov, cez priame 5G asi v 95 %. Prečo je 5G za rohom o toľko lepšie, som neoveroval. Pravdepodobne pomáha silnejšie kódovanie dát a opakovanie vysielania v 5G.
 
-## 6. Čo presne je v správe o polohe
+## 7. Čo presne je v správe o polohe
 
 Správa o polohe (CAM, norma ETSI EN 302 637-2) má tieto časti:
 
@@ -118,7 +178,7 @@ Správa o polohe (CAM, norma ETSI EN 302 637-2) má tieto časti:
 
 **Moje doplnenie:** prepínač zapíše do jedného nevyužitého bajtu hlavičky sieťovej vrstvy, ktorou sieťou správa odišla (1 bit pre Wi-Fi, 1 bit pre 5G) a poradové číslo od 0 do 63. Veľkosť správy sa tým nemení. Je to malé rozšírenie normy, ktoré treba v práci uviesť.
 
-## 7. Ako presne funguje prepínač (cesta jednej správy)
+## 8. Ako presne funguje prepínač (cesta jednej správy)
 
 **Odoslanie:**
 
@@ -137,11 +197,11 @@ Správa o polohe (CAM, norma ETSI EN 302 637-2) má tieto časti:
 2. Započíta si, či prišla načas (do 100 ms) a či medzi číslami nechýba nejaké, teda či sa niečo stratilo. Toto je meranie kvality.
 3. Potom správu pustí ďalej do normálneho spracovania.
 
-**Rozhodovanie** (raz za sekundu, podmienky sú na snímke 9): auto porovná kvalitu Wi-Fi a 5G za posledné asi 2 sekundy a prípadne zmení hlavnú sieť.
+**Rozhodovanie** (raz za sekundu, podmienky sú na snímke 10): auto porovná kvalitu Wi-Fi a 5G za posledné asi 2 sekundy a prípadne zmení hlavnú sieť.
 
 Senzorové správy idú tou istou hlavnou sieťou. Správy zo semafora posiela cestná jednotka vždy oboma priamymi sieťami.
 
-## 8. V čom presne bola hustota zlá
+## 9. V čom presne bola hustota zlá
 
 Pravidlo znelo: ak auto za posledné 2 sekundy nepočulo cez Wi-Fi žiadne iné auto, je osamotené, a tak pridá priame 5G s väčším dosahom.
 
@@ -153,7 +213,7 @@ Pravidlo znelo: ak auto za posledné 2 sekundy nepočulo cez Wi-Fi žiadne iné 
 
 Rovnako dopadol neskorší nápad podľa vyťaženia: preplnenie kleslo, ale doručenie nie. Spoločné poučenie: **hustota aj vyťaženie len nepriamo naznačujú problém, treba merať priamo, koľko správ prišlo.**
 
-## 9. Prečo „všetko naraz“ dá 94,5 % správ o polohe, ale horšie senzory
+## 10. Prečo „všetko naraz“ dá 94,5 % správ o polohe, ale horšie senzory
 
 Ide hlavne o to, **ako sa jednotlivé správy počítajú.**
 
@@ -178,7 +238,7 @@ Senzorové správy idú pri „všetkom naraz“ tiež oboma sieťami, takže **
 
 Každá jednotlivá kópia sa teda doručí horšie, lebo kanály sú preplnené. **Pozor:** koľko senzorových správ prišlo aspoň jednou kópiou, simulácia nemerala. Preto netvrdím, že senzory celkovo dopadli horšie. Isté je, že „všetko naraz“ zahltí kanály, každá kópia trpí a mobilná sieť nesie 4,2-krát viac správ.
 
-## 10. Koľko áut je na ktorej sieti
+## 11. Koľko áut je na ktorej sieti
 
 Hlavná sieť áut, priemer od 30. do 120. sekundy:
 
@@ -194,7 +254,7 @@ Aj pri „len Wi-Fi“ je 5G trochu obsadené a pri „len 5G“ Wi-Fi, lebo ces
 
 **Čo sa deje pri výbere podľa kvality:** začne ako 50/50. Kanál 5G sa pri tejto záťaži plní rýchlejšie (v našom nastavení má len 2 časti, tzv. subkanály, o ktoré sa autá delia) a pri polovici áut je obsadený 36 % času, teda nad hranicou 30 %. Správy sa na ňom zrážajú, autá to namerajú a časť z nich prejde na Wi-Fi. V 5. sekunde je na Wi-Fi 71 % áut, potom sa časť vráti a od 10. sekundy sa podiel drží okolo 55–66 % Wi-Fi. Keď obsadenosť 5G klesne k 30 %, presuny ustanú, lebo pravidlo nepustí autá na preplnenú sieť. **Výber podľa kvality teda sám nájde rozdelenie, pri ktorom nie je zahltená ani jedna sieť.**
 
-## 11. Koľko správ sa pošle a koľko sa stratí
+## 12. Koľko správ sa pošle a koľko sa stratí
 
 Každé auto pošle v priemere **3,4 správy o polohe za sekundu** a každú má dostať v priemere **9 susedov do 100 m**. Za 90 sekúnd merania a 140 áut je to asi **385 tisíc doručení v jednom behu** (jedno doručenie = jedna správa jednému susedovi).
 

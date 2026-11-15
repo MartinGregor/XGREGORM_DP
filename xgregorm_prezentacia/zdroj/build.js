@@ -171,7 +171,7 @@ function takeaway(s, t, x, y, w, h) {
     const nets = [
       ['FaWifi', COL.wifi, 'Wi-Fi pre autá', '802.11p', [['ako ide', 'priamo autám okolo'], ['oneskorenie', 'prenos 0,3 ms, v plnom meste ~25 ms'], ['výhoda', 'rýchly prenos, počúva pred vysielaním'], ['slabina', 'krátky dosah, budovy ju tlmia']]],
       ['FaSatelliteDish', COL.nr, 'Priame 5G', 'NR-V2X', [['ako ide', 'priamo autám okolo'], ['oneskorenie', '~20 ms (čaká na svoje políčko)'], ['výhoda', 'väčší dosah, odolnejšia'], ['slabina', 'pri veľa autách sa správy zrážajú']]],
-      ['FaBroadcastTower', COL.lte, 'Mobilná sieť', 'LTE', [['ako ide', 'vysielač → server → križovatka'], ['oneskorenie', '~70–90 ms'], ['výhoda', 'dosiahne všade'], ['slabina', 'susedné autá ju nedostanú']]],
+      ['FaBroadcastTower', COL.lte, 'Mobilná sieť', 'LTE', [['ako ide', 'vysielač → server → križovatka'], ['oneskorenie', 'polovica do 22 ms, 5 % nad 1 s'], ['výhoda', 'dosiahne všade'], ['slabina', 'susedné autá ju nedostanú']]],
     ];
     const cw = 3.85, gap = (W - 2 * M - 3 * cw) / 2;
     for (let i = 0; i < 3; i++) {
@@ -183,8 +183,32 @@ function takeaway(s, t, x, y, w, h) {
         text(s, [{ text: k + ': ', options: { bold: true } }, { text: v }], { x: x + 0.3, y: y + 1.55 + j * 0.62, w: cw - 0.55, h: 0.58, fontSize: 14 });
       });
     }
-    text(s, 'Čo autá posielajú', { x: M, y: 5.8, w: 3.0, h: 0.4, fontSize: 16, bold: true, color: C.text2 });
-    text(s, [b('správa o polohe'), r(' (1–10× za sekundu: kde som, ako rýchlo, kam)  ·  '), b('správa zo senzorov'), r(' (čo vidí kamera)  ·  '), b('správa zo semafora'), r(' (kedy bude zelená)')], { x: M, y: 6.2, w: W - 2 * M, h: 0.4, fontSize: 14 });
+    takeaway(s, 'Wi-Fi a priame 5G vysielajú priamo autám okolo, mobilná sieť ide cez vysielač na streche a server len do cestnej jednotky.', M, 5.85, W - 2 * M, 0.7);
+  }
+
+  // ============ 4. Druhy sprav ============
+  {
+    const s = content('Aké správy sa posielajú', S0);
+    const msgs = [
+      ['FaCar', HEX.dk2, 'Správa o polohe', 'CAM', 'každé auto', ['kde som', 'ako rýchlo a kam idem', 'rozmery a zrýchlenie'], 'asi 3× za sekundu', 'hlavnou sieťou auta'],
+      ['FaVideo', HEX.accent4, 'Správa zo senzorov', 'CPM', 'každé auto s kamerou a radarom', ['čo vidím okolo seba', 'polohy iných áut a vecí', 'aj autá bez rádia'], 'asi 8× za sekundu', 'hlavnou sieťou auta'],
+      ['FaTrafficLight', HEX.accent3, 'Stav semafora', 'SPATEM', 'cestná jednotka pri križovatke', ['aká farba svieti', 'kedy sa zmení'], '10× za sekundu', 'vždy Wi-Fi aj 5G'],
+      ['FaMapMarkedAlt', HEX.accent5, 'Mapa križovatky', 'MAPEM', 'cestná jednotka pri križovatke', ['jazdné pruhy', 'kam ktorý pruh vedie'], '1× za sekundu', 'vždy Wi-Fi aj 5G'],
+    ];
+    const cw = 2.85, gap = (W - 2 * M - 4 * cw) / 3;
+    for (let i = 0; i < 4; i++) {
+      const x = M + i * (cw + gap), y = 1.35;
+      card(s, x, y, cw, 4.35);
+      await iconCircle(s, msgs[i][0], x + 0.25, y + 0.25, 0.8, msgs[i][1]);
+      text(s, [{ text: msgs[i][2], options: { bold: true, fontSize: 17, color: C.text2, breakLine: true } }, { text: msgs[i][3], options: { fontSize: 12, color: C.accent5 } }], { x: x + 1.15, y: y + 0.22, w: cw - 1.25, h: 0.9, valign: 'middle' });
+      text(s, [b('kto: '), r(msgs[i][4])], { x: x + 0.25, y: y + 1.25, w: cw - 0.45, h: 0.55, fontSize: 13 });
+      text(s, 'čo je vnútri:', { x: x + 0.25, y: y + 1.85, w: cw - 0.45, h: 0.3, fontSize: 13, bold: true });
+      bullets(s, msgs[i][5], { x: x + 0.25, y: y + 2.15, w: cw - 0.45, h: 1.05, fontSize: 13, paraSpaceAfter: 2 });
+      s.addShape(pres.shapes.LINE, { x: x + 0.25, y: y + 3.3, w: cw - 0.5, h: 0, line: { color: C.accent6, width: 1 }, objectName: nm('sep') });
+      text(s, [b('ako často: '), r(msgs[i][6])], { x: x + 0.25, y: y + 3.4, w: cw - 0.45, h: 0.4, fontSize: 13 });
+      text(s, [b('ktorou sieťou: '), r(msgs[i][7])], { x: x + 0.25, y: y + 3.8, w: cw - 0.45, h: 0.45, fontSize: 13 });
+    }
+    takeaway(s, 'Auto vyberá sieť len pre svoje správy (poloha, senzory). Kvalitu siete meria zo správ o polohe, lebo len tie nesú poradové číslo.', M, 5.9, W - 2 * M, 0.7);
   }
 
   // ============ 4. Simulacia a scenare ============
@@ -434,7 +458,7 @@ function takeaway(s, t, x, y, w, h) {
       [b('do cestnej jednotky '), r('+7 až +9 bodov')],
     ], { x: 8.85, y: 4.65, w: 3.9, h: 0.75, fontSize: 14 });
     takeaway(s, 'Ani dokonalá znalosť zón by nepridala viac než 2–3 body: výber je blízko maxima.', 8.85, 5.45, 3.9, 1.1);
-    source(s, 'Finálna séria: 140 áut, náhody 1–10 (nepoužité pri ladení), párové porovnanie, 95 % interval. T tu má iné náhody než na snímke 11.', 6.65);
+    source(s, 'Finálna séria: 140 áut, náhody 1–10 (nepoužité pri ladení), párové porovnanie, 95 % interval. T tu má iné náhody než na snímke 12.', 6.65);
   }
 
   // ============ 14. Predikcia ============
