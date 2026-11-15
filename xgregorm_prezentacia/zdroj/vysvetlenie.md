@@ -15,7 +15,7 @@ Okrem nej autá a križovatky posielajú ďalšie dve správy:
 
 | | čo to je | výhoda | nevýhoda |
 |---|---|---|---|
-| **Wi-Fi pre autá** (802.11p) | starší systém, auto vysiela priamo autám okolo | veľmi rýchle (zlomok milisekundy) | krátky dosah, budovy ho tlmia, pri veľa autách sa „prekrikujú“ |
+| **Wi-Fi pre autá** (802.11p) | starší systém, auto vysiela priamo autám okolo | rýchly prenos (zlomok milisekundy); v plnom meste s čakaním vo fronte asi 25 ms | krátky dosah, budovy ho tlmia, pri veľa autách sa „prekrikujú“ |
 | **Priame 5G** (NR-V2X) | novší systém, tiež priamo auto-auto, bez vysielača | ďalší dosah, odolnejšie | pomalšie (asi 10–20 ms), keď vysiela veľa áut naraz, správy sa zrážajú |
 | **Mobilná sieť** (LTE) | ako mobil: auto, vysielač na streche, internet, križovatka | dosiahne všade | k susedným autám nejde, len na server; pri plnej bunke je pomalé |
 

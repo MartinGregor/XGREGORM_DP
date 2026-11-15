@@ -12,7 +12,7 @@ Prácu som robil v piatich krokoch. Najprv som musel opraviť chyby v simulátor
 
 ## Snímka 3: Tri siete, z ktorých auto vyberá
 
-Auto niekoľkokrát za sekundu vysiela správu o polohe: kde je, ako rýchlo ide a kam. Okrem nej posiela správy zo senzorov a križovatky posielajú stav semafora. Na to má tri siete. **Wi-Fi pre autá** (802.11p) je veľmi rýchla, ale má krátky dosah a budovy ju tlmia. **Priame 5G** (NR-V2X) dosiahne ďalej, je však pomalšie a pri veľa autách sa správy zrážajú. **Mobilná sieť** (LTE) dosiahne všade, ale ide cez vysielač a server, takže susedné autá správu priamo nedostanú. Žiadna sieť nie je najlepšia všade, preto treba vyberať.
+Auto niekoľkokrát za sekundu vysiela správu o polohe: kde je, ako rýchlo ide a kam. Okrem nej posiela správy zo senzorov a križovatky posielajú stav semafora. Na to má tri siete. **Wi-Fi pre autá** (802.11p) má veľmi rýchly samotný prenos, ale krátky dosah, budovy ju tlmia a v plnom meste správy čakajú vo fronte, takže priemerné oneskorenie je asi 25 ms. **Priame 5G** (NR-V2X) dosiahne ďalej, je však pomalšie a pri veľa autách sa správy zrážajú. **Mobilná sieť** (LTE) dosiahne všade, ale ide cez vysielač a server, takže susedné autá správu priamo nedostanú. Žiadna sieť nie je najlepšia všade, preto treba vyberať.
 
 ## Snímka 4: Simulácia mesta a scenáre
 

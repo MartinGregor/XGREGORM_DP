@@ -169,8 +169,8 @@ function takeaway(s, t, x, y, w, h) {
   {
     const s = content('Tri siete, z ktorých auto vyberá', S0);
     const nets = [
-      ['FaWifi', COL.wifi, 'Wi-Fi pre autá', '802.11p', [['ako ide', 'priamo autám okolo'], ['oneskorenie', '~0,3 ms'], ['výhoda', 'veľmi rýchla'], ['slabina', 'krátky dosah, budovy ju tlmia']]],
-      ['FaSatelliteDish', COL.nr, 'Priame 5G', 'NR-V2X', [['ako ide', 'priamo autám okolo'], ['oneskorenie', '~20 ms'], ['výhoda', 'väčší dosah, odolnejšia'], ['slabina', 'pri veľa autách sa správy zrážajú']]],
+      ['FaWifi', COL.wifi, 'Wi-Fi pre autá', '802.11p', [['ako ide', 'priamo autám okolo'], ['oneskorenie', 'prenos 0,3 ms, v plnom meste ~25 ms'], ['výhoda', 'rýchly prenos, počúva pred vysielaním'], ['slabina', 'krátky dosah, budovy ju tlmia']]],
+      ['FaSatelliteDish', COL.nr, 'Priame 5G', 'NR-V2X', [['ako ide', 'priamo autám okolo'], ['oneskorenie', '~20 ms (čaká na svoje políčko)'], ['výhoda', 'väčší dosah, odolnejšia'], ['slabina', 'pri veľa autách sa správy zrážajú']]],
       ['FaBroadcastTower', COL.lte, 'Mobilná sieť', 'LTE', [['ako ide', 'vysielač → server → križovatka'], ['oneskorenie', '~70–90 ms'], ['výhoda', 'dosiahne všade'], ['slabina', 'susedné autá ju nedostanú']]],
     ];
     const cw = 3.85, gap = (W - 2 * M - 3 * cw) / 2;
