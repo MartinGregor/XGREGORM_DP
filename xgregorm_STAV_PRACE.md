@@ -3,7 +3,23 @@
 Zapísané 2026-11-02 po zastavení behov. Tento súbor hovorí, **kde sa práca zastavila, ako v nej pokračovať
 a čo všetko sa spravilo**. Podrobné tabuľky a závery sú v Denníku v `CLAUDE.md`, pravidlá projektu tiež tam.
 
-## 0. Aktuálny stav (2026-11-06 23:30, má prednosť pred zvyškom súboru)
+## 0. Aktuálny stav (2026-11-17, má prednosť pred zvyškom súboru)
+
+Po pripomienkach z obhajoby (podrobne v Denníku 2026-11-17 v `CLAUDE.md`):
+
+- **upratanie:** zmazané nepoužité súbory, voľby `--ped` a `--nr-sensing`,
+- **prezentácia a Word:** 802.11p namiesto Wi-Fi, záložná snímka 17 o presnom čase, nová časť Wordu
+  `xgregorm_prezentacia/zdroj/rozsirenia.md`,
+- **presný čas:** séria `clk` (`--clock-err`, `xgregorm_clk_eval.py`) ukázala, že výber nezávisí od presnosti hodín,
+- **1000 áut:** `--cc-grid 5 --enb 9 --nr-max-loss --nr-cache-ttl --nr-fading`; opravený únik pamäte v GeoNet autorov;
+  overené na 140 autách (`scal140`, `xgregorm_scal_eval.py`); séria `big1000` (Q a MIX, 1000 áut, 45 s),
+- **OMNeT++ 6.0.3 + Veins 5.2:** v `~/omnet`, projekt `xgregorm_omnet/` (ten istý scenár, porovnanie s ns-3,
+  mestský kanál 3GPP, spoločné jadro pravidla kvality `xgregorm-qos-core.h`).
+
+Spustené 2026-11-17 a ešte môžu bežať: `big1000` (asi do 19:00) a doplnenie `clk` o seedy 204-205 (asi do 16:15).
+Po prerušení pokračovať: `xgregorm_logs/xgregorm_start.sh $PWD/xgregorm_logs/<seria>.json`, hotové behy sa preskočia.
+
+## 0b. Stav z 2026-11-06 23:30
 
 **Fronta je dokončená.** Dobehli všetky série vrátane `idea1` a `idea26` (spolu 130 behov, žiadny nezlyhal), nič nebeží. Výsledky nápadov 1-6 sú v Denníku 2026-11-06 a celkový záver fronty v pláne za časťou 9. Ďalší krok rozhodne používateľ (písanie práce alebo nové série). Odstavec nižšie ostáva ako história.
 

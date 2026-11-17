@@ -72,6 +72,7 @@ prepnutia medzi RSU) oproti pôvodným aplikáciám autorov.
 | `xgregorm-hybrid.cc`, `xgregorm_gen_scenario.py` (moje) | **2026-11-17: veľké scenáre** `--nr-max-loss X` (`MaxLossDb` kanála NR sidelinku: príjemca s útlmom > X dB signál nedostane ani ako rušenie), `--nr-fading 0` (NR bez rýchlych únikov 3GPP, `InitializeOperationBand` bez `INIT_FADING`), `--cc-grid N` (city-center N × N križovatiek, pri 3 bit po bite rovnaká mapa). **Odstránené** (nepoužité v žiadnej sérii): `--ped` (chodci), `--nr-sensing` (nepoužiteľne pomalé, sensing ostáva vypnutý ako u autorov). Bez volieb bit po bite zhodné | – (môj kód, staré verzie v gite) |
 | `trafficManagerServer80211p.cc` | **2026-11-17: `TlsRadius < 0`** (`--tls-radius -1`) = RSU neriadi žiadny semafor (pevný program SUMO), aby rádio neovplyvnilo pohyb áut pri porovnaní s OMNeT++ | `xgregorm_kod_zaloha/` |
 | `xgregorm-qos-core.h` (nový, `model/Applications/`), `trafficManagerClient80211p.cc/.h`, `src/automotive/CMakeLists.txt` | **2026-11-17: jadro pravidla kvality nezávislé od simulátora** (C++17 bez ns-3): záznam CAM a uzavretie po 200 ms, chýbajúce poradové čísla, očakávané / načas, zabúdanie, rozhodnutie (`qosDecide`). Klient ns-3 ho volá (bit po bite zhodné, overené `--qos-rat`), používa ho aj `xgregorm_omnet/src/XgCamApp.cc` | `xgregorm_kod_zaloha/pred_qos_core_2026-11-17_*` |
+| `src/automotive/model/GeoNet/geonet.cc` (kód autorov) | **2026-11-17: oprava úniku pamäte autorov** – pri každom prijatom SHB pakete sa do záznamu odosielateľa v tabuľke polôh pridávali hodnoty CBR (`cbr_extension.CBR_R0_Hop/R1_Hop`), mazala ich však len kontrola globálneho CBR modulu DCC autorov (`attachGlobalCBRCheck`, len pri `m_dcc != nullptr`). Bez neho zoznamy rástli s každým príjmom: 140 áut ~3 GB za 120 s, 1000 áut ~0.5 GB na sekundu simulácie. Teraz sa ukladajú len pri `m_dcc != nullptr`; výsledky bit po bite rovnaké (nikto iný ich nečíta). Treba nahlásiť autorom | `xgregorm_kod_zaloha/geonet.cc` |
 | `xgregorm_omnet/` (nový projekt OMNeT++ 6.0.3 + Veins 5.2) | **2026-11-17: ten istý scenár v OMNeT++** – `XgCamApp` (CAM podľa ETSI, meranie v rovnakom formáte ako ns-3, jadro kvality), `export_scenario.py`, `xgregorm_compare.py` (oba simulátory jedným príkazom). Popis a výsledky v `xgregorm_omnet/README.md` | – |
 
 **Pravidlo riadenia semaforov:** 802.11p = každá RSU riadi len semafor svojej križovatky (ako
@@ -235,7 +236,7 @@ python3 xgregorm_gen_scenario.py --vehicles 30 --sim-time 60 --run hybrid --fail
 python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --sim-time 20 --run hybrid --channel urban   # budovy + 3GPP mestský kanál (max 1 bunka LTE = 280 áut)
 python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --run hybrid --channel urban --security 1 --spat 1 --cpm-share 1.0   # + podpis, SPaT/MAPEM, CPM všetkých áut (realistická záťaž)
 python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --run hybrid --channel urban --security 1 --spat 1 --cpm-share 1.0 --load-rat 1 --lte-bg-ue 5   # výber technológie podľa záťaže + iní používatelia LTE
-python3 xgregorm_gen_scenario.py --map city-center --cc-grid 5 --vehicles 1000 --enb 9 --enb-isd 400 --nr-max-loss 120 --nr-cache-ttl 1 --nr-fading 0 --run hybrid ...   # 1000 áut: ~7 min na 1 s simulácie, ~3-4 GB (s --nr-fading 1 ~11 min, 12 GB)
+python3 xgregorm_gen_scenario.py --map city-center --cc-grid 5 --vehicles 1000 --enb 9 --enb-isd 400 --nr-max-loss 120 --nr-cache-ttl 1 --nr-fading 0 --run hybrid ...   # 1000 áut: ~7-8 min na 1 s simulácie, ~3 GB (s --nr-fading 1 ~10-15 min, ~11 GB)
 python3 xgregorm_omnet/xgregorm_compare.py --vehicles 140 --sim-time 60 --warmup 20   # ten istý scenár v ns-3 aj OMNeT++/Veins (len 802.11p), výsledky vedľa seba
 ./ns3 build                                                 # len po zmene C++ kódu
 ```
@@ -1224,6 +1225,30 @@ python3 xgregorm_omnet/xgregorm_compare.py --vehicles 140 --sim-time 60 --warmup
     - jadro kvality: odhad v autách ns-3 0.9941 (skutočnosť 0.9939), OMNeT++ 0.9948 (0.9941).
 
   NR/LTE vo Veins nie sú (Simu5G nenainštalované).
+- **2026-11-17** – **Únik pamäte v GeoNet autorov** (viď Moje zmeny, `geonet.cc`). Nájdený pri 1000 autách: RSS rástlo
+  ~0.56 GB na sekundu simulácie (Q, bez fadingu, 4 s 3.1 GB, 9 s 6.0 GB). Príčina sú zoznamy CBR v tabuľke polôh
+  GeoNet, ktoré bez modulu DCC autorov nikto nemaže. Po oprave bit po bite zhodné (REFU, OVER). Pamäť všetkých
+  doterajších behov (napr. 140 áut ~3.3 GB, 280 áut ~3.2 GB) bola z veľkej časti tento únik. Behy `big1000`
+  reštartované s opravou: 45 s, od 25 s, aby dobehli za deň; staré čiastočné logy zmazané.
+  Po oprave, 1000 áut s fadingom NR: 2 s 1.2 GB, 3 s 10.2 GB, 4 s 10.7 GB, krok 3→4 s 14.7 min pri 6 súbežných
+  simuláciách (`xgregorm_logs/K1000_fading_po_oprave_casy.txt`). Bez fadingu (`big1000`, Q) 6 s 3.0 GB, ~8 min na 1 s pri 5 súbežných.
+- **2026-11-17** – **Overenie zjednodušení pre 1000 áut na 140 autách (`scal140`)**, seedy 201-203, porovnané s idea1;
+  `xgregorm_scal_eval.py`, výstup `xgregorm_logs/scal140/scal_eval.txt`. Prvá dávka bežala ešte so starým binárom
+  (s únikom pamäte GeoNet), výsledky sú rovnaké (únik správanie nemení).
+
+  | | PRR | CPM spolu | čas behu |
+  |---|---|---|---|
+  | Q / QS | 0.9077 / 0.9192 | 0.846 / 0.864 | 4186 / 2654 s |
+  | MIX / MIXS | 0.8910 / 0.8991 | 0.857 / 0.866 | 4972 / 2580 s |
+
+  Párovo, n = 3:
+  - QS − Q PRR +0.0115 (−0.003, +0.026), MIXS − MIX +0.0082 (+0.003, +0.014),
+  - Q − MIX +0.0167 (+0.007, +0.027), QS − MIXS +0.0200 (+0.006, +0.035),
+  - **(QS − MIXS) − (Q − MIX) +0.0033 (−0.015, +0.022), p = 0.52**,
+  - CPM: Q − MIX −0.011 (preukázané), QS − MIXS −0.002 (nepreukázané).
+
+  **Záver:** zjednodušenia zvýšia absolútne PRR asi o 1 b. (NR bez fadingu je lepšie), poradie a veľkosť rozdielu politík pri PRR
+  zachovajú. Pri CPM sa malá nevýhoda Q oproti MIX stratí.
 - Pozn.: v sekcii „Tok komunikácie“ je prehľad, čo ide cez ns-3 (CAM, kábel RSU-RSU) a čo cez
   TraCI (RSU -> semafor, mapa).
 

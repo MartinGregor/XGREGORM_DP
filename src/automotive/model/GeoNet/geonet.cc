@@ -1011,7 +1011,10 @@ namespace ns3 {
       //6)Set IS_NEIGHBOUR flag to true
       entry_map_it->second.IS_NEIGHBOUR = true;
     }
-    if (dataIndication.GNType != BEACON)
+    // xgregorm: hodnoty CBR zo SHB cita a maze len kontrola globalneho CBR modulu DCC autorov (attachGlobalCBRCheck, len ked
+    // m_dcc != nullptr). Bez neho sa zoznamy nikdy nemazali a rastli s kazdym prijatym paketom (1000 aut: ~0.5 GB pamate
+    // na sekundu simulacie). Ukladaju sa preto len s modulom DCC autorov; vysledky sa nemenia (nikto iny ich necita).
+    if (dataIndication.GNType != BEACON && m_dcc != nullptr)
       {
         // Save the CBR values read from the SHB header
         m_GNLocT[dataIndication.SourcePV.GnAddress].cbr_extension.CBR_R0_Hop.push_back (std::make_tuple(Simulator::Now().GetMilliSeconds(), cbrr0));

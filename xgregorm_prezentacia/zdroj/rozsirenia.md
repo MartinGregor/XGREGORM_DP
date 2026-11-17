@@ -59,18 +59,31 @@ Preto v prezentácii aj vo Worde odteraz píšem 802.11p (ITS-G5).
 | rýchlejšie hľadanie budov medzi dvoma autami (mriežka) | vždy zapnuté | rovnaký výsledok, menej výpočtov |
 | signál slabší než 120 dB útlmu sa pri priamom 5G nepočíta | `--nr-max-loss 120` | taký signál je 5 dB pod šumom a nedá sa prijať |
 | zabúdanie kanálov dvojíc, ktoré sa 1 s nepočuli | `--nr-cache-ttl 1` | pamäť drží len dvojice v dosahu |
-| priame 5G bez rýchlych únikov | `--nr-fading 0` | 4× menej pamäte, asi o tretinu rýchlejšie; je to zjednodušenie modelu |
+| priame 5G bez rýchlych únikov | `--nr-fading 0` | asi 3× menej pamäte, asi o tretinu rýchlejšie; je to zjednodušenie modelu |
 
 **Koľko to trvá (1000 áut, 9 buniek LTE, všetky správy ako v práci):**
 
 | nastavenie | 1 sekunda simulácie | pamäť |
 |---|---|---|
-| s rýchlymi únikmi 5G | asi 11 minút | 12 GB |
-| bez rýchlych únikov 5G | asi 7 minút | 3 GB |
+| s rýchlymi únikmi 5G | asi 10–15 minút | asi 11 GB |
+| bez rýchlych únikov 5G | asi 7–8 minút | asi 3 GB |
+
+Pri hľadaní, prečo pamäť stále rastie, som našiel chybu v kóde autorov VaN3Twin. Časť GeoNetworking si pri každom prijatom pakete ukladala hodnotu obsadenosti od odosielateľa, ale mazala ju len vtedy, keď je zapnutý modul DCC autorov. Ten nepoužívam, takže zoznamy rástli donekonečna. Pri 1000 autách to bolo asi 0,5 GB za sekundu simulácie, pri 140 autách asi 3 GB za beh. Opravil som to tak, že sa hodnoty ukladajú len s modulom DCC autorov. Výsledky sú bit po bite rovnaké, len simulácia zaberie menej pamäte.
 
 Pre porovnanie: 140 áut potrebuje asi pol minúty na sekundu simulácie. Beh s 1000 autami a 50 sekundami teda trvá asi 6 hodín, preto sa dá spúšťať len cez noc a niekoľko naraz.
 
-@@VELKE@@
+**Neskreslia zjednodušenia výsledok?** Overil som to na pôvodnom meste so 140 autami: výber podľa kvality aj náhodné rozdelenie 50/50, každé s pôvodným modelom aj so zjednodušeniami (`--nr-max-loss 120 --nr-cache-ttl 1 --nr-fading 0`), 3 náhody.
+
+| | pôvodný model | so zjednodušeniami |
+|---|---|---|
+| výber podľa kvality | 90,77 % | 91,92 % |
+| náhodne 50/50 | 89,10 % | 89,91 % |
+| **výhoda výberu podľa kvality** | **+1,67 bodu** (+0,69 až +2,65) | **+2,00 bodu** (+0,56 až +3,45) |
+| čas behu (výber podľa kvality) | 70 minút | 44 minút |
+
+Zjednodušenia zvýšia doručenie asi o 1 bod, lebo priame 5G bez rýchlych únikov vychádza o niečo lepšie. **Rozdiel medzi spôsobmi výberu však ostane rovnaký**: rozdiel rozdielov je +0,33 bodu a je v rámci náhody. Pri porovnávaní spôsobov sa teda dajú použiť, absolútne čísla treba brať s rezervou asi 1 bodu.
+
+@@BIG@@
 
 ## 4. Ten istý pokus aj v OMNeT++
 
