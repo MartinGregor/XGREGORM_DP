@@ -71,10 +71,10 @@ namespace ns3
             MakeBooleanChecker ())
         // xgregorm: lokalne riadenie krizovatiek
         .AddAttribute ("TlsRadius",
-            "Control only the traffic lights closer than this distance [m] to the RSU (default: its own intersection); 0 = control all traffic lights (authors' original behaviour)",
+            "Control only the traffic lights closer than this distance [m] to the RSU (default: its own intersection); 0 = control all traffic lights (authors' original behaviour); < 0 = none (fixed SUMO programs)",
             DoubleValue (50),
             MakeDoubleAccessor (&trafficManagerServer80211p::m_tls_radius),
-            MakeDoubleChecker<double> (0))
+            MakeDoubleChecker<double> ())
         // xgregorm: koordinacia krizovatiek po kabli
         .AddAttribute ("Coordination",
             "Share vehicle positions with the other RSUs over the wired backhaul (needs an IPv4 interface)",
@@ -270,6 +270,10 @@ namespace ns3
       {
         // xgregorm: with TlsRadius > 0 every RSU controls only its own intersection(s),
         // otherwise all RSU servers would fight over the same traffic lights
+        // xgregorm: TlsRadius < 0 = RSU neriadi ziadny semafor (pevny program SUMO), napr. na porovnanie s inym
+        // simulatorom s rovnakym pohybom aut (radio potom neovplyvni dopravu)
+        if (m_tls_radius < 0)
+          continue;
         if (m_tls_radius > 0 && tlsDistance (tlsid, rsuPosXY) > m_tls_radius)
           continue;
         NS_LOG_INFO ("RSU " << m_id << " controls traffic light " << tlsid);

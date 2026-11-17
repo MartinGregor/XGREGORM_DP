@@ -1,0 +1,265 @@
+--- a/src/buildings/model/buildings-channel-condition-model.cc
++++ b/src/buildings/model/buildings-channel-condition-model.cc
+@@ -24,6 +24,9 @@
+ #include "ns3/mobility-building-info.h"
+ #include "ns3/building-list.h"
+ #include "ns3/log.h"
++#include <algorithm>
++#include <cmath>
++#include <vector>
+ 
+ namespace ns3 {
+ 
+@@ -114,22 +117,120 @@
+   return cond;
+ }
+ 
++// xgregorm: zrychlenie pre velke scenare (1000 aut, ~1000 budov). Povodne sa pre kazdu dvojicu prechadzali vsetky budovy
++// zoznamu. Teraz pravidelna mriezka (bunka 40 m v rovine x-y): budova je zapisana v kazdej bunke, ktoru jej obdlznik
++// prekryva; pre usecku sa testuju len budovy v bunkach, cez ktore usecka v rovine prechadza (po stlpcoch mriezky, so
++// zaokruhlenim nadol aj nahor, teda konzervativne). Ak usecka pretina budovu, priesecnik lezi v niektorej z tychto buniek,
++// takze vysledok (je / nie je blokovane) je rovnaky ako pri prechode vsetkych budov - ten isty test Box::IsIntersect.
++// Mriezka sa postavi pri prvom pouziti a znova, ked sa zmeni pocet budov (budovy sa vytvaraju pred simulaciou).
++namespace {
++struct XgBuildingGrid
++{
++  uint32_t n = 0;
++  double x0 = 0, y0 = 0, cell = 40;
++  int nx = 0, ny = 0;
++  std::vector<std::vector<uint32_t>> cells;
++  std::vector<Box> boxes;
++  mutable std::vector<uint32_t> stamp;
++  mutable uint32_t cur = 0;
++  void Build ()
++  {
++    n = BuildingList::GetNBuildings ();
++    boxes.clear ();
++    double x1 = -1e300, y1 = -1e300;
++    x0 = y0 = 1e300;
++    for (BuildingList::Iterator bit = BuildingList::Begin (); bit != BuildingList::End (); ++bit)
++      {
++        Box b = (*bit)->GetBoundaries ();
++        boxes.push_back (b);
++        x0 = std::min (x0, b.xMin);
++        y0 = std::min (y0, b.yMin);
++        x1 = std::max (x1, b.xMax);
++        y1 = std::max (y1, b.yMax);
++      }
++    if (boxes.empty ())
++      return;
++    nx = (int) std::floor ((x1 - x0) / cell) + 1;
++    ny = (int) std::floor ((y1 - y0) / cell) + 1;
++    cells.assign ((size_t) nx * ny, {});
++    for (uint32_t k = 0; k < boxes.size (); k++)
++      {
++        const Box &b = boxes[k];
++        int i0 = CellX (b.xMin), i1 = CellX (b.xMax), j0 = CellY (b.yMin), j1 = CellY (b.yMax);
++        for (int i = i0; i <= i1; i++)
++          for (int j = j0; j <= j1; j++)
++            cells[(size_t) i * ny + j].push_back (k);
++      }
++    stamp.assign (boxes.size (), 0);
++    cur = 0;
++  }
++  int CellX (double x) const { return std::min (nx - 1, std::max (0, (int) std::floor ((x - x0) / cell))); }
++  int CellY (double y) const { return std::min (ny - 1, std::max (0, (int) std::floor ((y - y0) / cell))); }
++  bool Test (uint32_t k, const Vector &l1, const Vector &l2) const
++  {
++    if (stamp[k] == cur)
++      return false;
++    stamp[k] = cur;
++    return boxes[k].IsIntersect (l1, l2);
++  }
++  bool Blocked (const Vector &l1, const Vector &l2) const
++  {
++    if (boxes.empty ())
++      return false;
++    if (++cur == 0)
++      {
++        std::fill (stamp.begin (), stamp.end (), 0);
++        cur = 1;
++      }
++    // usecka mimo obdlznika vsetkych budov (s rezervou) sa oreze prirodzene: CellX/CellY orezu na okraj mriezky
++    double ax = l1.x, ay = l1.y, bx = l2.x, by = l2.y;
++    if (ax > bx)
++      {
++        std::swap (ax, bx);
++        std::swap (ay, by);
++      }
++    int i0 = CellX (ax), i1 = CellX (bx);
++    for (int i = i0; i <= i1; i++)
++      {
++        // cast usecky v stlpci i (x od xa po xb), y v tomto rozsahu
++        double xa = std::max (ax, x0 + i * cell), xb = std::min (bx, x0 + (i + 1) * cell);
++        if (i == i0)
++          xa = ax;
++        if (i == i1)
++          xb = bx;
++        double ya, yb;
++        if (bx - ax < 1e-9)
++          {
++            ya = std::min (ay, by);
++            yb = std::max (ay, by);
++          }
++        else
++          {
++            double t = (by - ay) / (bx - ax);
++            ya = ay + (xa - ax) * t;
++            yb = ay + (xb - ax) * t;
++            if (ya > yb)
++              std::swap (ya, yb);
++          }
++        // rezerva 1 mm proti zaokruhleniu
++        int j0 = CellY (ya - 1e-3), j1 = CellY (yb + 1e-3);
++        for (int j = j0; j <= j1; j++)
++          for (uint32_t k : cells[(size_t) i * ny + j])
++            if (Test (k, l1, l2))
++              return true;
++      }
++    return false;
++  }
++};
++XgBuildingGrid g_xgGrid;
++} // namespace
++
+ bool
+ BuildingsChannelConditionModel::IsLineOfSightBlocked (const ns3::Vector &l1, const ns3::Vector &l2) const
+ {
+-  for (BuildingList::Iterator bit = BuildingList::Begin (); bit != BuildingList::End (); ++bit)
+-    {
+-      if ((*bit)->IsIntersect (l1, l2))
+-        {
+-          // The line of sight should be blocked if the line-segment between
+-          // l1 and l2 intersects one of the buildings.
+-          return true;
+-        }
+-    }
+-
+-  // The line of sight should not be blocked if the line-segment between
+-  // l1 and l2 did not intersect any building.
+-  return false;
++  if (g_xgGrid.n != BuildingList::GetNBuildings ())
++    g_xgGrid.Build ();
++  return g_xgGrid.Blocked (l1, l2);
+ }
+ 
+ int64_t
+--- a/src/spectrum/model/three-gpp-channel-model.cc
++++ b/src/spectrum/model/three-gpp-channel-model.cc
+@@ -29,6 +29,7 @@
+ #include "ns3/integer.h"
+ #include <algorithm>
+ #include <random>
++#include "ns3/simulator.h"
+ #include "ns3/log.h"
+ #include <ns3/simulator.h>
+ #include "ns3/mobility-model.h"
+@@ -36,6 +37,9 @@
+ 
+ namespace ns3 {
+ 
++double g_xgCacheTtl = 0; // xgregorm: --nr-cache-ttl
++
++
+ NS_LOG_COMPONENT_DEFINE ("ThreeGppChannelModel");
+ 
+ NS_OBJECT_ENSURE_REGISTERED (ThreeGppChannelModel);
+@@ -1091,6 +1095,35 @@
+   // Compute the channel matrix key. The key is reciprocal, i.e., key (a, b) = key (b, a)
+   uint64_t channelMatrixKey = GetKey (aAntenna->GetId (), bAntenna->GetId ());
+ 
++  // xgregorm: --nr-cache-ttl - raz za TTL zabudni dvojice, ktore sa TTL nepouzili (pri navrate sa vygeneruje nova
++  // realizacia kanala, ako po vzdialeni sa); 0 = vypnute
++  if (g_xgCacheTtl > 0)
++    {
++      double now = Simulator::Now ().GetSeconds ();
++      if (now - m_xgLastSweep >= g_xgCacheTtl)
++        {
++          m_xgLastSweep = now;
++          for (auto it = m_xgUseParams.begin (); it != m_xgUseParams.end ();)
++            if (now - it->second > g_xgCacheTtl)
++              {
++                m_channelParamsMap.erase (it->first);
++                it = m_xgUseParams.erase (it);
++              }
++            else
++              ++it;
++          for (auto it = m_xgUseMatrix.begin (); it != m_xgUseMatrix.end ();)
++            if (now - it->second > g_xgCacheTtl)
++              {
++                m_channelMatrixMap.erase (it->first);
++                it = m_xgUseMatrix.erase (it);
++              }
++            else
++              ++it;
++        }
++      m_xgUseParams[channelParamsKey] = now;
++      m_xgUseMatrix[channelMatrixKey] = now;
++    }
++
+   // retrieve the channel condition
+   Ptr<const ChannelCondition> condition = m_channelConditionModel->GetChannelCondition (aMob, bMob);
+ 
+--- a/src/spectrum/model/three-gpp-channel-model.h
++++ b/src/spectrum/model/three-gpp-channel-model.h
+@@ -34,6 +34,11 @@
+ 
+ namespace ns3 {
+ 
++// xgregorm: zabudanie kanalov dvojic, ktore sa XgCacheTtl sekund nepouzili (0 = vypnute, povodne spravanie). Pre velke
++// scenare (1000 aut): bez neho pamat rastie s poctom vsetkych dvojic, co sa niekedy poculi (~9 kB na dvojicu).
++extern double g_xgCacheTtl;
++
++
+ class MobilityModel;
+ 
+ /**
+@@ -315,6 +320,10 @@
+   std::unordered_map<uint64_t, Ptr<ChannelMatrix> > m_channelMatrixMap; //!< map containing the channel realizations per pair of PhasedAntennaArray instances, the key of this map is reciprocal uniquely identifies a pair of PhasedAntennaArrays
+   std::unordered_map<uint64_t, Ptr<ThreeGppChannelParams> > m_channelParamsMap; //!< map containing the common channel parameters per pair of nodes, the key of this map is reciprocal and uniquely identifies a pair of nodes
+   Time m_updatePeriod; //!< the channel update period
++  // xgregorm: --nr-cache-ttl - cas posledneho pouzitia dvojic (kluc parametrov / kluc matice), cas posledneho mazania
++  std::unordered_map<uint64_t, double> m_xgUseParams;
++  std::unordered_map<uint64_t, double> m_xgUseMatrix;
++  double m_xgLastSweep = 0;
+   double m_frequency; //!< the operating frequency
+   std::string m_scenario; //!< the 3GPP scenario
+   Ptr<ChannelConditionModel> m_channelConditionModel; //!< the channel condition model
+--- a/src/spectrum/model/three-gpp-spectrum-propagation-loss-model.cc
++++ b/src/spectrum/model/three-gpp-spectrum-propagation-loss-model.cc
+@@ -282,6 +282,24 @@
+ 
+   // compute the long term key, the key is unique for each tx-rx pair
+   uint64_t longTermId = MatrixBasedChannelModel::GetKey (aPhasedArrayModel->GetId (), bPhasedArrayModel->GetId ());
++  // xgregorm: --nr-cache-ttl - zabudni dlhodobe zlozky dvojic nepouzitych TTL sekund (drzia aj maticu kanala)
++  if (g_xgCacheTtl > 0)
++    {
++      double now = Simulator::Now ().GetSeconds ();
++      if (now - m_xgLastSweep >= g_xgCacheTtl)
++        {
++          m_xgLastSweep = now;
++          for (auto it = m_xgUse.begin (); it != m_xgUse.end ();)
++            if (now - it->second > g_xgCacheTtl)
++              {
++                m_longTermMap.erase (it->first);
++                it = m_xgUse.erase (it);
++              }
++            else
++              ++it;
++        }
++      m_xgUse[longTermId] = now;
++    }
+ 
+   // look for the long term in the map and check if it is valid
+   if (m_longTermMap.find (longTermId) != m_longTermMap.end ())
+--- a/src/spectrum/model/three-gpp-spectrum-propagation-loss-model.h
++++ b/src/spectrum/model/three-gpp-spectrum-propagation-loss-model.h
+@@ -181,6 +181,8 @@
+                                           const Vector &sSpeed, const Vector &uSpeed) const;
+ 
+   mutable std::unordered_map < uint64_t, Ptr<const LongTerm> > m_longTermMap; //!< map containing the long term components
++  mutable std::unordered_map<uint64_t, double> m_xgUse; // xgregorm: --nr-cache-ttl, posledne pouzitie
++  mutable double m_xgLastSweep = 0;
+   Ptr<MatrixBasedChannelModel> m_channelModel; //!< the model to generate the channel matrix
+ };
+ } // namespace ns3

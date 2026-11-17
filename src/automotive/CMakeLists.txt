@@ -1625,6 +1625,7 @@ set(header_files
         model/Applications/trafficManagerServer80211p.h
         model/Applications/xgregorm-stats.h
         model/Applications/xgregorm-gbm.h
+        model/Applications/xgregorm-qos-core.h
         model/Applications/xgregorm-hybrid-socket.h
         model/Applications/trafficManagerClientLTE.h
         model/Applications/trafficManagerServerLTE.h

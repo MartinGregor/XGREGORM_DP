@@ -34,6 +34,8 @@ const THEME = {
   },
 };
 const HEX = THEME.colors;
+// zalozna snimka 17: citlivost na presnost hodin (seria clk, xgregorm_clk_eval.py)
+const CLK = JSON.parse(fs.readFileSync(path.join(__dirname, 'clk.json'), 'utf8'));
 // farby sieti a politik (rovnake na vsetkych snimkach)
 const COL = { wifi: HEX.accent1, nr: HEX.accent2, lte: HEX.accent4, q: HEX.dk2, mix: HEX.accent6, all: HEX.accent3, gray: HEX.accent5 };
 
@@ -137,7 +139,7 @@ function takeaway(s, t, x, y, w, h) {
     s.addText('Výber siete pre komunikáciu áut podľa nameranej kvality', { placeholder: 'title' });
     s.addText('Diplomová práca · simulácia VaN3Twin (ns-3 + SUMO) · Martin Gregor', { placeholder: 'body' });
     s.addNotes(NOTES[1]);
-    const ic = [['FaWifi', COL.wifi], ['FaSatelliteDish', COL.nr], ['FaBroadcastTower', COL.lte]];
+    const ic = [['FaRss', COL.wifi], ['FaSatelliteDish', COL.nr], ['FaBroadcastTower', COL.lte]];
     for (let i = 0; i < 3; i++) await iconCircle(s, ic[i][0], 10.2 + (i % 2) * 1.35, 1.7 + i * 1.3, 1.15, ic[i][1]);
   }
 
@@ -169,7 +171,7 @@ function takeaway(s, t, x, y, w, h) {
   {
     const s = content('Tri siete, z ktorých auto vyberá', S0);
     const nets = [
-      ['FaWifi', COL.wifi, 'Wi-Fi pre autá', '802.11p', [['ako ide', 'priamo autám okolo'], ['oneskorenie', 'prenos 0,3 ms, v plnom meste ~25 ms'], ['výhoda', 'rýchly prenos, počúva pred vysielaním'], ['slabina', 'krátky dosah, budovy ju tlmia']]],
+      ['FaRss', COL.wifi, '802.11p', 'ITS-G5, norma IEEE pre autá', [['ako ide', 'priamo autám okolo'], ['oneskorenie', 'prenos 0,3 ms, v plnom meste ~25 ms'], ['výhoda', 'rýchly prenos, počúva pred vysielaním'], ['slabina', 'krátky dosah, budovy ho tlmia']]],
       ['FaSatelliteDish', COL.nr, 'Priame 5G', 'NR-V2X', [['ako ide', 'priamo autám okolo'], ['oneskorenie', '~20 ms (čaká na svoje políčko)'], ['výhoda', 'väčší dosah, odolnejšia'], ['slabina', 'pri veľa autách sa správy zrážajú']]],
       ['FaBroadcastTower', COL.lte, 'Mobilná sieť', 'LTE', [['ako ide', 'vysielač → server → križovatka'], ['oneskorenie', 'polovica do 22 ms, 5 % nad 1 s'], ['výhoda', 'dosiahne všade'], ['slabina', 'susedné autá ju nedostanú']]],
     ];
@@ -183,7 +185,7 @@ function takeaway(s, t, x, y, w, h) {
         text(s, [{ text: k + ': ', options: { bold: true } }, { text: v }], { x: x + 0.3, y: y + 1.55 + j * 0.62, w: cw - 0.55, h: 0.58, fontSize: 14 });
       });
     }
-    takeaway(s, 'Wi-Fi a priame 5G vysielajú priamo autám okolo, mobilná sieť ide cez vysielač na streche a server len do cestnej jednotky.', M, 5.85, W - 2 * M, 0.7);
+    takeaway(s, '802.11p a priame 5G vysielajú priamo autám okolo, mobilná sieť ide cez vysielač na streche a server len do cestnej jednotky.', M, 5.85, W - 2 * M, 0.7);
   }
 
   // ============ 4. Druhy sprav ============
@@ -192,8 +194,8 @@ function takeaway(s, t, x, y, w, h) {
     const msgs = [
       ['FaCar', HEX.dk2, 'Správa o polohe', 'CAM', 'každé auto', ['kde som', 'ako rýchlo a kam idem', 'rozmery a zrýchlenie'], 'asi 3× za sekundu', 'hlavnou sieťou auta'],
       ['FaVideo', HEX.accent4, 'Správa zo senzorov', 'CPM', 'každé auto s kamerou a radarom', ['čo vidím okolo seba', 'polohy iných áut a vecí', 'aj autá bez rádia'], 'asi 8× za sekundu', 'hlavnou sieťou auta'],
-      ['FaTrafficLight', HEX.accent3, 'Stav semafora', 'SPATEM', 'cestná jednotka pri križovatke', ['aká farba svieti', 'kedy sa zmení'], '10× za sekundu', 'vždy Wi-Fi aj 5G'],
-      ['FaMapMarkedAlt', HEX.accent5, 'Mapa križovatky', 'MAPEM', 'cestná jednotka pri križovatke', ['jazdné pruhy', 'kam ktorý pruh vedie'], '1× za sekundu', 'vždy Wi-Fi aj 5G'],
+      ['FaTrafficLight', HEX.accent3, 'Stav semafora', 'SPATEM', 'cestná jednotka pri križovatke', ['aká farba svieti', 'kedy sa zmení'], '10× za sekundu', 'vždy 802.11p aj 5G'],
+      ['FaMapMarkedAlt', HEX.accent5, 'Mapa križovatky', 'MAPEM', 'cestná jednotka pri križovatke', ['jazdné pruhy', 'kam ktorý pruh vedie'], '1× za sekundu', 'vždy 802.11p aj 5G'],
     ];
     const cw = 2.85, gap = (W - 2 * M - 4 * cw) / 3;
     for (let i = 0; i < 4; i++) {
@@ -215,14 +217,14 @@ function takeaway(s, t, x, y, w, h) {
   {
     const s = content('Simulácia mesta a scenáre so zónami', S0);
     const mw = 5.5;
-    s.addImage({ path: path.join(IMG, 'mapA.png'), x: M, y: 1.3, w: mw, h: mw * 821 / 970, objectName: 'map-zones-A', altText: 'Mapa city-center, scenár A: zóny pri RSU 0 a 5 (zlá Wi-Fi) a pri RSU 2 a 8 (zlé 5G)' });
-    text(s, [{ text: '● zlá Wi-Fi   ', options: { color: C.accent1, bold: true } }, { text: '● zlé 5G   ', options: { color: C.accent2, bold: true } }, { text: 'RSU = cestná jednotka pri semafore', options: { color: C.accent5, italic: true } }], { x: M, y: 1.3 + mw * 821 / 970 + 0.05, w: mw, h: 0.32, fontSize: 12, align: 'center' });
+    s.addImage({ path: path.join(IMG, 'mapA.png'), x: M, y: 1.3, w: mw, h: mw * 821 / 970, objectName: 'map-zones-A', altText: 'Mapa city-center, scenár A: zóny pri RSU 0 a 5 (zlé 802.11p) a pri RSU 2 a 8 (zlé 5G)' });
+    text(s, [{ text: '● zlé 802.11p   ', options: { color: C.accent1, bold: true } }, { text: '● zlé 5G   ', options: { color: C.accent2, bold: true } }, { text: 'RSU = cestná jednotka pri semafore', options: { color: C.accent5, italic: true } }], { x: M, y: 1.3 + mw * 821 / 970 + 0.05, w: mw, h: 0.32, fontSize: 12, align: 'center' });
     const X = 6.45, RW = W - M - 6.45;
     bullets(s, [
       [b('140 áut, 120 s, '), r('meria sa od 30. s')],
       [b('budovy a mestský signál '), r('(357 budov, model 3GPP pre mesto)')],
       [b('plná prevádzka: '), r('podpis správ, senzory všetkých áut, semafory, mobily')],
-      [b('rušenie '), r('medzi Wi-Fi a 5G, pravidlá proti preplneniu podľa normy')],
+      [b('rušenie '), r('medzi 802.11p a 5G, pravidlá proti preplneniu podľa normy')],
     ], { x: X, y: 1.35, w: RW, h: 1.75, fontSize: 14, paraSpaceAfter: 3 });
     text(s, [b('Zóna'), r(' = kruh 150 m, kde jedna sieť stratí 70 % správ. Umelý, kontrolovaný pokus: miesto za budovou, rušenie, výpadok.')], { x: X, y: 3.15, w: RW, h: 0.65, fontSize: 14 });
     const sc = [['A', 'stále zóny (obrázok)'], ['C', 'v 60. s sa siete v zónach vymenia'], ['D', 'rozloženie, ktoré žiadna metóda nevidela'], ['T', 'bez zón, len mesto']];
@@ -266,8 +268,8 @@ function takeaway(s, t, x, y, w, h) {
       { name: 'osamotené auto pridá 5G', labels: ['10 áut', '30 áut', '100 áut'], values: [68, 32, 16] },
     ], chartBase({ x: M, y: 1.35, w: 6.0, h: 4.0, barDir: 'col', barGapWidthPct: 60, chartColors: [C.accent6, C.accent2], valAxisMinVal: 0, valAxisMaxVal: 100, valAxisMajorUnit: 25, showValue: true, dataLabelPosition: 'outEnd', dataLabelFormatCode: '0', showLegend: true, legendPos: 'b', showTitle: true, title: 'Hustota: doručené správy autám 450–600 m ďaleko [%]', objectName: 'chart-density' }));
     s.addChart(pres.charts.BAR, [
-      { name: 'bez pravidla', labels: ['čas, keď je Wi-Fi preplnená', 'doručené správy'], values: [37, 89.2] },
-      { name: 'pri preplnení časť áut na 5G', labels: ['čas, keď je Wi-Fi preplnená', 'doručené správy'], values: [24, 89.2] },
+      { name: 'bez pravidla', labels: ['čas, keď je 802.11p preplnené', 'doručené správy'], values: [37, 89.2] },
+      { name: 'pri preplnení časť áut na 5G', labels: ['čas, keď je 802.11p preplnené', 'doručené správy'], values: [24, 89.2] },
     ], chartBase({ x: 6.8, y: 1.35, w: 5.95, h: 4.0, barDir: 'col', barGapWidthPct: 60, chartColors: [C.accent6, C.accent2], valAxisMinVal: 0, valAxisMaxVal: 100, valAxisMajorUnit: 25, showValue: true, dataLabelPosition: 'outEnd', dataLabelFormatCode: '0.0', showLegend: true, legendPos: 'b', showTitle: true, title: 'Vyťaženie: preplnenie kleslo, doručenie nie [%]', objectName: 'chart-load' }));
     takeaway(s, 'Správy sa v meste strácajú hlavne kvôli budovám, nie kvôli preplneniu. Hustota a vyťaženie príčinu len nepriamo naznačujú, preto treba merať priamo výsledok.', M, 5.55, W - 2 * M, 0.9);
     source(s, 'Skoršie testy: hustota na menšej mape (5 alebo 3 náhody), vyťaženie 280 áut, 1 beh. K blízkym autám (do 100 m) hustota nepomohla ani pri 10 autách.', 6.55);
@@ -289,7 +291,7 @@ function takeaway(s, t, x, y, w, h) {
     s.addShape(pres.shapes.LINE, { x: 5.75, y: 1.98, w: 0, h: 2.2, line: { color: C.accent3, width: 2.5 }, objectName: 'branch-v' });
     for (let i = 0; i < 3; i++) s.addShape(pres.shapes.LINE, { x: 5.75, y: 1.98 + i * 1.1, w: 0.25, h: 0, line: { color: C.accent3, width: 2.5 }, objectName: nm('branch-h') });
     const paths = [
-      ['FaWifi', COL.wifi, 'Wi-Fi pre autá', 'hlavná sieť pre susedov (možnosť 1)'],
+      ['FaRss', COL.wifi, '802.11p', 'hlavná sieť pre susedov (možnosť 1)'],
       ['FaSatelliteDish', COL.nr, 'Priame 5G', 'hlavná sieť pre susedov (možnosť 2)'],
       ['FaBroadcastTower', COL.lte, 'Mobilná sieť', 'len pre križovatku: auto ďalej než 150 m na príjazde'],
     ];
@@ -299,7 +301,7 @@ function takeaway(s, t, x, y, w, h) {
       text(s, [{ text: paths[i][2], options: { bold: true, fontSize: 16, color: C.text2, breakLine: true } }, { text: paths[i][3], options: { fontSize: 13 } }], { x: 7.0, y, w: 5.75, h: 0.9, valign: 'middle' });
     }
     const rules = [
-      [b('Jedna priama sieť na správu. '), r('Každá správa o polohe ide susedom buď Wi-Fi, alebo 5G (tú volám hlavná sieť). Druhou ide len občasná skúšobná správa.')],
+      [b('Jedna priama sieť na správu. '), r('Každá správa o polohe ide susedom buď cez 802.11p, alebo cez 5G (tú volám hlavná sieť). Druhou ide len občasná skúšobná správa.')],
       [b('Mobilná sieť rovnako pri všetkých spôsoboch. '), r('Porovnanie preto nezvýhodňuje nikoho a mobilnú sieť nezaťažujem viac.')],
       [b('Výpadok siete = okamžitá náhrada. '), r('Správa nikdy neodíde do vypadnutej siete.')],
       [b('Senzorové správy '), r('idú tiež hlavnou sieťou.')],
@@ -310,7 +312,7 @@ function takeaway(s, t, x, y, w, h) {
   // ============ 8. Meranie kvality ============
   {
     const s = content('Ako auto meria kvalitu každej siete', S2);
-    text(s, 'Správy od jedného suseda, ktoré prišli cez Wi-Fi', { x: M, y: 1.45, w: 7.0, h: 0.4, fontSize: 15, bold: true, color: C.text2 });
+    text(s, 'Správy od jedného suseda, ktoré prišli cez 802.11p', { x: M, y: 1.45, w: 7.0, h: 0.4, fontSize: 15, bold: true, color: C.text2 });
     const seq = [1, 2, 3, 4, 5, 6];
     seq.forEach((n, i) => {
       const lost = n === 3;
@@ -321,7 +323,7 @@ function takeaway(s, t, x, y, w, h) {
     text(s, '„trojka chýba = stratila sa“', { x: M + 2 * 1.12 - 0.5, y: 2.98, w: 2.2, h: 0.35, fontSize: 13, italic: true, color: C.accent2, align: 'center' });
     // vysledok
     card(s, M, 3.55, 6.6, 1.35);
-    text(s, [{ text: 'Wi-Fi: 5 zo 6 = 83 %', options: { bold: true, fontSize: 20, color: C.accent1, breakLine: true } }, { text: 'to isté zvlášť pre 5G, zo všetkých susedov naraz', options: { fontSize: 14 } }], { x: M + 0.3, y: 3.65, w: 6.1, h: 1.15, valign: 'middle' });
+    text(s, [{ text: '802.11p: 5 zo 6 = 83 %', options: { bold: true, fontSize: 20, color: C.accent1, breakLine: true } }, { text: 'to isté zvlášť pre 5G, zo všetkých susedov naraz', options: { fontSize: 14 } }], { x: M + 0.3, y: 3.65, w: 6.1, h: 1.15, valign: 'middle' });
     const pts = [
       ['FaHashtag', 'Poradové číslo a značka siete', 'jeden bajt v nevyužitom poli hlavičky, správa sa nezväčší'],
       ['FaRulerHorizontal', 'Len susedia do 100 m', 'na nich záleží pre bezpečnosť'],
@@ -340,10 +342,10 @@ function takeaway(s, t, x, y, w, h) {
   // ============ 9. Kedy prepne ============
   {
     const s = content('Kedy auto prepne na druhú sieť', S2);
-    text(s, 'Raz za sekundu. Začiatok: polovica áut na Wi-Fi, polovica na 5G (ako náhodné rozdelenie).', { x: M, y: 1.35, w: W - 2 * M, h: 0.4, fontSize: 15, color: C.accent5, italic: true });
+    text(s, 'Raz za sekundu. Začiatok: polovica áut na 802.11p, polovica na 5G (ako náhodné rozdelenie).', { x: M, y: 1.35, w: W - 2 * M, h: 0.4, fontSize: 15, color: C.accent5, italic: true });
     const steps = [
       ['1', 'Pozná kvalitu oboch sietí?', 'aspoň 10 očakávaných správ od susedov'],
-      ['2', 'Druhá sieť lepšia aspoň o 5 bodov?', 'napr. Wi-Fi 78 %, 5G 93 % → zisk 15 bodov'],
+      ['2', 'Druhá sieť lepšia aspoň o 5 bodov?', 'napr. 802.11p 78 %, 5G 93 % → zisk 15 bodov'],
       ['3', 'Druhá sieť nie je preplnená?', 'kanál obsadený menej než 30 % času (hranica z normy)'],
       ['4', 'Prepne so šancou zisk / 0,4', 'zisk 15 bodov → 37,5 % áut za sekundu'],
     ];
@@ -368,25 +370,25 @@ function takeaway(s, t, x, y, w, h) {
 
   // ============ 10. Kolko aut na ktorej sieti ============
   pres.addSection({ title: S3 });
-  const POL = ['len Wi-Fi', 'len 5G', 'náhodne 50/50', 'podľa kvality', 'všetko naraz'];
+  const POL = ['len 802.11p', 'len 5G', 'náhodne 50/50', 'podľa kvality', 'všetko naraz'];
   {
     const s = content('Koľko áut je na ktorej sieti', S3);
     s.addChart(pres.charts.BAR, [
-      { name: 'Wi-Fi', labels: POL, values: [100, 0, 47.7, 59.6, 0] },
+      { name: '802.11p', labels: POL, values: [100, 0, 47.7, 59.6, 0] },
       { name: '5G', labels: POL, values: [0, 100, 52.3, 40.4, 0] },
       { name: 'obe naraz', labels: POL, values: [0, 0, 0, 0, 100] },
     ], chartBase({ x: M, y: 1.3, w: 6.2, h: 4.35, barDir: 'col', barGrouping: 'stacked', barGapWidthPct: 45, chartColors: [C.accent1, C.accent2, C.accent3], valAxisMinVal: 0, valAxisMaxVal: 100, valAxisMajorUnit: 25, showValue: true, dataLabelPosition: 'ctr', dataLabelFormatCode: '0.0;-0.0;;', dataLabelColor: 'FFFFFF', showLegend: true, legendPos: 'b', showTitle: true, title: 'Hlavná sieť áut [% áut], priemer od 30. s', catAxisLabelFontSize: 11, objectName: 'chart-share' }));
     const tl = ['1', '5', '10', '15', '20', '30', '40', '50', '60', '70', '80', '90', '100', '110', '119'];
     const qw = [47.7, 71.3, 61.7, 62.3, 60.4, 63.0, 66.0, 64.6, 61.7, 59.0, 55.4, 55.4, 57.9, 57.6, 57.2];
     s.addChart(pres.charts.LINE, [
-      { name: 'Wi-Fi', labels: tl, values: qw },
+      { name: '802.11p', labels: tl, values: qw },
       { name: '5G', labels: tl, values: qw.map((v) => Math.round((100 - v) * 10) / 10) },
     ], chartBase({ x: 7.0, y: 1.3, w: 5.75, h: 2.45, chartColors: [C.accent1, C.accent2], lineSize: 3, lineDataSymbol: 'none', valAxisMinVal: 0, valAxisMaxVal: 100, valAxisMajorUnit: 25, showLegend: true, legendPos: 'r', showTitle: true, title: 'Podľa kvality v čase [% áut], čas v s', titleFontSize: 12, catAxisLabelFontSize: 10, objectName: 'chart-share-time' }));
     s.addChart(pres.charts.BAR, [
-      { name: 'Wi-Fi', labels: POL, values: [11.3, 3.3, 7.4, 8.8, 12.7] },
+      { name: '802.11p', labels: POL, values: [11.3, 3.3, 7.4, 8.8, 12.7] },
       { name: '5G', labels: POL, values: [5.4, 56.7, 35.7, 29.4, 56.9] },
     ], chartBase({ x: 7.0, y: 3.85, w: 5.75, h: 2.5, barDir: 'col', barGapWidthPct: 50, chartColors: [C.accent1, C.accent2], valAxisMinVal: 0, valAxisMaxVal: 60, valAxisMajorUnit: 30, showValue: true, dataLabelPosition: 'outEnd', dataLabelFormatCode: '0', dataLabelFontSize: 10, showLegend: true, legendPos: 'r', showTitle: true, title: 'Obsadenosť kanála [% času], hranica 30 %', titleFontSize: 12, catAxisLabelFontSize: 9, objectName: 'chart-occupancy' }));
-    takeaway(s, 'Výber podľa kvality začne 50/50 a sám sa ustáli okolo 60 % Wi-Fi a 40 % 5G, keď 5G prestane byť preplnené (29 % času oproti 57 %).', M, 5.8, 6.2, 0.8);
+    takeaway(s, 'Výber podľa kvality začne 50/50 a sám sa ustáli okolo 60 % 802.11p a 40 % 5G, keď 5G prestane byť preplnené (29 % času oproti 57 %).', M, 5.8, 6.2, 0.8);
     source(s, 'Mesto bez zón, 140 áut, 5 náhod (201–205). Obsadenosť 5G je odhad z prijatých vysielaní.', 6.65);
   }
 
@@ -403,13 +405,13 @@ function takeaway(s, t, x, y, w, h) {
     const rows = [
       ['', 'stratí sa zo 100', 'kvalita lepšia o'],
       ['len 5G', '24,9', '+15,6'],
-      ['len Wi-Fi', '14,5', '+5,3'],
+      ['len 802.11p', '14,5', '+5,3'],
       ['náhodne 50/50', '11,0', '+1,8'],
       ['podľa kvality', '9,2', '–'],
       ['všetko naraz', '5,5', '−3,7 *'],
     ].map((row, i) => row.map((c, j) => ({ text: c, options: { fontSize: 12, bold: i === 0 || j === 0 || i === 4, color: i === 0 ? C.background1 : (c.startsWith('−') ? C.accent2 : C.text1), fill: i === 0 ? { color: C.text2 } : (i === 4 ? { color: C.background2 } : undefined), align: j ? 'center' : 'left', valign: 'middle', margin: [2, 5, 2, 5] } })));
     s.addTable(rows, { x: 7.85, y: 3.3, w: 4.9, colW: [1.7, 1.6, 1.6], rowH: 0.33, border: { type: 'solid', pt: 0.75, color: 'DDE3E6' }, objectName: 'table-flow' });
-    text(s, 'body, všetky rozdiely preukázané (95 % interval); * dva pokusy na správu (Wi-Fi aj 5G)', { x: 7.85, y: 5.35, w: 4.9, h: 0.45, fontSize: 11, italic: true, color: C.accent5 });
+    text(s, 'body, všetky rozdiely preukázané (95 % interval); * dva pokusy na správu (802.11p aj 5G)', { x: 7.85, y: 5.35, w: 4.9, h: 0.45, fontSize: 11, italic: true, color: C.accent5 });
     takeaway(s, 'Len mobilná sieť: autá si nedoručia nič, lebo správa ide len na server (skorší test). Preto nie je v grafe.', M, 5.9, W - 2 * M, 0.65);
     source(s, 'Mesto bez zón, 140 áut, 5 náhod (201–205), priemer behov, séria idea1.', 6.65);
   }
@@ -417,13 +419,13 @@ function takeaway(s, t, x, y, w, h) {
   // ============ 12. Paradox vsetko naraz ============
   {
     const s = content('Všetko naraz: viac správ o polohe, horšie kópie', S3);
-    const lab = ['senzory cez Wi-Fi', 'senzory cez 5G', 'semafor cez Wi-Fi', 'semafor cez 5G'];
+    const lab = ['senzory cez 802.11p', 'senzory cez 5G', 'semafor cez 802.11p', 'semafor cez 5G'];
     s.addChart(pres.charts.BAR, [
       { name: 'podľa kvality', labels: lab, values: [80.0, 92.1, 78.8, 96.4] },
       { name: 'všetko naraz', labels: lab, values: [74.4, 73.4, 68.6, 83.2] },
     ], chartBase({ x: M, y: 1.3, w: 7.1, h: 4.4, barDir: 'col', barGapWidthPct: 50, chartColors: [C.text2, C.accent3], valAxisMinVal: 50, valAxisMaxVal: 100, valAxisMajorUnit: 10, showValue: true, dataLabelPosition: 'outEnd', dataLabelFormatCode: '0.0', showLegend: true, legendPos: 'b', showTitle: true, title: 'Doručenie jednej kópie [%]', catAxisLabelFontSize: 11, objectName: 'chart-copy' }));
     const boxes = [
-      ['FaCar', COL.wifi, 'Správa o polohe: stačí jedna kópia', 'ide Wi-Fi aj 5G = 2 pokusy, preto 94,5 %'],
+      ['FaCar', COL.wifi, 'Správa o polohe: stačí jedna kópia', 'ide 802.11p aj 5G = 2 pokusy, preto 94,5 %'],
       ['FaVideo', COL.nr, 'Senzory a semafor: každá kópia zvlášť', 'dvojnásobná prevádzka, každá kópia horšie'],
       ['FaTrafficLight', COL.all, '5G obsadené 57 % času', 'pri výbere podľa kvality 29 %'],
       ['FaBroadcastTower', COL.lte, '4,2× viac správ', 'cez mobilnú sieť'],
@@ -500,11 +502,34 @@ function takeaway(s, t, x, y, w, h) {
     card(s, 7.55, 1.45, 5.2, 3.9, C.text2);
     text(s, 'Ďalej budem zlepšovať', { x: 7.85, y: 1.65, w: 4.7, h: 0.5, fontSize: 19, bold: true, color: C.accent3 });
     bullets(s, [
-      'kombinácia s pevným rozdelením podľa druhu správy (polohy cez 5G, senzory cez Wi-Fi)',
+      'kombinácia s pevným rozdelením podľa druhu správy (polohy cez 5G, senzory cez 802.11p)',
       'menej skúšobných správ',
       'autá, ktoré nemajú všetky siete',
     ], { x: 7.85, y: 2.25, w: 4.7, h: 2.9, fontSize: 15, color: C.background1 });
     takeaway(s, 'Obmedzenia: simulácia jednej mapy so 140 autami; zóny sú umelý pokus, nie model fyziky; poradové číslo v hlavičke je malé rozšírenie normy.', M, 5.75, W - 2 * M, 0.85);
+  }
+
+  // ============ 17. Zalozna: presny cas ============
+  pres.addSection({ title: 'Záložné' });
+  {
+    const s = content('Záložná: ako auto vie, že správa prišla do 100 ms', 'Záložné');
+    // casova os: vznik u odosielatela -> prijem
+    const steps = [
+      ['FaSatellite', COL.lte, 'Hodiny z GNSS', 'auto aj tak potrebuje GPS na polohu; čas z neho je presný na mikrosekundu'],
+      ['FaClock', COL.wifi, 'Čas vzniku v správe', 'CAM nesie čas vzniku v ms (generationDeltaTime, norma ETSI)'],
+      ['FaStopwatch', COL.nr, 'Oneskorenie = moje hodiny − čas vzniku', 'do 100 ms = načas, inak sa ráta ako strata'],
+      ['FaRoad', COL.gray, 'Bez signálu (tunel)', 'hodiny sa odchýlia asi o 1 ms za 15 minút'],
+    ];
+    for (let i = 0; i < 4; i++) {
+      const y = 1.4 + i * 0.88;
+      await iconCircle(s, steps[i][0], M, y, 0.72, steps[i][1]);
+      text(s, [{ text: steps[i][2], options: { bold: true, fontSize: 16, color: C.text2, breakLine: true } }, { text: steps[i][3], options: { fontSize: 13 } }], { x: M + 0.92, y: y - 0.04, w: 5.4, h: 0.82 });
+    }
+    s.addChart(pres.charts.BAR, [
+      { name: 'doručené správy o polohe [%]', labels: CLK.lab, values: CLK.prr },
+    ], chartBase({ x: 7.05, y: 1.3, w: 5.7, h: 3.6, barDir: 'col', barGapWidthPct: 55, chartColors: [C.text2], valAxisMinVal: CLK.min, valAxisMaxVal: CLK.max, valAxisMajorUnit: 1, showValue: true, dataLabelPosition: 'outEnd', dataLabelFormatCode: '0.0', showLegend: false, showTitle: true, title: 'Výber podľa kvality pri rôznych hodinách', catAxisLabelFontSize: 11, objectName: 'chart-clock' }));
+    takeaway(s, CLK.take, M, 4.95, W - 2 * M, 0.95);
+    source(s, CLK.src, 6.1);
   }
 
   await pres.writeFile({ fileName: OUT });

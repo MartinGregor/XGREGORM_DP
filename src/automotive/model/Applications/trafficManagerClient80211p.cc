@@ -828,7 +828,7 @@ namespace ns3
           }
       }
     // pravidlo kvality: klzave sucty dorucenych / ocakavanych CAM zabudaju s casovou konstantou 2 s
-    double fq = std::exp (-0.1 / 2.0);
+    double fq = xgcore::qosDecay (0.1, 2.0);
     for (int k = 0; k < 2; k++)
       {
         m_q_exp[k] *= fq;
@@ -877,7 +877,7 @@ namespace ns3
     // pravdepodobnostou zisk / 0.4 (pri zisku 0.2 polovica aut za 1 s - aby sa nepresunuli vsetky naraz)
     int im = m_main == xghyb::WIFI ? 0 : 1, io = 1 - im;
     const double kQmin = m_xg_clean ? 10 : 20; // najmenej ocakavanych CAM v klzavom okne, inak je kvalita nezname
-    bool known = m_xg_qos && !m_nb_equip && m_q_exp[0] >= kQmin && m_q_exp[1] >= kQmin;
+    bool known = m_xg_qos && !m_nb_equip && xgcore::qosKnown (m_q_exp, kQmin);
     double r[2] = {known ? m_q_ok[0] / m_q_exp[0] : 0, known ? m_q_ok[1] / m_q_exp[1] : 0};
     double lo = io == 0 ? cw : cn;
     // datova sada pre predikcny model a vstupy nauceneho modelu
@@ -1003,9 +1003,10 @@ namespace ns3
         known = any;
       }
     double gain = known ? r[io] - r[im] : 0;
-    if (known && gain > m_qos_margin && lo < m_cbr_high)
+    xgcore::QDecision dec = xgcore::qosDecide (known, gain, m_qos_margin, lo, m_cbr_high, u);
+    if (dec != xgcore::QDecision::NotEligible)
       {
-        if (u < std::min (1.0, gain / 0.4))
+        if (dec == xgcore::QDecision::Switch)
           {
             m_main = xgOtherDirect (m_main);
             if (m_xg_pred)
@@ -1328,48 +1329,21 @@ namespace ns3
     // Predpoklad: kanal je symetricky - co ja zle prijimam od susedov, to oni zle prijimaju odo mna.
     // Obmedzenie: sused, ktoreho nepocujem ziadnou technologiou, v odhade chyba.
     double now = Simulator::Now ().GetSeconds ();
-    bool has[2] = {(mark & 0x80) != 0, (mark & 0x40) != 0};
-    if (!has[0] && !has[1])
+    if (!(mark & 0xC0))
       return;
-    int seq = mark & 63;
     long nowms = compute_timestampIts (m_real_time) % 65536;
     double lat = ((nowms - gdt + 65536) % 65536) / 1000.0;
+    if (xgstats::clockErr () > 0) // xgregorm: --clock-err, hodiny prijimaca a odosielatela nie su presne
+      lat += xgstats::clockOff (m_sid) - xgstats::clockOff (sender);
     QSt &st = m_qst[sender];
-    QRec *r = nullptr;
-    for (auto it = st.recs.rbegin (); it != st.recs.rend (); ++it)
-      if (it->seq == seq && now - it->t0 < 1.0)
-        {
-          r = &*it;
-          break;
-        }
-    if (!r)
-      {
-        st.recs.push_back (QRec {seq, {has[0], has[1]}, now, {false, false}, {0, 0}});
-        r = &st.recs.back ();
-      }
-    if (!r->got[k])
-      {
-        r->got[k] = true;
-        r->lat[k] = lat;
-      }
-    while (!st.recs.empty () && now - st.recs.front ().t0 > 0.2)
-      {
-        xgQosFinish (sender, st, st.recs.front ());
-        st.recs.pop_front ();
-      }
+    // spolocne jadro (xgregorm-qos-core.h): zaznam CAM, uzavretie po 200 ms, chybajuce poradove cisla
+    xgcore::qosRx (st, k, mark, lat, now, [&] (const QRec &r, int miss) { xgQosFinish (sender, st, r, miss); });
   }
 
   void
-  trafficManagerClient80211p::xgQosFinish (unsigned long sender, QSt &st, const QRec &r)
+  trafficManagerClient80211p::xgQosFinish (unsigned long sender, QSt &st, const QRec &r, int miss)
   {
-    int miss = 0;
-    if (st.seq >= 0 && r.t0 - st.t < 3.0)
-      {
-        int g = (r.seq - st.seq) & 63;
-        if (g == 0)
-          return; // ta ista CAM este raz
-        miss = g - 1;
-      }
+    // pocet chybajucich CAM (miss) urcilo jadro; stav suseda (posledne poradove cislo) po navrate posunie jadro
     // susedia do 100 m (ako skutocne PRR); poloha odosielatela je v jeho CAM, v simulacii zo vzorky SUMO (~100 ms)
     auto &vp = xgstats::vehPos ();
     auto me = vp.find (m_sid), he = vp.find (sender);
@@ -1396,8 +1370,8 @@ namespace ns3
         {
           if (!r.has[k])
             continue;
-          double e = 1 + (st.has[k] ? miss : 0);
-          bool ok = r.got[k] && r.lat[k] <= m_lat_budget;
+          double e = xgcore::qosExpected (st, miss, k);
+          bool ok = xgcore::qosOnTime (r, k, m_lat_budget);
           m_q_exp[k] += e;
           m_q_ok[k] += ok;
           if (m_bandit)
@@ -1419,10 +1393,6 @@ namespace ns3
               m_qt_ok[k] += ok;
             }
         }
-    st.seq = r.seq;
-    st.has[0] = r.has[0];
-    st.has[1] = r.has[1];
-    st.t = r.t0;
   }
 
   void

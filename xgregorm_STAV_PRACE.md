@@ -93,8 +93,8 @@ setsid nohup env JOBS=4 ./xgregorm_logs/ser.sh > /dev/null 2>&1 &
 ```
 
 Pri pokračovaní v Claude Code: spustiť ho v `~/VaN3Twin/ns-3-dev`, `CLAUDE.md` sa načíta sám a odkazuje sem. Pamäť Claude je
-skopírovaná v `xgregorm_logs/claude_pamat/`, celý prepis konverzácie v `xgregorm_logs/claude_prepis_konverzacie.jsonl`
-(len v archíve, git ho ignoruje).
+skopírovaná v `xgregorm_logs/claude_pamat/`. Prepis konverzácie bol len v archíve z 2026-11-02 (GitHub Release
+`prenos-2026-11-02`), z disku zmazaný 2026-11-17 ako nepotrebný.
 
 ## 4. Čo robiť ďalej
 
@@ -150,8 +150,6 @@ Prvý záznam je z 2026-10-07, keď sa overovali scenáre na už nainštalovanom
 |---|---|
 | `ser.sh` | Skript série, pokračuje po prerušení, `JOBS` = behov naraz |
 | `LA.log`, `LE.log`, `LP.log`, `RA.log` | Úplné výstupy hotových behov |
-| `RE_prerusene_pri_32s.txt` | Výstup zastaveného behu, nepoužiteľný ako výsledok |
 | `mem.log` | Pamäť každú minútu počas série |
 | `apt_balicky.txt` | Ručne nainštalované balíky pôvodného systému |
 | `claude_pamat/` | Kópia pamäte Claude |
-| `claude_prepis_konverzacie.jsonl` | Celý prepis konverzácie od 2026-10-07 (len v archíve) |

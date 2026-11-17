@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- xgregorm: kanal ako "authors" v xgregorm-hybrid (ns-3 YansWifiChannelHelper::Default):
+     LogDistance, exponent 3, utlm 46.6777 dB v 1 m. BreakpointPathlossModel s jednym usekom (zlom v 1e7 m)
+     dava presne PL(d) = 46.6777 + 30 log10(d). Bez budov a bez unikov, ako v ns-3. -->
+<root>
+    <AnalogueModels>
+        <AnalogueModel type="BreakpointPathlossModel">
+            <parameter name="alpha1" type="double" value="3.0"/>
+            <parameter name="alpha2" type="double" value="3.0"/>
+            <parameter name="L01" type="double" value="46.6777"/>
+            <parameter name="L02" type="double" value="256.6777"/>
+            <parameter name="breakpointDistance" type="double" value="1e7"/>
+        </AnalogueModel>
+    </AnalogueModels>
+    <Decider type="Decider80211p">
+        <parameter name="centerFrequency" type="double" value="5.890e9"/>
+    </Decider>
+</root>

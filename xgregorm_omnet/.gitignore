@@ -1,0 +1,7 @@
+# xgregorm: vygenerovane pri preklade a behoch
+run_*/
+src/out/
+src/Makefile
+src/*_m.cc
+src/*_m.h
+src/xgregorm_omnet

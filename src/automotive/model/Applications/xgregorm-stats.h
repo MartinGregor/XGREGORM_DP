@@ -28,6 +28,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <random>
 #include "xgregorm-gbm.h"
 
 namespace ns3 {
@@ -173,6 +174,23 @@ inline double &nrFrom () { static double t = 0; return t; }
 // CAM poslane skor sa do ziadnej statistiky nezapocitaju, ani ked su prijate neskor. Spravanie algoritmov sa nemeni.
 inline double &warmup () { static double t = 0; return t; }
 inline bool measuring () { return Simulator::Now ().GetSeconds () >= warmup (); }
+
+// xgregorm: --clock-err - chyba hodin GNSS/ITS (smerodajna odchylka [s], 0 = presne hodiny ako doteraz). Kazda stanica ma
+// stalu odchylku z N(0, sigma), urcenu z jej ID a seedu vlastnym generatorom (nespotrebuje cisla ns-3, ostatne nahody
+// ostanu bit po bite rovnake). Pouziva sa len pri meranom oneskoreni v pravidle kvality (cas prijmu podla mojich hodin
+// minus cas vzniku podla hodin odosielatela).
+inline double &clockErr () { static double s = 0; return s; }
+inline unsigned long &clockSeed () { static unsigned long s = 1; return s; }
+inline double clockOff (unsigned long sid)
+{
+  static std::map<unsigned long, double> m;
+  auto it = m.find (sid);
+  if (it != m.end ())
+    return it->second;
+  std::mt19937_64 g (sid * 0x9E3779B97F4A7C15ULL ^ clockSeed ());
+  std::normal_distribution<double> n (0.0, clockErr ());
+  return m[sid] = n (g);
+}
 
 // straty pri prepnuti technologie: pre kazdu CAM a suseda do 100 m (meria sa len pri CAM poslanej po nrFrom)
 //  comp[c][r]: c = priame cesty CAM (0 = len 802.11p, 1 = len NR, 2 = obe), r = dostal ju 0 nikto, 1 len 802.11p,

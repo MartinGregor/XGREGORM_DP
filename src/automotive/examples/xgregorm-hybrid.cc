@@ -26,6 +26,7 @@
 #include "ns3/csma-module.h"
 #include "ns3/lte-module.h"
 #include "ns3/nr-module.h"
+#include "ns3/three-gpp-channel-model.h" // xgregorm: g_xgCacheTtl (--nr-cache-ttl)
 #include "ns3/antenna-module.h"
 #include "ns3/buildings-module.h"
 #include "ns3/propagation-module.h"
@@ -646,24 +647,6 @@ burst (Ptr<Socket> s, double until, double rate, uint32_t node)
   (node == UINT32_MAX ? txN : phoneN)++;
   Simulator::Schedule (Seconds (pkt * 8.0 / (2 * rate * 1000)), &burst, s, until, rate, node);
 }
-// xgregorm: chodci s telefonom
-uint64_t vamN = 0;
-void
-vam (Ptr<Socket> s, double period)
-{
-  s->Send (Create<Packet> (290 + 93));
-  vamN++;
-  Simulator::Schedule (Seconds (period), &vam, s, period);
-}
-std::vector<std::pair<Ptr<MobilityModel>, Ptr<WaypointMobilityModel>>> pedMob;
-void
-pedTick ()
-{
-  // poloha UE podla trasy chodca, 2x za sekundu (pri 1.5 m/s posun < 1 m)
-  for (auto &p : pedMob)
-    p.first->SetPosition (p.second->GetPosition ());
-  Simulator::Schedule (MilliSeconds (500), &pedTick);
-}
 } // namespace xglbg
 
 // xgregorm: vybava aut (--equip): kazde auto ma LTE (telematika, eCall - v EU povinne), priame technologie podla
@@ -742,8 +725,6 @@ main (int argc, char *argv[])
   bool nb_equip = false, rsu_route = false;
   std::string rsu_equip;   // xgregorm: napad 3: vybava RSU po rade, opakuje sa, napr. "W,N,WN"
   std::string cpm_rat;     // xgregorm: napad 6: CPM vzdy touto technologiou (W, N)
-  std::string peds_file;   // xgregorm: --ped v skripte: trasy chodcov, UE pozadia = chodci s telefonom
-  double ped_vam_hz = 1;
   bool vehicle_vis = false;
   std::string sumo_netstate_file_name;
   bool send_cam = true;
@@ -767,6 +748,8 @@ main (int argc, char *argv[])
   double cbr_high = 0.3, cbr_low = 0.2, lte_high = 0.6, load_period = 1.0;
   bool qos_rat = false;                                      // xgregorm: vyber technologie podla namerannej kvality
   double qos_margin = 0.05, lat_budget = 0.1;
+  double nr_max_loss = 0; // xgregorm: --nr-max-loss
+  bool nr_fading = true;  // xgregorm: --nr-fading
   bool pred_rat = false;                                     // xgregorm: prediktivny vyber (mapa kvality + trasa)
   double pred_horizon = 3;
   double coex_aclr = 30;                                     // xgregorm: vzajomne rusenie 802.11p a NR
@@ -783,7 +766,6 @@ main (int argc, char *argv[])
   double nr_tx_power = 23;
   uint16_t nr_numerology = 2;
   uint8_t nr_mcs = 14;
-  bool nr_sensing = false; // autori: false (nahodny vyber zdrojov bez sledovania obsadenosti)
   Time nr_bearer_time = Seconds (2.0);
 
   int numberOfNodes;
@@ -832,6 +814,11 @@ main (int argc, char *argv[])
                 "(delivered within --lat-budget, per technology); needs --load-stats",qos_rat);
   cmd.AddValue ("qos-margin","Quality rule: required reliability advantage of the other technology",qos_margin);
   cmd.AddValue ("lat-budget","Quality rule: CAM latency budget [s] (later = lost)",lat_budget);
+  cmd.AddValue ("nr-fading","NR sidelink 3GPP fast fading (false = path loss and shadowing only, large scenarios)",nr_fading);
+  cmd.AddValue ("nr-max-loss","Large scenarios: NR sidelink receivers with path loss above X dB do not get the signal "
+                "at all (0 = off, as before)",nr_max_loss);
+  cmd.AddValue ("nr-cache-ttl","Large scenarios: forget 3GPP channel realizations of pairs unused for X s (0 = off)",ns3::g_xgCacheTtl);
+  cmd.AddValue ("clock-err","Quality rule: clock error of each station, std. dev. [s] (0 = exact GNSS time)",xgstats::clockErr ());
   cmd.AddValue ("pred-rat","Quality rule with prediction: reliability and load over the next --pred-horizon s from a "
                 "shared quality map (measurements of all vehicles, per cell) along the route (implies --qos-rat)",pred_rat);
   cmd.AddValue ("pred-horizon","Prediction horizon [s] (one route point per second)",pred_horizon);
@@ -856,7 +843,6 @@ main (int argc, char *argv[])
   cmd.AddValue ("core-delay","One-way delay PGW -> server [ms]",core_delay_ms);
   cmd.AddValue ("nr-tx-power","NR-V2X tx power [dBm]",nr_tx_power);
   cmd.AddValue ("nr-mcs","NR-V2X sidelink MCS",nr_mcs);
-  cmd.AddValue ("nr-sensing","NR-V2X mode 2: sensing-based resource selection (authors: false)",nr_sensing);
   cmd.AddValue ("tx-power", "802.11p transmission power [dBm]", txPower);
   cmd.AddValue ("datarate", "802.11p channel data rate [Mbit/s]", datarate);
   cmd.AddValue ("zones","Local degradation: rsuIndex:radius:t0:t1:W|N:loss+... (reception of that technology is lost with this probability)",zones_s);
@@ -866,8 +852,6 @@ main (int argc, char *argv[])
   cmd.AddValue ("probe-hz","Clean policy: CAMs per second also on the other technology (to measure it)",probe_hz);
   cmd.AddValue ("cell-dist","Clean policy: LTE copy on an approach farther than this from the RSU [m]",cell_dist);
   cmd.AddValue ("rem-period","Quality map: report period over LTE [s] (0 = instant shared memory, idealised)",xgstats::remPeriod ());
-  cmd.AddValue ("peds-file","Pedestrian waypoints (one line per pedestrian: t x y t x y ...); makes the --lte-bg-ue UEs walk",peds_file);
-  cmd.AddValue ("ped-vam-hz","Pedestrians: VAM over LTE per second",ped_vam_hz);
   cmd.AddValue ("dcc-offload","Clean policy: CAM/CPM over NR when the DCC gate of 802.11p would hold it longer than this [ms]; 0 = off",dcc_offload_ms);
   cmd.AddValue ("nb-equip","Clean policy: choose the technology by the equipment of the neighbours",nb_equip);
   cmd.AddValue ("rsu-equip","Equipment of the RSUs in turn, repeated, e.g. W,N,WN (empty = all both)",rsu_equip);
@@ -935,6 +919,7 @@ main (int argc, char *argv[])
   cmd.AddValue ("sec-cert","Signature size with the full certificate, once per second [B]",xgbg::secCert);
   cmd.AddValue ("range-stats","Measure delivery vs. distance (50 m bins up to 1000 m), car-car and car-RSU",range_stats);
   cmd.Parse (argc, argv);
+  xgstats::clockSeed () = (unsigned long) sumo_seed; // xgregorm: --clock-err, odchylky hodin podla seedu
   if (pred_rat)
     qos_rat = true;
   if (clean_policy)
@@ -1400,26 +1385,6 @@ main (int argc, char *argv[])
           MobilityHelper bgMob;
           bgMob.SetPositionAllocator (bgPos);
           bgMob.Install (bgNodes);
-          if (!peds_file.empty ())
-            {
-              // xgregorm: chodci - poloha podla trasy po chodniku (z generatora), UE ostava v ns-3 (auta na nich nereaguju)
-              std::ifstream pf (peds_file);
-              if (!pf)
-                NS_FATAL_ERROR ("Cannot read --peds-file " << peds_file);
-              std::string line;
-              for (uint32_t u = 0; u < bgNodes.GetN () && std::getline (pf, line); u++)
-                {
-                  Ptr<WaypointMobilityModel> wm = CreateObject<WaypointMobilityModel> ();
-                  std::stringstream ls (line);
-                  double t, x, y;
-                  while (ls >> t >> x >> y)
-                    wm->AddWaypoint (Waypoint (Seconds (t), Vector (x, y, 1.5)));
-                  Ptr<MobilityModel> old = bgNodes.Get (u)->GetObject<MobilityModel> ();
-                  old->SetPosition (wm->GetPosition ());
-                  xglbg::pedMob.push_back ({old, wm});
-                }
-              Simulator::Schedule (Seconds (0.1), &xglbg::pedTick);
-            }
           if (urban)
             BuildingsHelper::Install (bgNodes);
           internet.Install (bgNodes);
@@ -1472,9 +1437,6 @@ main (int argc, char *argv[])
               so->Connect (InetSocketAddress (serverAddr, 5001));
               // start po pripojeni (1-2 s), zaciname vo faze OFF
               Simulator::Schedule (Seconds (1.0 + pr->GetValue ()), &xglbg::burst, so, 0.0, xglbg::kbps, UINT32_MAX);
-              // chodec: VAM cez LTE (290 B + 93 B digest podpisu), obsah sa nemodeluje
-              if (!peds_file.empty () && ped_vam_hz > 0)
-                Simulator::Schedule (Seconds (1.0 + pr->GetValue ()), &xglbg::vam, so, 1.0 / ped_vam_hz);
             }
         }
       if (lte_bg_ue > 0 || phone_share > 0 || xgstats::remPeriod () > 0)
@@ -1573,8 +1535,19 @@ main (int argc, char *argv[])
       Config::SetDefault ("ns3::ThreeGppChannelModel::UpdatePeriod", TimeValue (MilliSeconds (0)));
       nrHelper->SetChannelConditionModelAttribute ("UpdatePeriod", TimeValue (MilliSeconds (urban ? 100 : 0)));
       nrHelper->SetPathlossAttribute ("ShadowingEnabled", BooleanValue (urban));
-      nrHelper->InitializeOperationBand (&bandSl);
+      // xgregorm: --nr-fading 0 - bez rychlych unikov 3GPP (len utlm + tienenie, bez matice kanala pre dvojicu);
+      // len pre velke scenare (1000 aut), kde matice kanala zaberu najviac pamate a casu. Predvolene 1 = ako doteraz.
+      if (nr_fading)
+        nrHelper->InitializeOperationBand (&bandSl);
+      else
+        nrHelper->InitializeOperationBand (&bandSl, NrHelper::INIT_PROPAGATION | NrHelper::INIT_CHANNEL);
       BandwidthPartInfoPtrVector allBwps = CcBwpCreator::GetAllBwps ({bandSl});
+      // xgregorm: --nr-max-loss - prijimac, ku ktoremu je utlm (bez rychlych unikov) vacsi nez X dB, signal vobec nedostane
+      // (ani ako rusenie): pri 23 dBm a X = 130 je to pod -107 dBm, 15 dB pod sumom kanala 20 MHz. Pre velke scenare
+      // (1000 aut), 0 = vypnute (povodne spravanie, pocita sa kazda dvojica).
+      if (nr_max_loss > 0)
+        for (auto &b : allBwps)
+          b.get ()->m_channel->SetAttribute ("MaxLossDb", DoubleValue (nr_max_loss));
 
       nrHelper->SetUeAntennaAttribute ("NumRows", UintegerValue (1));
       nrHelper->SetUeAntennaAttribute ("NumColumns", UintegerValue (2));
@@ -1584,7 +1557,7 @@ main (int argc, char *argv[])
       if (nr_nf < 0)
         nr_nf = urban ? 9 : 5;
       nrHelper->SetUePhyAttribute ("NoiseFigure", DoubleValue (nr_nf));
-      nrHelper->SetUeMacAttribute ("EnableSensing", BooleanValue (nr_sensing));
+      nrHelper->SetUeMacAttribute ("EnableSensing", BooleanValue (false)); // autori: bez sledovania obsadenosti (so sensingom nepouzitelne pomale)
       nrHelper->SetUeMacAttribute ("T1", UintegerValue (2));
       nrHelper->SetUeMacAttribute ("T2", UintegerValue (81));
       nrHelper->SetUeMacAttribute ("ActivePoolId", UintegerValue (0));
@@ -1949,7 +1922,7 @@ main (int argc, char *argv[])
       std::cout << std::endl;
     }
   if (lte_bg_ue > 0)
-    std::cout << "XGREGORM-LTEBG,UE:" << lte_bg_ue << ",PKT:" << xglbg::txN << ",BYTES:" << xglbg::txN * xglbg::pkt << ",VAM:" << xglbg::vamN << std::endl;
+    std::cout << "XGREGORM-LTEBG,UE:" << lte_bg_ue << ",PKT:" << xglbg::txN << ",BYTES:" << xglbg::txN * xglbg::pkt << std::endl;
   if (spat_on || cpm_share > 0)
     xgbg::print ();
   std::cout << "XGREGORM-WIFIFRAMES,N:" << xgload::wFrames << ",BYTES:" << xgload::wBytes << std::endl;

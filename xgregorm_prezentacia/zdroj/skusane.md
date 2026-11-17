@@ -28,7 +28,7 @@ Pri každom pokuse je popísané, čo to bolo, ako to fungovalo, čo vyšlo a pr
 
 **Ako fungovalo:**
 
-1. Základ bol Wi-Fi.
+1. Základ bol 802.11p.
 2. Cestná jednotka posielala zoznam áut, ktorých správy počula.
 3. Keď auto blízko križovatky nebolo v zozname, prepne na 5G. Ak nepomohlo ani to, pridalo zálohu cez mobilnú sieť.
 4. Zálohu vyplo až po 1 s dobrého spojenia.
@@ -43,11 +43,11 @@ Pri každom pokuse je popísané, čo to bolo, ako to fungovalo, čo vyšlo a pr
 
 ## 4. Hustota áut (13. októbra)
 
-**Ako fungovala:** auto si každých 100 ms rátalo susedov, ktorých počulo cez Wi-Fi a 5G za poslednú sekundu.
+**Ako fungovala:** auto si každých 100 ms rátalo susedov, ktorých počulo cez 802.11p a 5G za poslednú sekundu.
 
 | verzia | pravidlo | výsledok |
 |---|---|---|
-| P1 | nikoho na Wi-Fi za 2 s → pridaj 5G | 10 áut: autá 450–600 m 17 → 68 %; 30 áut 16 → 32 %; 100 áut nič |
+| P1 | nikoho na 802.11p za 2 s → pridaj 5G | 10 áut: autá 450–600 m 17 → 68 %; 30 áut 16 → 32 %; 100 áut nič |
 | P1b, P1c | 5G aj vtedy, keď niekoho počujem len cez 5G | dosah ako „všetko naraz“, ale 5G zapnuté v 82–87 % rozhodnutí |
 | P1d | ako P1b, len kým je 5G pod 30 % obsadenosti | v bežnej premávke rovnaké ako P1b; pri preplnení obmedzí 5G a zhorší dosah |
 
@@ -62,16 +62,16 @@ Pri každom pokuse je popísané, čo to bolo, ako to fungovalo, čo vyšlo a pr
 
 **Ako fungovalo:**
 
-1. Auto si viedlo priemer obsadenosti Wi-Fi a 5G za poslednú sekundu a od siete dostávalo vyťaženie bunky mobilnej siete.
-2. Raz za sekundu, keď bola Wi-Fi obsadená viac než 30 % času a 5G menej, auto prešlo na 5G s pravdepodobnosťou (obsadenosť − 0,25) / obsadenosť. Presunula sa tak len časť áut.
+1. Auto si viedlo priemer obsadenosti 802.11p a 5G za poslednú sekundu a od siete dostávalo vyťaženie bunky mobilnej siete.
+2. Raz za sekundu, keď bolo 802.11p obsadené viac než 30 % času a 5G menej, auto prešlo na 5G s pravdepodobnosťou (obsadenosť − 0,25) / obsadenosť. Presunula sa tak len časť áut.
 3. Späť prešlo, keď obsadenosť klesla pod 20 %.
 4. Zálohu cez mobilnú sieť nepridalo, keď bola bunka plná.
 
 **Výsledok (280 áut, 1 beh):**
 
-- Preplnenie Wi-Fi kleslo z 37 na 24 % času, ale PRR ostalo rovnaké (89,2 %).
+- Preplnenie 802.11p kleslo z 37 na 24 % času, ale PRR ostalo rovnaké (89,2 %).
 - Brána mobilnej siete bola „všetko alebo nič“: všetky autá ju vypli naraz.
-- V realistickej konfigurácii (ladenie) sa presun takmer nespustil, lebo Wi-Fi bola nad 30 % len 2 % času. PRR 78,7 % oproti 78,4 % pri samotnej Wi-Fi.
+- V realistickej konfigurácii (ladenie) sa presun takmer nespustil, lebo 802.11p bolo nad 30 % len 2 % času. PRR 78,7 % oproti 78,4 % pri samotnom 802.11p.
 
 **Prečo nefungovalo:** správy sa strácali za budovami, nie kvôli preplneniu. Odľahčenie kanála straty za rohom neodstráni.
 
@@ -80,7 +80,7 @@ Pri každom pokuse je popísané, čo to bolo, ako to fungovalo, čo vyšlo a pr
 **Ako fungovala:**
 
 1. Mesto sa rozdelí na štvorce 20 × 20 m.
-2. Autá raz za sekundu hlásia cez mobilnú sieť, koľko správ v danom štvorci prišlo cez Wi-Fi a cez 5G.
+2. Autá raz za sekundu hlásia cez mobilnú sieť, koľko správ v danom štvorci prišlo cez 802.11p a cez 5G.
 3. Mapa postupne zabúda, staré merania strácajú váhu s časovou konštantou 30 s.
 4. Auto z rýchlosti a trasy v navigácii určí, kde bude o 1, 2 a 3 sekundy. Kvalitu siete vypočíta ako priemer vlastného merania a hodnôt mapy v týchto bodoch.
 5. Ďalej použije rovnaké pravidlo ako výber podľa kvality.
@@ -172,12 +172,12 @@ Vstupy boli len to, čo auto naozaj vie: vlastné merania a obsah prijatých spr
 
 | nápad | ako funguje | výsledok |
 |---|---|---|
-| 1. obchádzka čakania | keď by správa na Wi-Fi čakala kvôli pravidlám proti preplneniu dlhšie než 20 ms, pošle sa cez 5G | ako výber podľa kvality, bez merania a bez skúšok (pri 100 ms nepomohol) |
+| 1. obchádzka čakania | keď by správa na 802.11p čakala kvôli pravidlám proti preplneniu dlhšie než 20 ms, pošle sa cez 5G | ako výber podľa kvality, bez merania a bez skúšok (pri 100 ms nepomohol) |
 | 2. výbava susedov | keď autá majú len jednu sieť, vysielaj tou, ktorú majú susedia | +10 až +14 bodov oproti pevnému výberu |
 | 3. cestná jednotka na trase | pred jednotkou, ktorá má len jednu sieť, použi práve tú | jednotka dostane o 16–19 bodov viac správ, informácia 0,4 s namiesto 5–7 s |
 | 4. kópia blízkym | autám veľmi blízko pošli správu aj cez 5G | pri 100 m o 1 bod nad výberom podľa kvality, senzory horšie |
 | 5. podľa geometrie | rozhoduj podľa vzdialenosti a polohy | horšie než výber podľa kvality |
-| 6. podľa druhu správy | polohu vždy cez 5G, senzory vždy cez Wi-Fi | bez zón 95,6 % (o 4,8 bodu nad výberom podľa kvality); v zónach sa nevie prispôsobiť, senzory o 12 bodov horšie |
+| 6. podľa druhu správy | polohu vždy cez 5G, senzory vždy cez 802.11p | bez zón 95,6 % (o 4,8 bodu nad výberom podľa kvality); v zónach sa nevie prispôsobiť, senzory o 12 bodov horšie |
 
 ## Spoločné poučenie
 

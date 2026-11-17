@@ -15,7 +15,7 @@ Okrem nej autá a križovatky posielajú ďalšie dve správy:
 
 | | čo to je | výhoda | nevýhoda |
 |---|---|---|---|
-| **Wi-Fi pre autá** (802.11p) | starší systém, auto vysiela priamo autám okolo | rýchly prenos (zlomok milisekundy); v plnom meste s čakaním vo fronte asi 25 ms | krátky dosah, budovy ho tlmia, pri veľa autách sa „prekrikujú“ |
+| **802.11p** (ITS-G5; nie je to bežná Wi-Fi, ale samostatná norma pre autá) | starší systém, auto vysiela priamo autám okolo | rýchly prenos (zlomok milisekundy); v plnom meste s čakaním vo fronte asi 25 ms | krátky dosah, budovy ho tlmia, pri veľa autách sa „prekrikujú“ |
 | **Priame 5G** (NR-V2X) | novší systém, tiež priamo auto-auto, bez vysielača | ďalší dosah, odolnejšie | pomalšie (asi 10–20 ms), keď vysiela veľa áut naraz, správy sa zrážajú |
 | **Mobilná sieť** (LTE) | ako mobil: auto, vysielač na streche, internet, križovatka | dosiahne všade | k susedným autám nejde, len na server; pri plnej bunke je pomalé |
 
@@ -46,9 +46,9 @@ Toto ešte nie je hlavný výsledok práce, ale do práce to patrí: bez týchto
 
 ## 4. Prepínač: auto vie poslať správu hociktorou cestou (12.–13. októbra)
 
-Vznikol **prepínač**. Auto najprv rozhodne, *kedy* správu pošle (podľa normy), a prepínač potom rozhodne, *ktorou cestou*: Wi-Fi pre autá, priamym 5G, mobilnou sieťou alebo viacerými naraz.
+Vznikol **prepínač**. Auto najprv rozhodne, *kedy* správu pošle (podľa normy), a prepínač potom rozhodne, *ktorou cestou*: 802.11p, priamym 5G, mobilnou sieťou alebo viacerými naraz.
 
-Vyskúšali sa aj **výpadky**: napríklad Wi-Fi na 30 sekúnd „vypadne“. Auto do sekundy prejde na inú technológiu a nič sa nestratí. To bol prvý dôkaz, že kombinovať technológie má zmysel.
+Vyskúšali sa aj **výpadky**: napríklad 802.11p na 30 sekúnd „vypadne“. Auto do sekundy prejde na inú technológiu a nič sa nestratí. To bol prvý dôkaz, že kombinovať technológie má zmysel.
 
 ## 5. Prvý nápad: rozhodovať podľa hustoty áut (13. októbra)
 
@@ -70,16 +70,16 @@ Simulácia bola dovtedy príliš ideálna, preto sa postupne pridali:
 - **budovy**: za rohom signál slabne (odborne „bez priamej viditeľnosti“),
 - **podpis správ**: v realite je každá správa podpísaná proti podvrhom, takže je väčšia,
 - **ďalšie správy**: zo semaforov a zo senzorov všetkých áut, aby bolo rádio naozaj vyťažené,
-- **rušenie**: Wi-Fi pre autá a priame 5G sa v pásme navzájom rušia,
+- **rušenie**: 802.11p a priame 5G sa v pásme navzájom rušia,
 - **brzdy proti preplneniu** (odborne DCC): keď je rádio plné, norma nariaďuje autu vysielať menej často,
 - **mobily v autách a iných používateľov mobilnej siete**, aby nebola prázdna,
 - **náhodné krátke výkyvy signálu**.
 
 ### Druhý nápad: rozhodovať podľa vyťaženia
 
-**Myšlienka:** keď je Wi-Fi preplnená, časť áut presunieme na priame 5G.
+**Myšlienka:** keď je 802.11p preplnené, časť áut presunieme na priame 5G.
 
-Mechanicky to fungovalo: asi 15 % áut sa presunulo a Wi-Fi bola menej preplnená. **Spoľahlivosť sa však nezlepšila.** Ukázalo sa prečo: správy sa nestrácali kvôli preplneniu, ale kvôli **budovám**. Odľahčenie rádia nepomôže, keď je problém v tom, že auto je za rohom.
+Mechanicky to fungovalo: asi 15 % áut sa presunulo a 802.11p bolo menej preplnené. **Spoľahlivosť sa však nezlepšila.** Ukázalo sa prečo: správy sa nestrácali kvôli preplneniu, ale kvôli **budovám**. Odľahčenie rádia nepomôže, keď je problém v tom, že auto je za rohom.
 
 **Toto je kľúčová lekcia celej práce:** keď sa rozhoduješ podľa niečoho, čo len *nepriamo naznačuje* problém (hustota, vyťaženie), netrafíš skutočnú príčinu strát.
 
@@ -91,7 +91,7 @@ Mechanicky to fungovalo: asi 15 % áut sa presunulo a Wi-Fi bola menej preplnen�
 
 - Každá správa nesie malé **poradové číslo**: 1, 2, 3, 4… Je vložené do nevyužitého bajtu v hlavičke, takže správa nie je väčšia.
 - Keď auto od suseda dostane správy 1, 2, 4, 5, vie, že **správa 3 sa stratila**.
-- Takto si auto pre každú technológiu zvlášť ráta: „cez Wi-Fi mi od susedov prichádza 80 zo 100 správ, cez priame 5G 95 zo 100“. Počíta sa len to, čo prišlo včas (do 100 ms).
+- Takto si auto pre každú technológiu zvlášť ráta: „cez 802.11p mi od susedov prichádza 80 zo 100 správ, cez priame 5G 95 zo 100“. Počíta sa len to, čo prišlo včas (do 100 ms).
 - Predpokladá sa, že ak ja od susedov dobre počujem cez 5G, aj oni dobre počujú mňa (rádio funguje oboma smermi podobne).
 
 **Pravidlo:** raz za sekundu sa auto pozrie, či je druhá technológia lepšia aspoň o 5 zo 100 a nie je preplnená. Ak áno, prejde na ňu. Nerobia to všetky autá naraz, ale len časť, aby celé mesto neskočilo na jednu technológiu a nepreplnilo ju.
@@ -115,20 +115,20 @@ Simulácia má v sebe náhodu: kde autá štartujú, kedy vysielajú, ako kolí�
 
 Hlavné porovnanie nie je „kvalita oproti niečomu zložitému“, ale **„kvalita oproti stavu, keď auto nerozhoduje vôbec“**:
 
-- **pevné rozdelenie**: polovica áut má natrvalo Wi-Fi, polovica priame 5G (v súboroch MIX),
-- **len Wi-Fi** pre všetkých (FW),
+- **pevné rozdelenie**: polovica áut má natrvalo 802.11p, polovica priame 5G (v súboroch MIX),
+- **len 802.11p** pre všetkých (FW),
 - **len priame 5G** pre všetkých (FN).
 
 ## 9. Scenáre: čo sú tie „zóny“
 
-V realite sú v meste miesta, kde jedna technológia funguje zle: za budovou, pri zdroji rušenia, v diere pokrytia, pri skrinke, ktorá má len jednu technológiu. V simulácii ich ťažko presne vyrobiť a opakovať. Preto vznikli **zóny**: kruhy okolo niektorých križovatiek, kde sa *umelo* stratí 70 % správ jednej technológie. V dvoch zónach je zlá Wi-Fi, v dvoch priame 5G.
+V realite sú v meste miesta, kde jedna technológia funguje zle: za budovou, pri zdroji rušenia, v diere pokrytia, pri skrinke, ktorá má len jednu technológiu. V simulácii ich ťažko presne vyrobiť a opakovať. Preto vznikli **zóny**: kruhy okolo niektorých križovatiek, kde sa *umelo* stratí 70 % správ jednej technológie. V dvoch zónach je zlé 802.11p, v dvoch priame 5G.
 
 Je to **kontrolovaný pokus**, nie model skutočnej fyziky. Výhoda: presne vieme, kde a kedy je zle, takže môžeme porovnať, ako rýchlo to auto zistí.
 
 Scenáre:
 
 - **A**: zóny sú stále na tom istom mieste,
-- **C**: v polovici behu si zóny vymenia technológie (kde bola zlá Wi-Fi, je zrazu zlé 5G),
+- **C**: v polovici behu si zóny vymenia technológie (kde bolo zlé 802.11p, je zrazu zlé 5G),
 - **D**: iné rozloženie zón, ktoré žiadna metóda nikdy predtým „nevidela“,
 - **T**: **žiadne zóny**, len realistické mesto s budovami a rušením.
 
@@ -164,7 +164,7 @@ Pri výbere podľa kvality sa navyše lepšie doručovali aj správy zo senzorov
 
 Poctivo však treba povedať:
 
-- **Čím viac sa technológie líšia, tým viac výber pomôže.** Pri zónach o 8 až 14 zo 100, v obyčajnom simulovanom meste len asi o 2 zo 100 oproti pevnému rozdeleniu a o 5 zo 100 oproti samotnej Wi-Fi. Koľko takých rozdielov je v skutočnom meste, simulácia nepovie.
+- **Čím viac sa technológie líšia, tým viac výber pomôže.** Pri zónach o 8 až 14 zo 100, v obyčajnom simulovanom meste len asi o 2 zo 100 oproti pevnému rozdeleniu a o 5 zo 100 oproti samotnom 802.11p. Koľko takých rozdielov je v skutočnom meste, simulácia nepovie.
 - Poradové číslo v hlavičke je **malé rozšírenie normy**.
 - Skúšobné správy niečo stoja (asi pol správy za sekundu na auto).
 - Je to simulácia jednej mapy so 140 autami.
@@ -173,12 +173,12 @@ Poctivo však treba povedať:
 
 | nápad | jednoducho | výsledok |
 |---|---|---|
-| **1. Obchádzka čakania** | keď by správa na Wi-Fi čakala kvôli brzdám proti preplneniu dlhšie než 20 ms, pošle sa cez priame 5G | rovnako dobrý ako výber podľa kvality, ale **bez merania a bez skúšobných správ**. Pri dlhšom čakaní (100 ms) už nepomohol |
-| **2. Podľa výbavy susedov** | keď niektoré autá majú len Wi-Fi a iné len 5G, auto vysiela tým, čo majú susedia | **+10 až +14 zo 100** oproti pevnému výberu |
+| **1. Obchádzka čakania** | keď by správa na 802.11p čakala kvôli brzdám proti preplneniu dlhšie než 20 ms, pošle sa cez priame 5G | rovnako dobrý ako výber podľa kvality, ale **bez merania a bez skúšobných správ**. Pri dlhšom čakaní (100 ms) už nepomohol |
+| **2. Podľa výbavy susedov** | keď niektoré autá majú len 802.11p a iné len 5G, auto vysiela tým, čo majú susedia | **+10 až +14 zo 100** oproti pevnému výberu |
 | **3. Podľa skrinky na trase** | keď skrinka pri križovatke má len jednu technológiu, auto pred ňou použije práve tú | skrinka dostane o **16 až 19 zo 100 viac** správ, informácia o aute stará 0,4 s namiesto 5–7 s |
 | **4. Blízkym aj cez 5G** | autám veľmi blízko pošle správu oboma technológiami | najlepšia varianta o 1 zo 100 nad výberom podľa kvality, správy zo senzorov však horšie |
 | **5. Podľa geometrie** | rozhodovanie podľa vzdialenosti a polohy | horšie než výber podľa kvality |
-| **6. Rozdelenie podľa druhu správy** | správy o polohe vždy cez priame 5G, správy zo senzorov vždy cez Wi-Fi | **najväčší zisk: 96 zo 100**, o 5 zo 100 lepšie než výber podľa kvality. Správy zo senzorov trochu horšie. **V zónach sa však nevie prispôsobiť**: správy zo senzorov tam boli o 12 zo 100 horšie |
+| **6. Rozdelenie podľa druhu správy** | správy o polohe vždy cez priame 5G, správy zo senzorov vždy cez 802.11p | **najväčší zisk: 96 zo 100**, o 5 zo 100 lepšie než výber podľa kvality. Správy zo senzorov trochu horšie. **V zónach sa však nevie prispôsobiť**: správy zo senzorov tam boli o 12 zo 100 horšie |
 
 ### Ktorým smerom by sa dalo ísť
 

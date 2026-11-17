@@ -2,6 +2,7 @@
 #define trafficManagerClient80211p_H
 
 
+#include "xgregorm-qos-core.h"
 #include "ns3/xgregorm-stats.h" // xgregorm
 #include "ns3/application.h"
 #include "ns3/asn_utils.h"
@@ -137,11 +138,12 @@ private:
   Ptr<XgRxProxySocket> m_rx_proxy;
   int m_rx_mark = -1;                  //!< znacka prave spracuvaneho prijateho paketu (-1 = ziadna)
   uint8_t m_tx_seq = 0;
-  struct QRec { int seq; bool has[2]; double t0; bool got[2]; double lat[2]; };
-  struct QSt { std::deque<QRec> recs; int seq = -1; bool has[2] = {false, false}; double t = -10;
-               double x = 0, y = 0, vx = 0, vy = 0, pt = -10; };
+  // xgregorm: zaznamy CAM a stav suseda su zo spolocneho jadra (xgregorm-qos-core.h, to iste v OMNeT++); navyse poloha
+  // a rychlost suseda pre mapu kvality a predikciu
+  using QRec = xgcore::QRec;
+  struct QSt : xgcore::QNeighbor { double x = 0, y = 0, vx = 0, vy = 0, pt = -10; };
   std::map<unsigned long, QSt> m_qst;  //!< odosielatel -> CAM cakajuce na vyhodnotenie + posledna vyhodnotena
-  void xgQosFinish (unsigned long sender, QSt &st, const QRec &r);
+  void xgQosFinish (unsigned long sender, QSt &st, const QRec &r, int miss);
   double m_q_exp[2] = {0, 0}, m_q_ok[2] = {0, 0}; //!< klzave sucty (~2 s): ocakavane / dorucene nacas
   uint64_t m_qt_exp[2] = {0, 0}, m_qt_rx[2] = {0, 0}, m_qt_ok[2] = {0, 0}; //!< celkove sucty (vypis, porovnanie so skutocnostou)
   uint64_t m_qos_sw = 0;               //!< presuny hlavnej technologie kvoli kvalite

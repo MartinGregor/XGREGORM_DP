@@ -66,6 +66,13 @@ prepnutia medzi RSU) oproti pôvodným aplikáciám autorov.
 | `trafficManagerClient80211p.cc/.h`, `xgregorm-hybrid.cc`, `xgregorm-hybrid-socket.h`, `xgregorm-stats.h`, `xgregorm_gen_scenario.py` | **voľby výberu RAT z 2026-11-02 a 11-03** (podrobne plán, časť 5a a 8; bez volieb bit po bite zhodné): `--wifi-bcast-rate`, `--wifi-rx-min` (rýchlosť a prah 802.11p podľa EN 302 663), `--clean --init-main --probe-hz --cell-dist` (čistá politika: jedna priama technológia na CAM), `--rem-period` (hlásenia mapy kvality cez LTE), `--feat-log`, `--pred-model` (dátová sada, naučený model), `--ped --ped-kbps --ped-vam-hz --ped-hotspot` (chodci, len LTE), nápady 1-6 `--dcc-offload --nb-equip --rsu-equip --rsu-route --dup-near --geo-rat --cpm-rat`, `--zones` (lokálne zhoršenie príjmu, kontrolovaný experiment), `--oracle` (nerealizovateľná referencia) | `xgregorm_kod_zaloha/` |
 | `trafficManagerClient80211p.cc/.h`, `xgregorm-stats.h`, `xgregorm-hybrid.cc`, `xgregorm_gen_scenario.py` | **2026-11-03: vstupy z prijatých správ** v `--feat-log` (SPATEM po technológiách vrátane podielu z 10 Hz, vek MAPEM, počet CPM a ich objektov, čas do zmeny a farba, ak prišla SPATEM, susedia z CAM do 30 m, stojaci, približujúci sa, 100-200 m, vlastná zmena rýchlosti a státie; zjednodušenie: čas do zmeny a farba sa čítajú zo SUMO, keď auto má čerstvú SPATEM). **Učenie za jazdy `--bandit 1`** (atribút `XgBandit`): 8 situácií (pred semaforom, stojí, husto), zabúdajúci priemer vlastného doručenia a bonus za málo skúseností, skúšky len keď druhá technológia nebola nedávno zmeraná. Výpis `XGREGORM-LATP` (oneskorenie p50/p95/p99 po technológiách). Bez volieb bit po bite zhodné (referencia `EXP:2129,RX:2129`, `N:2966,BYTES:323086`) | `xgregorm_kod_zaloha/pred_2026-11-03/` |
 | `trafficManagerClient80211p.cc/.h`, `xgregorm-stats.h`, `xgregorm-gbm.h` (nový), `xgregorm-hybrid.cc`, `src/automotive/CMakeLists.txt`, `xgregorm_gen_scenario.py` | **2026-11-03: naučené stromy v aute `--pred-gbm`** (predikcia nahradí aktuálne meranie v pravidle kvality, vstupy len z prijatých správ a vlastných meraní) a `--bandit-probe` (bandit s plnými skúškami). Bez volieb bit po bite zhodné | `xgregorm_kod_zaloha/pred_gbm_2026-11-03/` |
+| `xgregorm-stats.h`, `trafficManagerClient80211p.cc`, `xgregorm-hybrid.cc`, `xgregorm_gen_scenario.py` | **2026-11-17: `--clock-err S`** – chyba hodín každej stanice N(0, S) (stála na stanicu, z ID a seedu vlastným generátorom), pripočíta sa k oneskoreniu meranému v pravidle kvality (čas príjmu podľa mojich hodín − čas vzniku podľa hodín odosielateľa). Bez voľby bit po bite zhodné | `xgregorm_kod_zaloha/` |
+| `src/buildings/model/buildings-channel-condition-model.cc` (ns-3; `src/buildings/` je v `.gitignore`) | **2026-11-17: zrýchlenie hľadania budov** – mriežka 40 m: test LOS prechádza len budovy v bunkách, cez ktoré úsečka prechádza (konzervatívne), namiesto všetkých budov. Výsledok rovnaký (overené bit po bite, `--channel urban`) | `xgregorm_kod_zaloha/buildings-channel-condition-model.cc/.h` |
+| `src/spectrum/model/three-gpp-channel-model.cc/.h`, `three-gpp-spectrum-propagation-loss-model.cc/.h` (ns-3; `src/spectrum/` je v `.gitignore`) | **2026-11-17: `--nr-cache-ttl X`** (globálna `ns3::g_xgCacheTtl`) – zabudne parametre, maticu kanála a dlhodobú zložku dvojíc nepoužitých X s (pri návrate nová realizácia); 0 = pôvodne | `xgregorm_kod_zaloha/three-gpp-*.cc/.h` |
+| `xgregorm-hybrid.cc`, `xgregorm_gen_scenario.py` (moje) | **2026-11-17: veľké scenáre** `--nr-max-loss X` (`MaxLossDb` kanála NR sidelinku: príjemca s útlmom > X dB signál nedostane ani ako rušenie), `--nr-fading 0` (NR bez rýchlych únikov 3GPP, `InitializeOperationBand` bez `INIT_FADING`), `--cc-grid N` (city-center N × N križovatiek, pri 3 bit po bite rovnaká mapa). **Odstránené** (nepoužité v žiadnej sérii): `--ped` (chodci), `--nr-sensing` (nepoužiteľne pomalé, sensing ostáva vypnutý ako u autorov). Bez volieb bit po bite zhodné | – (môj kód, staré verzie v gite) |
+| `trafficManagerServer80211p.cc` | **2026-11-17: `TlsRadius < 0`** (`--tls-radius -1`) = RSU neriadi žiadny semafor (pevný program SUMO), aby rádio neovplyvnilo pohyb áut pri porovnaní s OMNeT++ | `xgregorm_kod_zaloha/` |
+| `xgregorm-qos-core.h` (nový, `model/Applications/`), `trafficManagerClient80211p.cc/.h`, `src/automotive/CMakeLists.txt` | **2026-11-17: jadro pravidla kvality nezávislé od simulátora** (C++17 bez ns-3): záznam CAM a uzavretie po 200 ms, chýbajúce poradové čísla, očakávané / načas, zabúdanie, rozhodnutie (`qosDecide`). Klient ns-3 ho volá (bit po bite zhodné, overené `--qos-rat`), používa ho aj `xgregorm_omnet/src/XgCamApp.cc` | `xgregorm_kod_zaloha/pred_qos_core_2026-11-17_*` |
+| `xgregorm_omnet/` (nový projekt OMNeT++ 6.0.3 + Veins 5.2) | **2026-11-17: ten istý scenár v OMNeT++** – `XgCamApp` (CAM podľa ETSI, meranie v rovnakom formáte ako ns-3, jadro kvality), `export_scenario.py`, `xgregorm_compare.py` (oba simulátory jedným príkazom). Popis a výsledky v `xgregorm_omnet/README.md` | – |
 
 **Pravidlo riadenia semaforov:** 802.11p = každá RSU riadi len semafor svojej križovatky (ako
 v realite: radič + RSU na každej križovatke), predvolené v kóde aj v skripte. LTE = jeden server
@@ -228,6 +235,8 @@ python3 xgregorm_gen_scenario.py --vehicles 30 --sim-time 60 --run hybrid --fail
 python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --sim-time 20 --run hybrid --channel urban   # budovy + 3GPP mestský kanál (max 1 bunka LTE = 280 áut)
 python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --run hybrid --channel urban --security 1 --spat 1 --cpm-share 1.0   # + podpis, SPaT/MAPEM, CPM všetkých áut (realistická záťaž)
 python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --run hybrid --channel urban --security 1 --spat 1 --cpm-share 1.0 --load-rat 1 --lte-bg-ue 5   # výber technológie podľa záťaže + iní používatelia LTE
+python3 xgregorm_gen_scenario.py --map city-center --cc-grid 5 --vehicles 1000 --enb 9 --enb-isd 400 --nr-max-loss 120 --nr-cache-ttl 1 --nr-fading 0 --run hybrid ...   # 1000 áut: ~7 min na 1 s simulácie, ~3-4 GB (s --nr-fading 1 ~11 min, 12 GB)
+python3 xgregorm_omnet/xgregorm_compare.py --vehicles 140 --sim-time 60 --warmup 20   # ten istý scenár v ns-3 aj OMNeT++/Veins (len 802.11p), výsledky vedľa seba
 ./ns3 build                                                 # len po zmene C++ kódu
 ```
 
@@ -1171,6 +1180,50 @@ python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --run hybrid -
 - **2026-11-15** – **Prezentácia: rozdelenie áut na sieťach, počty správ, oprava výkladu „všetko naraz“.** Z logov `idea1` (priemer 5 behov, od 30. s): hlavná sieť Q 59.6 % 802.11p / 40.4 % NR (začiatok 47.7 %, v 5. s 71.3 %, potom 55-66 %), MIX 47.7 / 52.3; obsadenosť 802.11p / NR (odhad SL-CBR): FW 0.113 / 0.054, FN 0.033 / 0.567, MIX 0.074 / 0.357, Q 0.088 / 0.294, ALL 0.127 / 0.569. CAM (správa × sused do 100 m) očakávané / doručené za beh: FW 384.8k / 329.0k, FN 382.1k / 287.1k, MIX 383.7k / 341.5k, Q 385.1k / 349.6k, ALL 383.8k / 362.7k; ~3.4 CAM na auto za s, ~9 susedov. **Pozor pri ALL:** `cpm_all` a `spat_all` sú doručenie na kópiu, PRR CAM je „aspoň jedna kópia“. ALL posiela CPM oboma sieťami (TX 99k + 99k), takže CPM ALL − Q −0.104 nie je strata CPM u príjemcu, ale horšie doručenie každej kópie pri preplnení (CPM 802.11p kópia Q 0.800 / ALL 0.744, NR 0.921 / 0.734; SPATEM 802.11p 0.788 / 0.686, NR 0.964 / 0.832). Doručenie CPM „aspoň jednou kópiou“ sa nemeria. Podrobnosti `xgregorm_prezentacia/zdroj/podrobnosti.md`.
 - **2026-11-15** – **Word: základy (druhy správ, rozdiel 802.11p / NR / LTE, obsadenosť kanála).** Oprava: oneskorenie auto-auto 802.11p vo finálnej konfigurácii nie je ~0.3 ms (to je len prenos), ale s čakaním na DCC priemerne FW 28.8 / Q 24.7 ms, NR FN 26.5 / Q 18.9 ms (`XGREGORM-V2VLAT`, idea1). Obsadenosť NR 5 % pri FW = SPATEM/MAPEM cestných jednotiek (posielajú vždy oboma sieťami); FN a ALL majú rovnakú záťaž NR (všetky CAM a CPM idú cez NR).
 - **2026-11-15** – **Prezentácia 16 snímok (pridané druhy správ) a Word: cesta cez mobilnú sieť, výpočet obsadenosti, časť „čo všetko som skúšal“** (`zdroj/skusane.md`). Z logov `idea1`: oneskorenie LTE (XGREGORM-LATP) p50 ~22 ms, p95 ~1.0-1.1 s pri všetkých spôsoboch; PRB LTE priemer 0.44 (ALL 0.49), nad 0.3 93-96 % času (ALL 99.9 %); telefóny 69 áut, 22 404 paketov po 1000 B za beh.
+- **2026-11-17** – **Upratanie, 802.11p namiesto Wi-Fi, pripomienka o čase** (na želanie). Zmazané nepoužité súbory:
+  - prepis konverzácie (45 MB, kópia ostala len v archíve Release `prenos-2026-11-02`),
+  - prerušený beh `RE`,
+  - reťazové skripty `xgregorm_chain*.sh` a `xgregorm_guard.py` (nahradil ich `xgregorm_start.sh`),
+  - prázdne výstupy `*.out`.
+
+  Z kódu odstránené voľby `--ped` a `--nr-sensing`, ktoré nepoužila žiadna séria. Všetko ostatné, aj horšie
+  alternatívy (stromy, mapa, bandit, zóny, hustota v zálohe), ostáva. V prezentácii a vo Worde „Wi-Fi“ → 802.11p (ITS-G5)
+  s vysvetlením, prečo to nie je Wi-Fi. Nová voľba `--clock-err` a séria `clk` (viď nižšie).
+- **2026-11-17** – **1000 áut.** Prekážky:
+  - mapa 3×3 unesie ~600 áut,
+  - 1 bunka LTE ≤ 320 UE,
+  - pamäť NR: matice a parametre kanála 3GPP pre každú dvojicu; prvý beh zabil OOM pri 12 GB v 2.3 s,
+  - čas ∝ dvojice.
+
+  Riešenia (všetky voliteľné, bez nich bit po bite zhodné; overené `OVER` 30 áut aj mestský `REFU` 40 áut s `--qos-rat`):
+  - `--cc-grid 5`: SUMO `--diag` 1000 áut, 23 km/h, 2 teleporty za 420 s, max státie 120 s,
+  - `--enb 9 --enb-isd 400`,
+  - mriežka budov: bit po bite, 47 → 44 s pri 40 autách,
+  - `--nr-max-loss 120` + `--nr-cache-ttl 1` + voliteľne `--nr-fading 0`.
+
+  Profil (perf) pri 280 a 1000 autách: NR `MultiModelSpectrumChannel::StartTx` 33-48 %, z toho fast fading
+  (`CalcBeamformingGain`, sincos) ~15-27 %, 3GPP pathloss pre všetky dvojice ~17-21 %, malloc ~15-20 %, LTE ~7 %, 802.11p ~7 %.
+  Heaptrack 400 áut: špička 1.43 GB, z toho ~0.9 GB parametre kanála NR.
+
+  **1000 áut, 9 buniek, plná konfigurácia (CPM 100 %, coex, DCC, podpis, telefóny):**
+  - s fadingom: ~11 min na 1 s simulácie, 12 GB, beh 6 s za 51 min dobehol (`xgregorm_logs/K1000_fading_6s.log`):
+    191/191 handoverov OK, 1 RLF, 0 NRDROP; CBR 802.11p priemer 0.28, NR SL-CBR 0.46 (GE60 31 %), LTE PRB 0.25;
+    PRR 0.686 je len rozbeh 2-6 s, nepoužiteľné,
+  - bez fadingu: ~7 min na 1 s, 3.1 GB (`xgregorm_logs/K1000_bez_fadingu_casy.txt`).
+  - Spustená séria `big1000` (Q a MIX, seed 1, 50 s, od 30 s).
+  - Spustené overenie zjednodušení na 140 autách `scal140` (QS, MIXS = Q, MIX + `--nr-max-loss 120 --nr-cache-ttl 1 --nr-fading 0`, seedy 201-203; porovná sa s idea1).
+- **2026-11-17** – **Ten istý scenár v OMNeT++ 6.0.3 + Veins 5.2** (`xgregorm_omnet/`, popis a tabuľky v jeho README).
+  Nainštalované do `~/omnet` (bez Qtenv), spoločný SUMO 1.18.
+  - `export_scenario.py`: kopíruje súbory SUMO, nastaví seed v `launchd.xml` a prepočíta RSU aj budovy do súradníc Veins.
+  - `xgregorm_compare.py`: spustí ns-3 (`--tech 80211p --policy all --tls-radius -1 --range-stats 1`) aj Veins.
+  - Výsledky:
+    - kanál `authors`, 140 áut, 30 dBm: PRR <100 m 0.9957 / 0.9936; po 50 m zhoda do 1-3 b. až po 200 m, 200-250 m 0.34 / 0.67
+      (ns-3 prah SNR 4 dB pre preambulu); počty očakávaných príjmov sa líšia < 0.3 %, Veins 20× rýchlejší,
+    - **mestský kanál** (`XgV2vUrban` = TR 37.885 + budovy + NLOSv podľa výšky antén + korelované tienenie + Nakagami),
+      140 áut, 23 dBm: PRR <100 m 0.936 / 0.929, po vzdialenostiach do 1 b. (auto-auto) a 2 b. (auto-RSU); 80 áut, seed 4: 0.940 / 0.930,
+    - jadro kvality: odhad v autách ns-3 0.9941 (skutočnosť 0.9939), OMNeT++ 0.9948 (0.9941).
+
+  NR/LTE vo Veins nie sú (Simu5G nenainštalované).
 - Pozn.: v sekcii „Tok komunikácie“ je prehľad, čo ide cez ns-3 (CAM, kábel RSU-RSU) a čo cez
   TraCI (RSU -> semafor, mapa).
 

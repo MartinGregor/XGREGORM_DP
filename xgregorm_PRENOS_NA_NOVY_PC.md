@@ -43,8 +43,8 @@ git pull --ff-only dp main               # archív je na 1d507286, pull donesie 
 `git status` ukáže nesledovaný `xgregorm_logs/prostredie_stary_pc.md`. Je to v poriadku, súbor popisuje prostredie starého počítača.
 
 Pamäť Claude: obsah `xgregorm_logs/claude_pamat/` skopíruj do `~/.claude/projects/<cesta-projektu>/memory/`, kde `<cesta-projektu>`
-je absolútna cesta s lomkami nahradenými pomlčkami. Prepis konverzácie od začiatku je v `xgregorm_logs/claude_prepis_konverzacie.jsonl`, je to 45 MB, takže ho
-prehľadávaj, nečítaj celý. Potom si prečítaj `xgregorm_STAV_PRACE.md`.
+je absolútna cesta s lomkami nahradenými pomlčkami. Potom si prečítaj `xgregorm_STAV_PRACE.md`. (Prepis konverzácie
+z disku zmazaný 2026-11-17, kópia ostala len v archíve Release `prenos-2026-11-02`.)
 
 ### 3. Závislosti
 

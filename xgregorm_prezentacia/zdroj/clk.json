@@ -1,0 +1,7 @@
+{
+ "lab": ["presné hodiny GNSS", "bez limitu 100 ms", "hodiny ±10 ms", "hodiny ±50 ms"],
+ "prr": [90.77, 90.70, 90.91, 90.67],
+ "min": 88, "max": 92,
+ "take": "Rovnaký výsledok bez limitu 100 ms aj s hodinami chybnými o 10 alebo 50 ms (rozdiely do 0,14 bodu, v rámci náhody). Presný čas nie je podmienkou a GNSS ho aj tak dáva na mikrosekundu.",
+ "src": "140 áut, mesto bez zón, náhody 201–203, párové porovnanie s presnými hodinami; všetky 95 % intervaly obsahujú nulu. Chyba hodín: každé auto má stálu odchýlku N(0; 10 alebo 50 ms)."
+}

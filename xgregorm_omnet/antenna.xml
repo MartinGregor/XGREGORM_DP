@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- xgregorm: vsesmerova anténa (zisk 0 dBi), ako ns-3 -->
+<root>
+    <Antenna type="IsotropicAntenna" id="isotropic"></Antenna>
+</root>

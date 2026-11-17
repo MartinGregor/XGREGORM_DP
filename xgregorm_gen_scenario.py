@@ -33,6 +33,8 @@ import xml.etree.ElementTree as ET
 P = "xgregorm_"
 
 ap = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+ap.add_argument("--cc-grid", type=int, default=3,
+                help="city-center: N x N intersections (default 3 = the original 9 intersections, generated exactly as before; 5 = 25 intersections for ~1000 vehicles; 2-9)")
 ap.add_argument("--map", default="default", choices=["default", "city-center"],
                 help="default = 3x3 town (5 traffic lights, 1 lane) + bypass; city-center = 9 traffic lights, "
                      "3 lanes per direction, irregular blocks 170-285 m, ring road around")
@@ -86,7 +88,8 @@ ap.add_argument("--threshold", type=float, default=70,
 ap.add_argument("--tls-radius", type=float, default=50,
                 help="trafficManager 802.11p: every RSU controls only the traffic lights within this "
                      "radius [m] (its own intersection, as in reality; also the default of the example); "
-                     "0 = every RSU controls all of them (authors' original). LTE always has 1 server for all")
+                     "0 = every RSU controls all of them (authors' original); -1 (hybrid) = none, fixed SUMO programs (identical "
+                     "mobility for a comparison with another simulator). LTE always has 1 server for all")
 ap.add_argument("--tls-coord", type=int, default=0, choices=[0, 1],
                 help="trafficManager 802.11p: 1 = RSUs share vehicle positions over a wired backhaul "
                      "(coordination of neighbouring intersections)")
@@ -124,6 +127,14 @@ ap.add_argument("--qos-rat", type=int, default=0, choices=[0, 1],
                      "within 100 m delivered within --lat-budget, per technology); takes precedence over --load-rat")
 ap.add_argument("--qos-margin", type=float, default=0.05, help="quality rule: required reliability advantage")
 ap.add_argument("--lat-budget", type=float, default=0.1, help="quality rule: CAM latency budget [s]")
+ap.add_argument("--nr-fading", type=int, default=1, choices=[0, 1], help="large scenarios: 0 = NR sidelink without 3GPP "
+                "fast fading (path loss + shadowing only, much less memory and time); 1 = as before")
+ap.add_argument("--nr-max-loss", type=float, default=0.0, help="large scenarios: NR sidelink receivers with path loss above "
+                "X dB do not get the signal (0 = off, as before; e.g. 130)")
+ap.add_argument("--nr-cache-ttl", type=float, default=0.0, help="large scenarios: forget 3GPP channel realizations of pairs "
+                "unused for X s (0 = off, as before; e.g. 1)")
+ap.add_argument("--clock-err", type=float, default=0.0, help="quality rule: clock error of each station, std. dev. [s] "
+                "(0 = exact GNSS time, as before)")
 ap.add_argument("--pred-rat", type=int, default=0, choices=[0, 1],
                 help="hybrid adaptive: quality rule with prediction - reliability and load over the next --pred-horizon s "
                      "from a shared quality map (measurements of all vehicles) along the vehicle's route (implies --qos-rat)")
@@ -132,13 +143,6 @@ ap.add_argument("--coex", type=int, default=0, choices=[0, 1],
                 help="hybrid: mutual interference of 802.11p and NR-V2X in the 5.9 GHz band (802.11p on --coex-wifi-ch, "
                      "NR 40 MHz at 5890 MHz = co-channel); 802.11p defers to NR energy above -65 dBm (CCA-ED)")
 ap.add_argument("--coex-aclr", type=float, default=30, help="coexistence: adjacent channel leakage ratio [dB]")
-ap.add_argument("--ped", type=int, default=0,
-                help="hybrid: pedestrians walking on the sidewalks with a phone: each one LTE UE (phone uplink + VAM over LTE). "
-                     "Sidewalk mobility in ns-3, not in SUMO: cars do not react to them. LTE only for now (see xgregorm_PLAN_PREDIKCIA.md)")
-ap.add_argument("--ped-kbps", type=float, default=20, help="pedestrians: mean phone uplink [kbit/s]")
-ap.add_argument("--ped-vam-hz", type=float, default=1, help="pedestrians: VAM over LTE per second")
-ap.add_argument("--ped-hotspot", type=float, default=0,
-                help="pedestrians: 0 = evenly on the sidewalks; R > 0 = start within R metres of the map centre (crowd)")
 ap.add_argument("--dcc-offload", type=float, default=0, help="clean: CAM/CPM over NR when the DCC gate would hold them longer [ms]")
 ap.add_argument("--nb-equip", type=int, default=0, choices=[0, 1], help="clean: technology by the equipment of the neighbours")
 ap.add_argument("--rsu-equip", default="", help="equipment of the RSUs in turn, repeated, e.g. W,N,WN")
@@ -223,8 +227,6 @@ ap.add_argument("--load-stats", type=int, default=1, choices=[0, 1],
                      "usage per 3GPP TS 36.314, NR SL-CBR = ESTIMATE from received PSCCH) and the performance per load level")
 ap.add_argument("--range-stats", type=int, default=0, choices=[0, 1],
                 help="hybrid: measure delivery vs. distance (50 m bins up to 1000 m), car->car and car->RSU")
-ap.add_argument("--nr-sensing", type=int, default=0, choices=[0, 1],
-                help="hybrid: NR-V2X mode 2 sensing-based resource selection (authors: 0)")
 ap.add_argument("--core-delay", type=float, default=5, help="hybrid: one-way delay PGW -> server [ms]")
 ap.add_argument("--seed", type=int, default=None,
                 help="random seed: ns-3 --RngRun for all programs, SUMO seed only for v2i-traffic-80211p "
@@ -247,6 +249,14 @@ if a.tx_power is None:
     a.tx_power = 23 if a.channel == "urban" else 30
 if a.lte_ue_power is None:
     a.lte_ue_power = 23 if a.channel == "urban" else 10
+# xgregorm: --cc-grid N: vacsie centrum, predvolene meno, pocet aut a RSU podla velkosti (pri 3 bez zmeny)
+if a.map == "city-center" and a.cc_grid != 3:
+    if not 2 <= a.cc_grid <= 9:
+        ap.error("--cc-grid must be 2-9")
+    if a.name == "city_center":
+        a.name = f"city_center{a.cc_grid}"
+    if a.rsu == 9:
+        a.rsu = a.cc_grid ** 2
 if a.map == "city-center" and a.grid != 3:
     ap.error("--grid applies only to --map default (city-center has a fixed 3x3 layout)")
 TECH = [t.strip().lower() for t in a.tech.split(",") if t.strip()]
@@ -281,24 +291,36 @@ CC_XY = {(0, 0): (0, 0), (1, 0): (270, 15), (2, 0): (520, -10),
          (0, 2): (10, 390), (1, 2): (285, 370), (2, 2): (530, 400)}
 
 
+def cc_layout(n):
+    """xgregorm: --cc-grid N - polohy krizovatiek N x N; pri 3 presne CC_XY, inak rovnaky styl (bloky ~170-290 m,
+    krizovatky posunute o -25..+25 m), s pevnym generatorom, aby bola mapa vzdy rovnaka"""
+    if n == 3:
+        return CC_XY
+    import random as _r
+    g = _r.Random(20261117)
+    return {(i, j): (round(i * 265 + g.uniform(-25, 25)), round(j * 195 + g.uniform(-25, 25))) for i in range(n) for j in range(n)}
+
+
 def city_center():
-    global MID, n_tls, cc_brany, cc_okruhy, cc_spoje
+    global MID, n_tls, cc_brany, cc_okruhy, cc_spoje, CC_XY
+    CC_XY = cc_layout(a.cc_grid)
+    N = a.cc_grid
     cc_spoje = []
-    cx = sum(x for x, _ in CC_XY.values()) / 9
-    cy = sum(y for _, y in CC_XY.values()) / 9
+    cx = sum(x for x, _ in CC_XY.values()) / len(CC_XY)
+    cy = sum(y for _, y in CC_XY.values()) / len(CC_XY)
     MID = (cx, cy)
     for (i, j), (x, y) in CC_XY.items():
         nodes.append((f"C{i}{j}", x, y, "traffic_light"))
-    n_tls = 9
-    for i in range(3):
-        for j in range(3):
-            if i + 1 < 3: edge(f"C{i}{j}", f"C{i + 1}{j}", a.lanes_mesto, a.v_mesto, 3)
-            if j + 1 < 3: edge(f"C{i}{j}", f"C{i}{j + 1}", a.lanes_mesto, a.v_mesto, 3)
+    n_tls = len(CC_XY)
+    for i in range(N):
+        for j in range(N):
+            if i + 1 < N: edge(f"C{i}{j}", f"C{i + 1}{j}", a.lanes_mesto, a.v_mesto, 3)
+            if j + 1 < N: edge(f"C{i}{j}", f"C{i}{j + 1}", a.lanes_mesto, a.v_mesto, 3)
     # vyjazdy z centra: krajna ulica pokracuje rovno von (smer od vnutorneho suseda)
     konce = []
     for (i, j) in CC_XY:
         for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-            if 0 <= i + di < 3 and 0 <= j + dj < 3:
+            if 0 <= i + di < N and 0 <= j + dj < N:
                 continue
             x, y = CC_XY[(i, j)]
             sx, sy = CC_XY[(i - di, j - dj)]
@@ -330,7 +352,7 @@ def city_center():
                 break
             i, j = int(u[1]), int(u[2])
             for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                if 0 <= i + di < 3 and 0 <= j + dj < 3:
+                if 0 <= i + di < N and 0 <= j + dj < N:
                     v = f"C{i + di}{j + dj}"
                     if dist[u] + dlzka(u, v) < dist.get(v, 1e18):
                         dist[v], prev[v] = dist[u] + dlzka(u, v), u
@@ -684,7 +706,7 @@ if a.map == "default":
 else:
     bloky = [math.dist(CC_XY[p], CC_XY[q]) for p in CC_XY for q in CC_XY
              if abs(p[0] - q[0]) + abs(p[1] - q[1]) == 1 and p < q]
-    print(f"  map          : city center, 9 intersections, blocks {min(bloky):.0f}-{max(bloky):.0f} m, "
+    print(f"  map          : city center, {len(CC_XY)} intersections, blocks {min(bloky):.0f}-{max(bloky):.0f} m, "
           f"{a.lanes_mesto} lanes per direction, ring road {a.odstup:.0f} m out ({a.lanes_obchvat} lanes, "
           f"{3.6 * a.v_obchvat:.0f} km/h)")
 print(f"  traffic light: {n_tls} (4-arm intersections only), green {a.zelena:.0f} s, yellow {a.zlta:.0f} s")
@@ -782,50 +804,6 @@ def diagnostika(dlzka=600):
 if a.diag:
     diagnostika(min(600, int(a.sim_time) + 300))
 
-# xgregorm: --ped - chodci na chodnikoch: chodnik = 3 m vpravo od osi krajneho pruhu; na konci ulice chodec pocka na
-# prechod (0-30 s, cervena) a pokracuje nahodnou nadvazujucou ulicou. Vystup: riadok chodca "t x y t x y ..." pre ns-3
-if a.ped:
-    import random as _r
-    import xml.etree.ElementTree as _ET
-    _rng = _r.Random(a.seed if a.seed is not None else 1)
-    _hr = {}
-    for _e in _ET.parse(net_f).getroot().findall("edge"):
-        if _e.get("function") == "internal":
-            continue
-        _l = _e.findall("lane")
-        _s = [tuple(map(float, p.split(","))) for p in _l[0].get("shape").split()]
-        _o = []
-        for _i, (_x, _y) in enumerate(_s):
-            _a, _b = _s[max(_i - 1, 0)], _s[min(_i + 1, len(_s) - 1)]
-            _d = math.hypot(_b[0] - _a[0], _b[1] - _a[1]) or 1
-            _o.append((_x + (_b[1] - _a[1]) / _d * 3, _y - (_b[0] - _a[0]) / _d * 3))
-        _hr.setdefault(_e.get("from"), []).append((_e.get("to"), _o))
-    _vsetky = [(u, h) for u, hs in _hr.items() for h in hs if math.hypot(h[1][0][0] - h[1][-1][0], h[1][0][1] - h[1][-1][1]) < 400]
-    _cx = sum(h[1][0][0] for _, h in _vsetky) / len(_vsetky)
-    _cy = sum(h[1][0][1] for _, h in _vsetky) / len(_vsetky)
-    with open(os.path.join(out, f"{P}peds.txt"), "w") as f:
-        for _p in range(a.ped):
-            _kand = _vsetky
-            if a.ped_hotspot > 0:
-                _kand = [(u, h) for u, h in _vsetky if math.hypot(h[1][0][0] - _cx, h[1][0][1] - _cy) < a.ped_hotspot] or _vsetky
-            _u, _h = _rng.choice(_kand)
-            _t, _v = 0.0, _rng.uniform(1.0, 1.6)
-            _w = [(0.0, _h[1][0][0], _h[1][0][1])]
-            while _t < a.sim_time + 1:
-                for _a, _b in zip(_h[1], _h[1][1:]):
-                    _t += math.hypot(_b[0] - _a[0], _b[1] - _a[1]) / _v
-                    _w.append((_t, _b[0], _b[1]))
-                _t += _rng.uniform(0, 30)
-                _w.append((_t, _h[1][-1][0], _h[1][-1][1]))
-                _dalej = [h for h in _hr.get(_h[0], []) if h[0] != _u] or _hr.get(_h[0], [])
-                if not _dalej:
-                    break
-                _u, _h = _h[0], _rng.choice(_dalej)
-                _t += 1.0
-                _w.append((_t, _h[1][0][0], _h[1][0][1]))
-            f.write(" ".join(f"{t:.2f} {x:.2f} {y:.2f}" for t, x, y in _w) + "\n")
-    print(f"  pedestrians  : {a.ped} on the sidewalks (LTE phones, not in SUMO), hotspot radius {a.ped_hotspot} m")
-
 # ============================================================== 5) COMMANDS
 S = out + "/"
 ZAKLAD = (f"--sumo-folder={S} --mob-trace={P}cars.rou.xml --sumo-config={cfg_f} "
@@ -845,10 +823,9 @@ LTE = f"--ns3::LteEnbRrc::SrsPeriodicity={a.srs}"     # otherwise ns-3 aborts wi
 # my hybrid scenario (802.11p + LTE + NR-V2X, RSU controllers + server in the network); SRS 320 is set inside
 HYB = (f"{TM} --tls-radius={a.tls_radius}"
        f" --xg-relax={'true' if a.xg_relax else 'false'} --xg-relevance={a.xg_relevance}"
-       f" --beacon-ms={a.beacon_ms} --nr-sensing={'true' if a.nr_sensing else 'false'}"
+       f" --beacon-ms={a.beacon_ms}"
        f" --range-stats={'true' if a.range_stats else 'false'} --channel={a.channel}"
        + (f" --buildings-file={bud_f}" if a.channel == "urban" else "")
-       + (f" --lte-bg-ue={a.ped} --lte-bg-kbps={a.ped_kbps} --peds-file={os.path.join(out, P + 'peds.txt')} --ped-vam-hz={a.ped_vam_hz}" if a.ped else "")
        + f" --load-stats={'true' if a.load_stats else 'false'}"
        f" --color-tech={'true' if a.colorful else 'false'} --live-period={a.live}"
        f" --enb={a.enb} --enb-isd={a.enb_isd} --lte-ue-power={a.lte_ue_power}"
@@ -858,8 +835,11 @@ HYB = (f"{TM} --tls-radius={a.tls_radius}"
        + f" --hyb-range={a.hyb_range} --hyb-qmin={a.hyb_qmin} --hyb-dwell={a.hyb_dwell}"
        f" --load-rat={'true' if a.load_rat else 'false'} --cbr-high={a.cbr_high} --cbr-low={a.cbr_low} --lte-high={a.lte_high}"
        f" --qos-rat={'true' if a.qos_rat else 'false'} --qos-margin={a.qos_margin} --lat-budget={a.lat_budget}"
-       + (f" --lte-bg-ue={a.lte_bg_ue} --lte-bg-kbps={a.lte_bg_kbps}" if not a.ped else "") +
-       f""
+       + (f" --clock-err={a.clock_err}" if a.clock_err > 0 else "")
+       + (f" --nr-max-loss={a.nr_max_loss}" if a.nr_max_loss > 0 else "")
+       + (" --nr-fading=false" if not a.nr_fading else "")
+       + (f" --nr-cache-ttl={a.nr_cache_ttl}" if a.nr_cache_ttl > 0 else "")
+       + f" --lte-bg-ue={a.lte_bg_ue} --lte-bg-kbps={a.lte_bg_kbps}"
        + (f" --pred-rat=true --pred-horizon={a.pred_horizon}" if a.pred_rat else "")
        + (f" --oracle=true --pred-horizon={a.pred_horizon}" if a.oracle else "")
        + (" --bandit=true" if a.bandit else "") + (" --bandit-probe=true" if a.bandit_probe else "")
@@ -1389,7 +1369,7 @@ def suhrn(program, vystup, ma_csv, trvanie, rc):
               f"{doprava_celkom.get('stopped_pct', float('nan')):.1f},"
               f"{3.6 * doprava_celkom.get('speed', float('nan')):.1f},{v2v_prr:.5f}")
     if program in ("v2i-trafficManager-80211p", "xgregorm-hybrid"):
-        rezim = "all traffic lights (authors' original)" if a.tls_radius <= 0 else \
+        rezim = "none (fixed SUMO programs)" if a.tls_radius < 0 else "all traffic lights (authors' original)" if a.tls_radius == 0 else \
             f"own intersection only (radius {a.tls_radius:.0f} m)" + \
             (" + wired coordination with neighbours" if a.tls_coord else "")
         print(f"  traffic light control per RSU: {rezim}")
