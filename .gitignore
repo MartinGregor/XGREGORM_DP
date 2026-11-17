@@ -411,3 +411,4 @@ xgregorm_logs/dev6/*.csv
 xgregorm_logs/dev7/*.csv
 xgregorm_logs/final*/*.csv
 xgregorm_logs/*.out
+xgregorm_nobuild

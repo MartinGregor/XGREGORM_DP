@@ -1,0 +1,17 @@
+{
+ "out": "pasubio",
+ "jobs": 3,
+ "seeds": [
+  1,
+  2,
+  3
+ ],
+ "base": "--map city-center --import-dir xgregorm_scenare/pasubio --sim-time 60 --warmup 20 --run hybrid --channel urban --security 1 --spat 1 --cpm-share 1.0 --coex 1 --dcc 1 --nr-cr 1 --phone-share 0.5 --phone-kbps 20 --lte-bw 50 --wifi-bcast-rate 6 --nr-freq 5.885e9 --nr-bw 20 --wifi-rx-min -88 --enb 9 --enb-isd 500 --nr-max-loss 120 --nr-cache-ttl 1 --nr-fading 0",
+ "configs": {
+  "PQ": "--clean 1 --init-main 2 --qos-rat 1 --probe-hz 0.5",
+  "PMIX": "--clean 1 --init-main 2",
+  "PKH": "--clean 1 --init-main 2 --kh 1 --kh-d1 125 --kh-d2 250 --kh-lthr 0.1",
+  "PLD": "--clean 1 --init-main 0 --load-rat 1",
+  "PDC": "--clean 1 --init-main 2 --dicart 1 --probe-hz 2"
+ }
+}

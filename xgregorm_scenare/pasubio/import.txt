@@ -1,0 +1,4 @@
+net=pasubio_buslanes.net.xml
+additional=pasubio_vtypes.add.xml,pasubio_bus_stops.add.xml
+t0=300.0
+window=70.0

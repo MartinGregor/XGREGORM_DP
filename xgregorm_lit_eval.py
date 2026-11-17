@@ -42,8 +42,8 @@ def blok(nazov, src, seeds, pary):
 
 I, L, A = "xgregorm_logs/idea1/", "xgregorm_logs/lit/", "xgregorm_logs/acosta/"
 blok("mesto bez zon (city-center, 140 aut)",
-     {"FW": I, "FN": I, "MIX": I, "Q": I, "KH": L, "LD": L}, range(201, 206),
-     [("Q", "KH"), ("Q", "LD"), ("KH", "MIX"), ("LD", "MIX"), ("KH", "FW"), ("KH", "FN"), ("LD", "FW"), ("Q", "MIX")])
+     {"FW": I, "FN": I, "MIX": I, "Q": I, "KH": L, "LD": L, "DC": L}, range(201, 206),
+     [("Q", "KH"), ("Q", "LD"), ("Q", "DC"), ("DC", "MIX"), ("KH", "MIX"), ("LD", "MIX"), ("KH", "FW"), ("KH", "FN"), ("LD", "FW"), ("Q", "MIX")])
 blok("Bologna Acosta (iTETRIS, ~550 aut v sieti)",
-     {"MIX": A, "Q": A, "KH": A, "LD": A}, range(1, 4),
-     [("Q", "MIX"), ("Q", "KH"), ("Q", "LD"), ("KH", "MIX"), ("LD", "MIX")])
+     {"BMIX": A, "BQ": A, "BKH": A, "BLD": A, "BDC": A}, range(1, 4),
+     [("BQ", "BMIX"), ("BQ", "BKH"), ("BQ", "BLD"), ("BQ", "BDC"), ("BKH", "BMIX"), ("BLD", "BMIX")])

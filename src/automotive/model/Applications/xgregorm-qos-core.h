@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 #include <deque>
+#include <utility>
 
 namespace xgcore {
 
@@ -40,7 +41,26 @@ struct QNeighbor
   int seq = -1;                   // poradove cislo poslednej vyhodnotenej CAM
   bool has[2] = {false, false};   // jej technologie
   double t = -10;                 // jej cas
+  std::deque<std::pair<double, double>> clk; // (cas prijatia, surove oneskorenie) pre relativne oneskorenie (qosRelLat)
 };
+
+// relativne oneskorenie (xgregorm 2026-11-17, --lat-rel): surove oneskorenie = cas prijatia podla mojich hodin - cas
+// vzniku podla hodin odosielatela = skutocne oneskorenie + rozdiel hodin. Rozdiel hodin je pre dvojicu staly (alebo sa
+// meni pomaly), preto sa od suroveho oneskorenia odcita jeho minimum za poslednych win s zo vsetkych sprav toho isteho
+// odosielatela (oboma technologiami): CAM, ktora prisla neskoro oproti ostatnym od neho, ma velke relativne oneskorenie
+// a nezapocita sa ako nacas. Presne hodiny teda netreba; chyba = najmensie skutocne oneskorenie v okne (pri 802.11p
+// ~0.3 ms). Klzave minimum monotonnou frontou.
+inline double
+qosRelLat (QNeighbor &st, double raw, double now, double win = 10.0)
+{
+  auto &q = st.clk;
+  while (!q.empty () && q.back ().second >= raw)
+    q.pop_back ();
+  q.push_back ({now, raw});
+  while (now - q.front ().first > win)
+    q.pop_front ();
+  return raw - q.front ().second;
+}
 
 inline int
 qosMark (bool tech0, bool tech1, int seq)
@@ -145,6 +165,34 @@ qosDecide (bool known, double gain, double margin, double loadOther, double load
   if (!(known && gain > margin && loadOther < loadHigh))
     return QDecision::NotEligible;
   return u < std::min (1.0, gain / scale) ? QDecision::Switch : QDecision::Stay;
+}
+
+// xgregorm 2026-11-17: vylepsena predikcia (PX). Zaklad je pravidlo kvality (zisk z aktualneho merania). Mapa kvality
+// (spolahlivost technologii v bunkach, z minulych merani aut) sa pouzije len ak je "cerstva": jej hodnota v bunke, kde auto
+// prave je, sa s aktualnym meranim auta zhoduje do dev pre obe technologie. Po zmene podmienok (zona zmizla / vznikla)
+// mapa drzi stare hodnoty (zabuda pomaly), auto to zisti z nesuhlasu a rozhoduje len z merania (ako Q). Pri cerstvej mape:
+//  - prepnutie vopred: druha technologia bude na trase lepsia (zisk podla mapy na horizonte > zisk teraz) a teraz nie je
+//    preukazatelne horsia (zisk teraz >= -margin) -> pouzije sa zisk z mapy,
+//  - zbytocne prepnutie: teraz je druha lepsia, ale na trase bude preukazatelne horsia (zisk z mapy < -margin) -> 0.
+// Vstupy: rNow = aktualne meranie, mNow / hNow = mapa v sucasnej bunke (a ci ma data), mFut / hFut = priemer mapy v bodoch
+// trasy o 1..H s, im = index hlavnej technologie. Vracia zisk druhej technologie, ktory ide do qosDecide.
+inline double
+pxGain (const double rNow[2], const double mNow[2], const bool hNow[2], const double mFut[2], const bool hFut[2], int im,
+        double margin, double dev = 0.15, bool *fresh = nullptr)
+{
+  int io = 1 - im;
+  double gNow = rNow[io] - rNow[im];
+  bool ok = hNow[0] && hNow[1] && hFut[0] && hFut[1] && std::abs (rNow[0] - mNow[0]) <= dev && std::abs (rNow[1] - mNow[1]) <= dev;
+  if (fresh)
+    *fresh = ok;
+  if (!ok)
+    return gNow;
+  double gFut = mFut[io] - mFut[im];
+  if (gNow > margin && gFut < -margin)
+    return 0;
+  if (gNow >= -margin && gFut > gNow)
+    return gFut;
+  return gNow;
 }
 
 } // namespace xgcore

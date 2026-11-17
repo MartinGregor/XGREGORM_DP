@@ -203,6 +203,23 @@ namespace ns3
             MakeDoubleAccessor (&trafficManagerClient80211p::m_kh_lthr), MakeDoubleChecker<double> (0))
         .AddAttribute ("XgKhSthr", "Khalid: speed threshold Sthr [km/h]", DoubleValue (100),
             MakeDoubleAccessor (&trafficManagerClient80211p::m_kh_sthr), MakeDoubleChecker<double> (0))
+        .AddAttribute ("XgLatRel", "Quality rule: latency relative to the minimum over the last 10 s of the same sender "
+            "(no synchronized clocks needed)", BooleanValue (false),
+            MakeBooleanAccessor (&trafficManagerClient80211p::m_lat_rel), MakeBooleanChecker ())
+        .AddAttribute ("XgPredX", "Improved prediction (with XgPredRat): quality map used only when it agrees with the current "
+            "measurement; proactive switch / avoided switch from the map along the route", BooleanValue (false),
+            MakeBooleanAccessor (&trafficManagerClient80211p::m_px), MakeBooleanChecker ())
+        .AddAttribute ("XgPredXDev", "XgPredX: largest difference map - measurement for a fresh map", DoubleValue (0.15),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_px_dev), MakeDoubleChecker<double> (0))
+        .AddAttribute ("XgDicart", "Clean policy: comparison method from the literature (DICART, Karoui et al., IWCMC 2022): "
+            "TOPSIS over available bandwidth (1 - CBR) * rate and access layer delay",
+            BooleanValue (false), MakeBooleanAccessor (&trafficManagerClient80211p::m_dic), MakeBooleanChecker ())
+        .AddAttribute ("XgDicGamma", "DICART: statistic sample size gamma (DLTmax = gamma * usage period)", DoubleValue (3),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_dic_gamma), MakeDoubleChecker<double> (1))
+        .AddAttribute ("XgDicWbw", "DICART: weight of the available bandwidth (CCA profile 0.4616)", DoubleValue (0.4616),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_dic_wbw), MakeDoubleChecker<double> (0))
+        .AddAttribute ("XgDicWad", "DICART: weight of the access layer delay (CCA profile 0.5383)", DoubleValue (0.5383),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_dic_wad), MakeDoubleChecker<double> (0))
         .AddAttribute ("XgBandit", "Learning while driving (with XgQosRat and XgClean): reliability of both technologies per "
             "situation learned from the CAMs the vehicle itself received, upper confidence bonus; probes only when the "
             "other technology has not been measured recently",
@@ -728,6 +745,9 @@ namespace ns3
         // porovnavacia metoda z literatury (XgKhalid): priame technologie urci rozhodovaci strom
         if (m_kh && direct)
           clean = xgKhDecide (direct, now);
+        // porovnavacia metoda z literatury (XgDicart): TOPSIS
+        if (m_dic && direct)
+          clean = xgDicDecide (direct, clean & (xghyb::WIFI | xghyb::NR), now);
         if (direct && need && m_next_dist >= m_cell_dist)
           clean |= avail & xghyb::LTE;
         if (m_probe_hz > 0 && other && now - m_probe_t >= 1.0 / m_probe_hz
@@ -973,12 +993,33 @@ namespace ns3
                 cur[k] = (cur[k] + in[k].remc) / 2;
                 rec.map[k] = in[k].remn > 0;
               }
-            else
+            else if (!m_px)
               {
                 r[k] = (r[k] + pq[k]) / (1 + nq[k]);
                 cur[k] = (cur[k] + pc[k]) / (1 + nc[k]);
               }
             rec.pred[k] = r[k];
+          }
+        if (m_px && !useModel)
+          {
+            // vylepsena predikcia (XgPredX, xgcore::pxGain): mapa len ked suhlasi s aktualnym meranim
+            double mNow[2] = {0, 0}, mFut[2] = {0, 0};
+            bool hNow[2] = {false, false}, hFut[2] = {nq[0] > 0, nq[1] > 0}, fresh = false;
+            auto me = xgstats::vehPos ().find (m_sid);
+            xgstats::RemCell *cell = me != xgstats::vehPos ().end () ? xgstats::remAt (me->second.first, me->second.second, false) : nullptr;
+            for (int k = 0; k < 2; k++)
+              {
+                if (cell && cell->exp[k] >= 10)
+                  mNow[k] = cell->ok[k] / cell->exp[k], hNow[k] = true;
+                if (hFut[k])
+                  mFut[k] = pq[k] / nq[k];
+              }
+            double g = xgcore::pxGain (r, mNow, hNow, mFut, hFut, im, m_qos_margin, m_px_dev, &fresh);
+            m_px_n[fresh] += xgstats::measuring ();
+            r[io] = r[im] + g;
+            for (int k = 0; k < 2; k++)
+              rec.pred[k] = hFut[k] ? mFut[k] : r[k];
+            cur[0] = cw, cur[1] = cn;
           }
         m_pred_q.push_back (rec);
         lo = cur[io];
@@ -1352,6 +1393,8 @@ namespace ns3
     if (xgstats::clockErr () > 0) // xgregorm: --clock-err, hodiny prijimaca a odosielatela nie su presne
       lat += xgstats::clockOff (m_sid) - xgstats::clockOff (sender);
     QSt &st = m_qst[sender];
+    if (m_lat_rel) // xgregorm: --lat-rel, oneskorenie voci ostatnym spravam toho isteho odosielatela (nie voci mojim hodinam)
+      lat = xgcore::qosRelLat (st, lat, now);
     // spolocne jadro (xgregorm-qos-core.h): zaznam CAM, uzavretie po 200 ms, chybajuce poradove cisla
     xgcore::qosRx (st, k, mark, lat, now, [&] (const QRec &r, int miss) { xgQosFinish (sender, st, r, miss); });
   }
@@ -1447,6 +1490,115 @@ namespace ns3
       }
     count (4);
     return dP ? dP : dD;
+  }
+
+  int
+  trafficManagerClient80211p::xgDicDecide (int direct, int cur, double now)
+  {
+    // xgregorm: DICART (Karoui a kol., IWCMC 2022; dizertacia M. Karoui, Univ. Clermont Auvergne 2021, kap. 4.3, 5.4):
+    //  - kriteria pre kazde rozhranie: volna kapacita AvBW = (1 - CBR) * rychlost (cim viac, tym lepsie) a oneskorenie
+    //    v pristupovej vrstve AD (cim menej, tym lepsie); oboje stanica pozna sama (CBR meria, AD vlastnych sprav),
+    //  - spracovanie (alg. 4.5): vzorky z okna [t - DLT, t), DLT = gamma * tau * exp(-cv) (cv = variacny koeficient
+    //    vzoriek, tau = perioda vzoriek rozhrania, gamma = 3 ako v clanku), hodnota = EMA vzoriek, alfa = 2 / (N + 1),
+    //  - normalizacia l_j / s_ij (mensie lepsie) a s_ij / u_j (vacsie lepsie), vahy profilu CCA (bezpecnostna V2V
+    //    sluzba, tab. 5.6: 0.4616 / 0.5383), TOPSIS - najblizsie k idealnemu riesenu.
+    // Rozdiely oproti clanku: rozhoduje sa raz za 100 ms (CAM ma odstup >= 100 ms, teda prakticky pre kazdu spravu),
+    // kontrolne spravy na oboch rozhraniach (v clanku 2 Hz) = skusky XgProbeHz; po normalizacii su obe kriteria
+    // "vacsie lepsie", idealne riesenie je teda maximum oboch. Rychlost: 802.11p podla --wifi-bcast-rate, NR nominalna
+    // z poctu RB, MCS a numerologie (scenar).
+    uint32_t node = GetNode ()->GetId ();
+    const int K[2] = {xghyb::WIFI, xghyb::NR};
+    // nove vzorky: CBR raz za 100 ms (rovnako ako pravidlo zataze), AD z vlastnych vysielani
+    for (int k = 0; k < 2; k++)
+      {
+        if (xgstats::loadFn ()[k ? 2 : 0])
+          m_dic_s[k][0].v.push_back ({now, xgstats::loadFn ()[k ? 2 : 0] (node)});
+        auto it = xgdic::ad ().find (node * 2 + k);
+        if (it != xgdic::ad ().end ())
+          for (auto &e : it->second)
+            if (e.first > m_dic_adLast[k])
+              {
+                m_dic_s[k][1].v.push_back (e);
+                m_dic_adLast[k] = e.first;
+              }
+      }
+    double dm[2][2];
+    bool have = true;
+    for (int k = 0; k < 2; k++)
+      for (int c = 0; c < 2; c++)
+        {
+          DicSer &s = m_dic_s[k][c];
+          // perioda vzoriek tau (klzavy priemer rozostupov) a DLTmax = gamma * tau
+          if (s.v.size () >= 2)
+            {
+              double g = s.v[s.v.size () - 1].first - s.v[s.v.size () - 2].first;
+              if (g > 0)
+                s.tau = s.tau < 0 ? g : 0.9 * s.tau + 0.1 * g;
+            }
+          if (s.tau < 0)
+            s.tau = c == 0 ? 0.1 : 0.5;
+          if (s.dlt < 0)
+            s.dlt = m_load_rnd->GetValue () * m_dic_gamma * s.tau; // alg. 4.4, krok 1: nahodna pociatocna DLT
+          while (!s.v.empty () && now - s.v.front ().first > std::max (s.dlt, 30.0))
+            s.v.pop_front ();
+          std::vector<double> V;
+          for (auto &e : s.v)
+            if (now - e.first <= s.dlt + 1e-9)
+              V.push_back (e.second);
+          if (V.empty () && !s.v.empty ())
+            V.push_back (s.v.back ().second); // starsie data nez DLT: posledna znama hodnota
+          if (!V.empty ())
+            {
+              double m = 0, sd = 0;
+              for (double x : V)
+                m += x;
+              m /= V.size ();
+              for (double x : V)
+                sd += (x - m) * (x - m);
+              sd = V.size () > 1 ? std::sqrt (sd / (V.size () - 1)) : 0;
+              double cv = m > 1e-12 ? sd / m : 0;
+              s.dlt = std::exp (-cv) * m_dic_gamma * s.tau; // rovnica 4.18
+              double a = 2.0 / (V.size () + 1), e = V[0];
+              for (size_t i = 1; i < V.size (); i++)
+                e = a * V[i] + (1 - a) * e;
+              s.val = e;
+            }
+          if (s.val < 0)
+            have = false;
+          dm[k][c] = s.val;
+        }
+    if (!have || !(direct & xghyb::WIFI) || !(direct & xghyb::NR))
+      {
+        m_dic_dec[0] += xgstats::measuring ();
+        return cur ? cur : (direct & xghyb::WIFI) ? xghyb::WIFI : xghyb::NR;
+      }
+    double bw[2], ad[2];
+    for (int k = 0; k < 2; k++)
+      {
+        bw[k] = std::max (1e-9, (1 - std::min (1.0, dm[k][0])) * xgdic::rate ()[k]);
+        ad[k] = std::max (1e-6, dm[k][1]);
+      }
+    double v[2][2], best[2] = {0, 0}, worst[2] = {1e9, 1e9};
+    for (int k = 0; k < 2; k++)
+      {
+        v[k][0] = m_dic_wbw * bw[k] / std::max (bw[0], bw[1]);
+        v[k][1] = m_dic_wad * std::min (ad[0], ad[1]) / ad[k];
+        for (int c = 0; c < 2; c++)
+          {
+            best[c] = std::max (best[c], v[k][c]);
+            worst[c] = std::min (worst[c], v[k][c]);
+          }
+      }
+    double C[2];
+    for (int k = 0; k < 2; k++)
+      {
+        double dp = std::hypot (v[k][0] - best[0], v[k][1] - best[1]);
+        double dn = std::hypot (v[k][0] - worst[0], v[k][1] - worst[1]);
+        C[k] = dp + dn > 0 ? dn / (dp + dn) : 0.5;
+      }
+    int k = C[1] > C[0] ? 1 : C[0] > C[1] ? 0 : (cur == xghyb::NR);
+    m_dic_dec[1 + k] += xgstats::measuring ();
+    return K[k];
   }
 
   void
@@ -1592,6 +1744,10 @@ namespace ns3
                       << ",QN:" << m_qt_exp[1] << "/" << m_qt_rx[1] << "/" << m_qt_ok[1];
           if (m_kh)
             std::cout << ",KH:" << m_kh_dec[0] << "/" << m_kh_dec[1] << "/" << m_kh_dec[2] << "/" << m_kh_dec[3] << "/" << m_kh_dec[4];
+          if (m_px)
+            std::cout << ",PX:" << m_px_n[0] << "/" << m_px_n[1];
+          if (m_dic)
+            std::cout << ",DIC:" << m_dic_dec[0] << "/" << m_dic_dec[1] << "/" << m_dic_dec[2];
           std::cout << std::endl;
         }
       std::cout << "XGREGORM-GAP," << m_id << ",MIN:" << (m_gap_min < 1e8 ? m_gap_min * 1000 : -1)

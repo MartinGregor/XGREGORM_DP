@@ -1,0 +1,17 @@
+{
+ "out": "ratcmp",
+ "jobs": 2,
+ "seeds": [
+  1,
+  2,
+  3
+ ],
+ "base": "--map city-center --vehicles 140 --sim-time 120 --warmup 30 --run hybrid --tech 80211p,nr --channel urban --security 1 --wifi-bcast-rate 6 --wifi-rx-min -88 --tx-power 23 --tls-radius -1 --nr-freq 5.885e9 --nr-bw 20 --zones 0:150:0:60:W:0.7+2:150:0:60:N:0.7+5:150:0:60:W:0.7+8:150:0:60:N:0.7+0:150:60:90:N:0.7+2:150:60:90:W:0.7+5:150:60:90:N:0.7+8:150:60:90:W:0.7+1:150:90:999:W:0.7+3:150:90:999:N:0.7+6:150:90:999:W:0.7+7:150:90:999:N:0.7",
+ "configs": {
+  "RFW": "--clean 1 --init-main 0",
+  "RMIX": "--clean 1 --init-main 2",
+  "RQ": "--clean 1 --init-main 2 --qos-rat 1 --probe-hz 0.5",
+  "RPM": "--clean 1 --init-main 2 --pred-rat 1 --probe-hz 0.5",
+  "RPX": "--clean 1 --init-main 2 --pred-rat 1 --pred-x 1 --probe-hz 0.5"
+ }
+}

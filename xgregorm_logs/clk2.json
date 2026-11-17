@@ -1,0 +1,16 @@
+{
+ "out": "clk",
+ "jobs": 2,
+ "seeds": [
+  201,
+  202,
+  203,
+  204,
+  205
+ ],
+ "base": "--map city-center --vehicles 140 --sim-time 120 --warmup 30 --run hybrid --channel urban --security 1 --spat 1 --cpm-share 1.0 --coex 1 --dcc 1 --nr-cr 1 --phone-share 0.5 --phone-kbps 20 --lte-bw 50 --wifi-bcast-rate 6 --nr-freq 5.885e9 --nr-bw 20 --wifi-rx-min -88",
+ "configs": {
+  "QR": "--clean 1 --init-main 2 --qos-rat 1 --probe-hz 0.5 --lat-rel 1",
+  "QRC50": "--clean 1 --init-main 2 --qos-rat 1 --probe-hz 0.5 --lat-rel 1 --clock-err 0.05"
+ }
+}

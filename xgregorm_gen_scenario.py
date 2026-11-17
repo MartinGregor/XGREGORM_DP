@@ -155,6 +155,12 @@ ap.add_argument("--kh", type=int, default=0, help="clean: comparison method from
 ap.add_argument("--kh-d1", type=float, default=125, help="Khalid: Dthr1 = effective range of 802.11p [m]")
 ap.add_argument("--kh-d2", type=float, default=250, help="Khalid: Dthr2 = effective range of NR-V2X [m]")
 ap.add_argument("--kh-lthr", type=float, default=0.1, help="Khalid: latency threshold [s]")
+ap.add_argument("--pred-x", type=int, default=0, help="improved prediction: quality map used only when it agrees with the "
+                "current measurement, proactive / avoided switch from the map along the route (implies --pred-rat)")
+ap.add_argument("--lat-rel", type=int, default=0, help="quality rule: latency relative to the minimum of the same sender "
+                "over 10 s, so no synchronized clocks are needed")
+ap.add_argument("--dicart", type=int, default=0, help="clean: comparison method from the literature, DICART (Karoui et al. 2022): "
+                "TOPSIS over (1 - CBR) * rate and access layer delay; use with --probe-hz 2 (control messages of the paper)")
 ap.add_argument("--dup-near", type=float, default=0, help="clean: CAM copy within this distance of the next traffic light [m]")
 ap.add_argument("--oracle", type=int, default=0, help="reference: vehicles know the --zones exactly (with --qos-rat; look-ahead --pred-horizon)")
 ap.add_argument("--geo-rat", type=float, default=0, help="clean: CAM over NR within this distance of the next traffic light [m]")
@@ -186,6 +192,16 @@ ap.add_argument("--phone-share", type=float, default=0,
                 help="hybrid: share of vehicles with passengers' phones / infotainment on the LTE uplink (bursty ON/OFF); "
                      "CAMs over LTE then use a dedicated V2X bearer")
 ap.add_argument("--phone-kbps", type=float, default=100, help="hybrid: mean uplink rate of the phones in one vehicle [kbit/s]")
+ap.add_argument("--phones-per-car", type=float, default=0, help="hybrid: phones per vehicle, Poisson with this mean, each "
+                "--phone-kbps (busy hour ~20 kbit/s per smartphone); replaces --phone-share")
+ap.add_argument("--ped-ue", type=int, default=0, help="hybrid, urban: standing pedestrians with a phone on the sidewalks (LTE)")
+ap.add_argument("--ped-kbps", type=float, default=20, help="hybrid: mean uplink rate of one pedestrian phone [kbit/s]")
+ap.add_argument("--office-share", type=float, default=0, help="hybrid, urban: share of the buildings that are offices")
+ap.add_argument("--office-ue", type=int, default=1, help="hybrid: LTE UE groups inside each office building (O2I loss 3GPP TR 38.901)")
+ap.add_argument("--office-kbps", type=float, default=200, help="hybrid: mean uplink rate of one office UE group [kbit/s]")
+ap.add_argument("--office-wifi-oob", type=float, default=0, help="hybrid: Wi-Fi 6E in the offices, out-of-band emission into the "
+                "ITS band [dBm/MHz e.i.r.p.], EU limit -37 (before 2025 -45); 0 = off; needs --coex 1")
+ap.add_argument("--office-wifi-duty", type=float, default=0.3, help="hybrid: share of time an office Wi-Fi transmits")
 ap.add_argument("--lte-bw", type=int, default=0, choices=[0, 6, 15, 25, 50, 75, 100],
                 help="hybrid: LTE cell bandwidth [PRB] (25 = 5 MHz ns-3 default, 50 = 10 MHz, 100 = 20 MHz; 0 = default)")
 ap.add_argument("--dcc", type=int, default=0, choices=[0, 1],
@@ -884,12 +900,17 @@ HYB = (f"{TM} --tls-radius={a.tls_radius}"
        + (f" --dcc-offload={a.dcc_offload}" if a.dcc_offload else "") + (" --nb-equip=true" if a.nb_equip else "")
        + (f" --rsu-equip={a.rsu_equip}" if a.rsu_equip else "") + (" --rsu-route=true" if a.rsu_route else "")
        + (f" --kh=true --kh-d1={a.kh_d1} --kh-d2={a.kh_d2} --kh-lthr={a.kh_lthr}" if a.kh else "")
+       + (" --dicart=true" if a.dicart else "") + (" --pred-x=true" if a.pred_x else "") + (" --lat-rel=true" if a.lat_rel else "")
        + (f" --dup-near={a.dup_near}" if a.dup_near else "") + (f" --geo-rat={a.geo_rat}" if a.geo_rat else "")
        + (f" --cpm-rat={a.cpm_rat}" if a.cpm_rat else "")
        + (f" --feat-log={a.feat_log}" if a.feat_log else "") + (f" --pred-model={a.pred_model}" if a.pred_model else "")
        + (f" --nr-freq={a.nr_freq}" if a.nr_freq != 5.89e9 else "") + (f" --nr-bw={a.nr_bw}" if a.nr_bw else "")
        + (f" --equip={a.equip}" if a.equip else "")
        + (f" --phone-share={a.phone_share} --phone-kbps={a.phone_kbps}" if a.phone_share else "")
+       + (f" --phones-per-car={a.phones_per_car} --phone-kbps={a.phone_kbps}" if a.phones_per_car else "")
+       + (f" --ped-ue={a.ped_ue} --ped-kbps={a.ped_kbps}" if a.ped_ue else "")
+       + (f" --office-share={a.office_share} --office-ue={a.office_ue} --office-kbps={a.office_kbps}" if a.office_share else "")
+       + (f" --office-wifi-oob={a.office_wifi_oob} --office-wifi-duty={a.office_wifi_duty}" if a.office_wifi_oob else "")
        + (f" --lte-bw={a.lte_bw}" if a.lte_bw else "") + (" --dcc=true" if a.dcc else "") + (" --nr-cr=true" if a.nr_cr else "") +
        f" --fading={'true' if a.fading else 'false'} --nr-noise-figure={a.nr_noise_figure} --lte-iot={a.lte_iot}"
        f" --warmup={a.warmup}"
@@ -925,7 +946,9 @@ def spusti(kluc):
     args += f" --netstate-dump-file={TMP}/netstate.xml"
     print(f"\n>>> {program}\n")
     t0 = time.time()
-    proc = subprocess.Popen(["./ns3", "run", f"{program} {args}"],
+    # xgregorm_nobuild (subor v ns-3-dev): beh nespusti prekompilovanie - pocas vyvoja C++ pri beziacej serii
+    nb = ["--no-build"] if os.path.exists("xgregorm_nobuild") else []
+    proc = subprocess.Popen(["./ns3", "run"] + nb + [f"{program} {args}"],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     vystup = []
     hlavicka = False

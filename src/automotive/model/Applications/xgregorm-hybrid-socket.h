@@ -14,6 +14,7 @@
 #include "ns3/net-device.h"
 #include "ns3/simulator.h"
 #include "ns3/header.h"
+#include "ns3/tag.h"
 #include <functional>
 #include <string>
 #include <map>
@@ -295,6 +296,84 @@ nrSend (Ptr<Socket> s, Ptr<Packet> p)
 }
 } // namespace xgdcc
 
+// xgregorm: porovnavacia metoda DICART (Karoui a kol., IWCMC 2022) - oneskorenie v pristupovej vrstve (AD): cas od
+// odovzdania spravy prepinacu po zaciatok jej vysielania (fronta DCC 802.11p + pristup CSMA, pri NR vyber prostriedku
+// mode 2). Kopia spravy dostane znacku (byte tag prezije hlavicky aj skladanie RLC), pri vysielani sa zmeria; stanica
+// pozna len svoje vlastne casy. Bez --dicart sa nic neznaci.
+class XgSendTimeTag : public Tag
+{
+public:
+  uint64_t id = 0;
+  static TypeId
+  GetTypeId (void)
+  {
+    static TypeId tid = TypeId ("ns3::XgSendTimeTag").SetParent<Tag> ().AddConstructor<XgSendTimeTag> ();
+    return tid;
+  }
+  TypeId GetInstanceTypeId (void) const override { return GetTypeId (); }
+  uint32_t GetSerializedSize (void) const override { return 8; }
+  void Serialize (TagBuffer i) const override { i.WriteU64 (id); }
+  void Deserialize (TagBuffer i) override { id = i.ReadU64 (); }
+  void Print (std::ostream &os) const override { os << "xgId=" << id; }
+};
+namespace xgdic {
+inline bool &on () { static bool b = false; return b; }
+struct Pend
+{
+  uint32_t node;
+  int k; // 0 = 802.11p, 1 = NR
+  double t;
+};
+inline std::map<uint64_t, Pend> &pend () { static std::map<uint64_t, Pend> m; return m; }
+// vzorky AD po uzloch: kluc uzol * 2 + k -> (cas vysielania, oneskorenie)
+inline std::map<uint32_t, std::deque<std::pair<double, double>>> &ad ()
+{
+  static std::map<uint32_t, std::deque<std::pair<double, double>>> m;
+  return m;
+}
+inline std::array<double, 2> &adSum () { static std::array<double, 2> a {}; return a; }
+inline std::array<uint64_t, 2> &adN () { static std::array<uint64_t, 2> a {}; return a; }
+inline std::array<double, 2> &rate () { static std::array<double, 2> a {6e6, 6e6}; return a; } // nominalna rychlost [b/s]
+inline void
+tag (Ptr<Packet> p, uint32_t node, int k)
+{
+  static uint64_t next = 1;
+  XgSendTimeTag t;
+  t.id = next++;
+  p->AddByteTag (t);
+  double now = Simulator::Now ().GetSeconds ();
+  pend ()[t.id] = {node, k, now};
+  // spravy, ktore sa nikdy nevyslali (nahradene vo fronte DCC, zahodene limitom CR): zabudnut po 2 s
+  while (!pend ().empty () && now - pend ().begin ()->second.t > 2.0)
+    pend ().erase (pend ().begin ());
+}
+// zaciatok vysielania paketu (prvy prenos; opakovania HARQ uz znacku v zozname nemaju)
+inline void
+onTx (Ptr<const Packet> p)
+{
+  ByteTagIterator it = p->GetByteTagIterator ();
+  while (it.HasNext ())
+    {
+      ByteTagIterator::Item i = it.Next ();
+      if (i.GetTypeId () != XgSendTimeTag::GetTypeId ())
+        continue;
+      XgSendTimeTag t;
+      i.GetTag (t);
+      auto e = pend ().find (t.id);
+      if (e == pend ().end ())
+        continue;
+      double now = Simulator::Now ().GetSeconds (), d = now - e->second.t;
+      auto &q = ad ()[e->second.node * 2 + e->second.k];
+      q.push_back ({now, d});
+      while (q.size () > 200)
+        q.pop_front ();
+      adSum ()[e->second.k] += d;
+      adN ()[e->second.k]++;
+      pend ().erase (e);
+    }
+}
+} // namespace xgdic
+
 // xgregorm: zakladna hlavicka GeoNet (ETSI EN 302 636-4-1, 4 B) ako surove bajty - prepinac do jej pola Reserved
 // (bajt 1, GeoNet autorov ho pise 0 a pri prijme ignoruje) zapise znacku pre vyber technologie podla kvality
 // (XgQosRat): bit 7 = CAM ide aj cez 802.11p, bit 6 = aj cez NR-V2X, bity 0-5 = poradove cislo CAM (mod 64)
@@ -412,6 +491,8 @@ public:
       if ((path & b) && s[xghyb::idx (b)] && xghyb::up (b))
         {
           Ptr<Packet> c = p->Copy ();
+          if (xgdic::on () && b != xghyb::LTE)
+            xgdic::tag (c, m_wifi->GetNode ()->GetId (), b == xghyb::NR);
           int r = b == xghyb::WIFI ? xgdcc::wSend (s[0], c, kind) : b == xghyb::NR ? xgdcc::nrSend (s[2], c)
                                                                                   : s[1]->Send (c, flags);
           ret = std::max (ret, r);

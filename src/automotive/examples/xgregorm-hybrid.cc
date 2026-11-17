@@ -660,11 +660,123 @@ bool on = false;
 // xgregorm: telefony v autach (--phone-share): socket na server za PGW podla indexu uzla (nullptr = bez telefonov)
 namespace xgphone {
 std::vector<Ptr<Socket>> sock;
+std::vector<uint32_t> cnt; // telefony v aute (--phones-per-car), inak 1
 std::set<uint32_t> started;
 Ptr<UniformRandomVariable> start;
 double kbps = 100;
 uint32_t n = 0;
 } // namespace xgphone
+
+// xgregorm 2026-11-17: realisticke okolie (--phones-per-car, --ped-ue, --office-share). UE vo vnutri budovy maju
+// utlm prechodu stenou podla 3GPP TR 38.901 cl. 7.4.3 (O2I, model "low-loss": PL_tw = 5 - 10 log10 (0.3 * 10^(-L_skla/10)
+// + 0.7 * 10^(-L_betonu/10)), L_skla = 2 + 0.2 f, L_betonu = 5 + 4 f [dB, f v GHz]; vnutorny utlm 0.5 * d_2D-in, kde
+// d_2D-in = vzdialenost od najblizsej obvodovej steny; tienenie N(0, 4.4 dB)). V tejto verzii ns-3 model 38.901 pri O2I
+// pocita len NLOS bez prechodu stenou, preto sa utlm prida ako dalsi clanok retazca modelov (oba smery LTE).
+namespace xgenv {
+std::map<const MobilityModel *, double> o2i; // dB podla uzla
+double
+o2iDb (double fGHz, double dIn, double shadow)
+{
+  double lg = 2 + 0.2 * fGHz, lc = 5 + 4 * fGHz;
+  double tw = 5 - 10 * std::log10 (0.3 * std::pow (10, -lg / 10) + 0.7 * std::pow (10, -lc / 10));
+  return tw + 0.5 * dIn + shadow;
+}
+// --office-wifi-oob: Wi-Fi 6E v kancelariach (5945-6425 MHz, EU 2021/1067, ECC/DEC/(20)01) - vyziarenie mimo pasma pod
+// 5935 MHz (pasmo ITS) na limite predpisu [dBm/MHz e.i.r.p.]; jeden zdroj na budovu = suhrn jej zariadeni, ramce 1 ms,
+// podiel casu vysielania --office-wifi-duty; utlm = model kanala 802.11p + O2I na 5.9 GHz
+struct Em
+{
+  Ptr<MobilityModel> mob;
+  double o2iDb;
+};
+std::vector<Em> em;
+double oobDbmMhz = 0, duty = 0.3;
+uint64_t frames = 0, hitsW = 0, hitsN = 0;
+double maxW = -300, maxN = -300;
+Ptr<ExponentialRandomVariable> gap;
+std::unordered_map<uint64_t, std::pair<double, double>> gainC;
+
+// jeden ramec Wi-Fi 6E kancelarie e (1 ms): cudzi signal pre prijimace 802.11p a NR (rovnako ako --coex)
+void
+frame (size_t e)
+{
+  const double dur = 1e-3;
+  double now = Simulator::Now ().GetSeconds ();
+  frames++;
+  for (size_t j = 0; j < xgcoex::sta.size (); j++)
+    {
+      const auto &st = xgcoex::sta[j];
+      if (!xgload::active.count (st.id))
+        continue;
+      uint64_t key = ((uint64_t) e << 32) | j;
+      auto it = gainC.find (key);
+      if (it == gainC.end () || now - it->second.first >= 0.1)
+        it = gainC.insert_or_assign (key, std::make_pair (now, xgcoex::loss->CalcRxPower (0, em[e].mob, st.mob) - em[e].o2iDb)).first;
+      double g = it->second.second;
+      if (st.w)
+        {
+          double dbm = oobDbmMhz + 10 * std::log10 (xgcoex::bwW / 1e6) + g;
+          maxW = std::max (maxW, dbm);
+          if (dbm >= -110)
+            {
+              RxPowerWattPerChannelBand m;
+              m.insert ({std::make_pair (0, 0), std::pow (10, (dbm - 30) / 10)});
+              Ptr<InterferenceHelper> ih = st.w->GetInterferenceHelper ();
+              ih->AddForeignSignal (Seconds (dur), m);
+              Time busy = ih->GetEnergyDuration (xgcoex::ccaW, std::make_pair (0, 0));
+              if (!busy.IsZero ())
+                st.w->GetState ()->SwitchMaybeToCcaBusy (busy);
+              if (xgload::useW && dbm > xgstats::kCbrThrDbm)
+                xgload::busyW[st.id].push_back ({now, now + dur});
+              hitsW++;
+            }
+        }
+      if (st.n)
+        {
+          double dbm = oobDbmMhz + 10 * std::log10 (xgcoex::bwN / 1e6) + g;
+          maxN = std::max (maxN, dbm);
+          if (dbm >= -110)
+            {
+              Ptr<SpectrumValue> v = Create<SpectrumValue> (st.n->GetRxSpectrumModel ());
+              double psd = std::pow (10, (oobDbmMhz + g - 30) / 10) / 1e6; // W/Hz
+              for (auto x = v->ValuesBegin (); x != v->ValuesEnd (); ++x)
+                *x = psd;
+              st.n->GetSlInterferencePointer ()->AddSignal (v, Seconds (dur));
+              if (xgload::useN && dbm > -94)
+                xgload::nrRx[st.id].push_back ({now, (int) (xgload::nrSubch * std::max (1.0, std::ceil (dur * xgload::nrSlotsPerSec)))});
+              hitsN++;
+            }
+        }
+    }
+  Simulator::Schedule (Seconds (dur + gap->GetValue ()), &frame, e);
+}
+} // namespace xgenv
+
+class XgO2iLoss : public PropagationLossModel
+{
+public:
+  static TypeId
+  GetTypeId (void)
+  {
+    static TypeId tid = TypeId ("ns3::XgO2iLoss").SetParent<PropagationLossModel> ().AddConstructor<XgO2iLoss> ();
+    return tid;
+  }
+private:
+  double
+  DoCalcRxPower (double txPowerDbm, Ptr<MobilityModel> a, Ptr<MobilityModel> b) const override
+  {
+    double l = 0;
+    auto i = xgenv::o2i.find (PeekPointer (a));
+    if (i != xgenv::o2i.end ())
+      l += i->second;
+    i = xgenv::o2i.find (PeekPointer (b));
+    if (i != xgenv::o2i.end ())
+      l += i->second;
+    return txPowerDbm - l;
+  }
+  int64_t DoAssignStreams (int64_t) override { return 0; }
+};
+NS_OBJECT_ENSURE_REGISTERED (XgO2iLoss);
 
 NS_LOG_COMPONENT_DEFINE ("xgregorm-hybrid");
 
@@ -722,6 +834,11 @@ main (int argc, char *argv[])
   double dcc_offload_ms = 0, dup_near = 0, geo_rat = 0;
   bool kh = false; // xgregorm: metoda z literatury (Khalid a kol. 2024)
   double kh_win = 5, kh_d1 = 125, kh_d2 = 250, kh_lthr = 0.1, kh_sthr = 100;
+  bool lat_rel = false; // xgregorm: --lat-rel
+  bool pred_x = false;  // xgregorm: --pred-x (vylepsena predikcia, zapne aj --pred-rat)
+  double pred_x_dev = 0.15;
+  bool dicart = false; // xgregorm: metoda z literatury DICART (Karoui a kol. 2022)
+  double dic_gamma = 3;
   bool oracle = false, bandit = false, bandit_probe = false;
   std::string pred_gbm;
   bool nb_equip = false, rsu_route = false;
@@ -759,6 +876,10 @@ main (int argc, char *argv[])
   double nr_bw_mhz = 0;
   std::string equip;                                         // xgregorm: vybava aut, napr. "W:0.4,N:0.2,WN:0.2,NONE:0.2"
   double phone_share = 0, phone_kbps = 100;                  // xgregorm: telefony v autach (LTE uplink)
+  double phones_per_car = 0;                                 // xgregorm: priemerny pocet telefonov v aute (Poisson)
+  uint32_t ped_ue = 0;                                       // xgregorm: stojaci chodci s telefonom na chodnikoch
+  double ped_kbps = 20, office_share = 0, office_kbps = 200, office_wifi_oob = 0, office_wifi_duty = 0.3;
+  uint32_t office_ue = 1;
   uint16_t lte_bw = 0;                                       // xgregorm: sirka pasma bunky LTE [PRB]
   bool dcc = false, nr_cr = false;                           // xgregorm: riadenie zahltenia
   double core_delay_ms = 5; // PGW -> server, ako autori v v2i-trafficManager-LTE
@@ -836,7 +957,15 @@ main (int argc, char *argv[])
                 "e.g. W:0.4,N:0.2,WN:0.2,NONE:0.2; every vehicle has LTE; empty = all WN",equip);
   cmd.AddValue ("phone-share","Share of vehicles with passengers' phones / infotainment using the LTE uplink of the "
                 "vehicle (bursty ON/OFF); CAMs over LTE then use a dedicated V2X bearer (QCI 79)",phone_share);
-  cmd.AddValue ("phone-kbps","Mean uplink rate of the phones in one vehicle [kbit/s]",phone_kbps);
+  cmd.AddValue ("phone-kbps","Mean uplink rate of the phones in one vehicle [kbit/s]; with --phones-per-car of one phone",phone_kbps);
+  cmd.AddValue ("phones-per-car","Phones per vehicle, Poisson with this mean (each --phone-kbps); replaces --phone-share",phones_per_car);
+  cmd.AddValue ("ped-ue","Standing pedestrians with a phone on the sidewalks (LTE UEs, 1.5 m in front of a building)",ped_ue);
+  cmd.AddValue ("ped-kbps","Mean uplink rate of one pedestrian phone [kbit/s]",ped_kbps);
+  cmd.AddValue ("office-share","Share of the buildings that are offices (--channel urban)",office_share);
+  cmd.AddValue ("office-ue","LTE UEs inside each office building (each a group of phones / computers on the cellular network)",office_ue);
+  cmd.AddValue ("office-kbps","Mean uplink rate of one office UE group [kbit/s]",office_kbps);
+  cmd.AddValue ("office-wifi-oob","Wi-Fi 6E in the offices: out-of-band emission into the ITS band [dBm/MHz e.i.r.p.], 0 = off (EU limit -37, before 2025 -45)",office_wifi_oob);
+  cmd.AddValue ("office-wifi-duty","Wi-Fi 6E in the offices: share of time an office transmits",office_wifi_duty);
   cmd.AddValue ("lte-bw","LTE cell bandwidth [PRB] (25 = 5 MHz ns-3 default, 50 = 10 MHz, 100 = 20 MHz; 0 = default)",lte_bw);
   cmd.AddValue ("dcc","802.11p reactive DCC (ETSI TS 102 687): gatekeeper after every frame + T_GenCam_DCC / T_GenCpm",dcc);
   cmd.AddValue ("nr-cr","NR-V2X congestion control: CR limit by SL-CBR (ETSI TS 103 574), copies over the limit are dropped",nr_cr);
@@ -864,6 +993,11 @@ main (int argc, char *argv[])
   cmd.AddValue ("kh-d2","Khalid: Dthr2, effective range of NR-V2X [m]",kh_d2);
   cmd.AddValue ("kh-lthr","Khalid: latency threshold [s]",kh_lthr);
   cmd.AddValue ("kh-sthr","Khalid: speed threshold [km/h]",kh_sthr);
+  cmd.AddValue ("pred-x","Improved prediction: quality map only when it agrees with the current measurement (implies --pred-rat)",pred_x);
+  cmd.AddValue ("pred-x-dev","--pred-x: largest map - measurement difference of a fresh map",pred_x_dev);
+  cmd.AddValue ("lat-rel","Quality rule: latency relative to the minimum of the same sender over 10 s (no synchronized clocks)",lat_rel);
+  cmd.AddValue ("dicart","Clean policy: comparison method from the literature (DICART, Karoui et al. 2022), TOPSIS over (1 - CBR) * rate and access layer delay",dicart);
+  cmd.AddValue ("dic-gamma","DICART: statistic sample size gamma",dic_gamma);
   cmd.AddValue ("dup-near","Clean policy: CAM copy on the other technology within this distance of the next traffic light [m]",dup_near);
   cmd.AddValue ("oracle","Reference: vehicles know the --zones exactly (with --qos-rat; look-ahead = --pred-horizon s)",oracle);
   cmd.AddValue ("geo-rat","Clean policy: CAM over NR within this distance of the next traffic light [m]",geo_rat);
@@ -928,6 +1062,8 @@ main (int argc, char *argv[])
   cmd.AddValue ("range-stats","Measure delivery vs. distance (50 m bins up to 1000 m), car-car and car-RSU",range_stats);
   cmd.Parse (argc, argv);
   xgstats::clockSeed () = (unsigned long) sumo_seed; // xgregorm: --clock-err, odchylky hodin podla seedu
+  if (pred_x)
+    pred_rat = true;
   if (pred_rat)
     qos_rat = true;
   if (clean_policy)
@@ -1222,7 +1358,21 @@ main (int argc, char *argv[])
         Ptr<WifiPhy> phy = DynamicCast<WifiNetDevice> (node->GetDevice (0))->GetPhy ();
         if (xgload::useW)
           phy->TraceConnectWithoutContext ("PhyTxPsduBegin", MakeBoundCallback (&xgload::onWifiTx, node->GetId (), mob, phy));
+        // xgregorm: --dicart - oneskorenie v pristupovej vrstve 802.11p (zaciatok vysielania vlastneho ramca)
+        if (dicart)
+          phy->TraceConnectWithoutContext ("PhyTxPsduBegin", MakeCallback (+[] (WifiConstPsduMap psdus, WifiTxVector, double) {
+            for (auto &e : psdus)
+              xgdic::onTx (e.second->GetPacket ());
+          }));
       }
+  if (dicart)
+    {
+      xgdic::on () = true;
+      if (wifi_bcast_rate)
+        xgdic::rate ()[0] = wifi_bcast_rate * 1e6;
+      else
+        xgdic::rate ()[0] = 3e6;
+    }
   if (xgcoex::on && !(use_80211p && use_nr))
     {
       std::cout << "XGREGORM-COEX,off (needs 802.11p and NR)" << std::endl;
@@ -1374,9 +1524,73 @@ main (int argc, char *argv[])
       NodeContainer bgNodes;
       NetDeviceContainer bgDevs;
       Ptr<UniformRandomVariable> pr; // len pri pozadi (inak by posunul automaticke cisla prudov)
-      if (lte_bg_ue > 0)
+      // xgregorm: realisticke okolie - chodci na chodnikoch a skupiny UE v kancelariach (za UE pozadia --lte-bg-ue)
+      std::vector<Vector> envPos;
+      std::vector<double> envRate, envO2i;
+      uint32_t nOffice = 0;
+      if (ped_ue > 0 || office_share > 0)
         {
-          bgNodes.Create (lte_bg_ue);
+          if (!urban)
+            NS_FATAL_ERROR ("--ped-ue and --office-share need --channel urban (buildings)");
+          Ptr<UniformRandomVariable> er = CreateObject<UniformRandomVariable> ();
+          er->SetStream (3400);
+          Ptr<NormalRandomVariable> en = CreateObject<NormalRandomVariable> ();
+          en->SetStream (3401);
+          std::vector<Ptr<Building>> bl (BuildingList::Begin (), BuildingList::End ());
+          auto inside = [&] (double x, double y) {
+            for (auto &b : bl)
+              if (b->IsInside (Vector (x, y, 1.5)))
+                return true;
+            return false;
+          };
+          // chodec: 1.5 m pred obvodovou stenou nahodnej budovy (pas budovy konci na okraji bloku, chodnik ma 4 m)
+          for (uint32_t i = 0, tries = 0; i < ped_ue && tries < 100000; tries++)
+            {
+              Box bx = bl[er->GetInteger (0, bl.size () - 1)]->GetBoundaries ();
+              double y = er->GetValue (bx.yMin, bx.yMax), x = er->GetValue () < 0.5 ? bx.xMin - 1.5 : bx.xMax + 1.5;
+              if (inside (x, y))
+                continue;
+              envPos.push_back (Vector (x, y, 1.5));
+              envRate.push_back (ped_kbps);
+              envO2i.push_back (0);
+              i++;
+            }
+          // kancelarie: budova je kancelarska s pravdepodobnostou --office-share; UE na nahodnom poschodi (3 m)
+          const double fLte = 1.93; // GHz, uplink LTE (EARFCN 18100), rovnaky utlm aj pre downlink
+          for (auto &b : bl)
+            if (office_share > 0 && er->GetValue () < office_share)
+              {
+                Box bx = b->GetBoundaries ();
+                nOffice++;
+                int floors = std::max (1, (int) (bx.zMax / 3));
+                for (uint32_t u = 0; u < office_ue; u++)
+                  {
+                    double x = er->GetValue (bx.xMin + 0.5, bx.xMax - 0.5), y = er->GetValue (bx.yMin + 0.5, bx.yMax - 0.5);
+                    double z = 1.5 + 3 * er->GetInteger (0, floors - 1);
+                    double dIn = std::min ({x - bx.xMin, bx.xMax - x, y - bx.yMin, bx.yMax - y});
+                    envPos.push_back (Vector (x, y, z));
+                    envRate.push_back (office_kbps);
+                    envO2i.push_back (std::max (0.0, xgenv::o2iDb (fLte, dIn, 4.4 * en->GetValue ())));
+                  }
+                if (office_wifi_oob != 0)
+                  {
+                    double x = 0.5 * (bx.xMin + bx.xMax), y = 0.5 * (bx.yMin + bx.yMax);
+                    Ptr<ConstantPositionMobilityModel> m = CreateObject<ConstantPositionMobilityModel> ();
+                    m->SetPosition (Vector (x, y, 1.5 + 3 * er->GetInteger (0, floors - 1)));
+                    // model stavu kanala potrebuje uzol (kluc dvojice) a informaciu o budove
+                    Ptr<Node> en6 = CreateObject<Node> ();
+                    en6->AggregateObject (m);
+                    BuildingsHelper::Install (en6);
+                    double dIn = std::min ({x - bx.xMin, bx.xMax - x, y - bx.yMin, bx.yMax - y});
+                    xgenv::em.push_back ({m, std::max (0.0, xgenv::o2iDb (5.9, dIn, 4.4 * en->GetValue ()))});
+                  }
+              }
+          std::cout << "XGREGORM-ENV,PED:" << ped_ue << ",OFFICES:" << nOffice << ",OFFICE_UE:" << nOffice * office_ue
+                    << ",WIFI6E:" << xgenv::em.size () << std::endl;
+        }
+      if (lte_bg_ue > 0 || !envPos.empty ())
+        {
+          bgNodes.Create (lte_bg_ue + envPos.size ());
           pr = CreateObject<UniformRandomVariable> ();
           pr->SetStream (3100);
           double x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
@@ -1390,13 +1604,36 @@ main (int argc, char *argv[])
           Ptr<ListPositionAllocator> bgPos = CreateObject<ListPositionAllocator> ();
           for (uint32_t i = 0; i < lte_bg_ue; i++)
             bgPos->Add (Vector (pr->GetValue (x0, x1), pr->GetValue (y0, y1), 1.5));
+          for (auto &p : envPos)
+            bgPos->Add (p);
           MobilityHelper bgMob;
           bgMob.SetPositionAllocator (bgPos);
           bgMob.Install (bgNodes);
+          for (size_t i = 0; i < envPos.size (); i++)
+            if (envO2i[i] > 0)
+              xgenv::o2i[PeekPointer (bgNodes.Get (lte_bg_ue + i)->GetObject<MobilityModel> ())] = envO2i[i];
           if (urban)
             BuildingsHelper::Install (bgNodes);
           internet.Install (bgNodes);
           bgDevs = lteHelper->InstallUeDevice (bgNodes);
+          // xgregorm: utlm prechodu stenou (O2I) pre UE v budovach - dalsi clanok modelu sirenia LTE, oba smery
+          if (!xgenv::o2i.empty ())
+            {
+              Ptr<PropagationLossModel> ul = lteHelper->GetUplinkSpectrumChannel ()->GetPropagationLossModel ();
+              Ptr<PropagationLossModel> dl = DynamicCast<LteEnbNetDevice> (enbDevs.Get (0))->GetPhy ()
+                                                 ->GetDownlinkSpectrumPhy ()->GetChannel ()->GetPropagationLossModel ();
+              for (Ptr<PropagationLossModel> m : {ul, dl})
+                {
+                  while (m->GetNext ())
+                    m = m->GetNext ();
+                  if (!DynamicCast<XgO2iLoss> (m))
+                    m->SetNext (CreateObject<XgO2iLoss> ());
+                }
+              double sum = 0;
+              for (auto &e : xgenv::o2i)
+                sum += e.second;
+              std::cout << "XGREGORM-O2I,UE:" << xgenv::o2i.size () << ",MEAN_DB:" << sum / xgenv::o2i.size () << std::endl;
+            }
         }
       // xgregorm: meranie vyuzitia PRB uplinku po bunkach
       xgload::useL = load_stats;
@@ -1417,7 +1654,7 @@ main (int argc, char *argv[])
               }, ue));
         }
       epcHelper->AssignUeIpv4Address (ueDevs);
-      if ((lte_bg_ue > 0 || phone_share > 0) && !xglbg::onT)
+      if ((bgNodes.GetN () > 0 || phone_share > 0 || phones_per_car > 0) && !xglbg::onT)
         {
           xglbg::onT = CreateObject<ExponentialRandomVariable> ();
           xglbg::onT->SetAttribute ("Mean", DoubleValue (0.5));
@@ -1426,7 +1663,7 @@ main (int argc, char *argv[])
           xglbg::offT->SetAttribute ("Mean", DoubleValue (0.5));
           xglbg::offT->SetStream (3111);
         }
-      if (lte_bg_ue > 0)
+      if (bgNodes.GetN () > 0)
         {
           epcHelper->AssignUeIpv4Address (bgDevs);
           for (uint32_t u = 0; u < bgNodes.GetN (); ++u)
@@ -1444,10 +1681,11 @@ main (int argc, char *argv[])
               so->Bind ();
               so->Connect (InetSocketAddress (serverAddr, 5001));
               // start po pripojeni (1-2 s), zaciname vo faze OFF
-              Simulator::Schedule (Seconds (1.0 + pr->GetValue ()), &xglbg::burst, so, 0.0, xglbg::kbps, UINT32_MAX);
+              Simulator::Schedule (Seconds (1.0 + pr->GetValue ()), &xglbg::burst, so, 0.0,
+                                   u < lte_bg_ue ? xglbg::kbps : envRate[u - lte_bg_ue], UINT32_MAX);
             }
         }
-      if (lte_bg_ue > 0 || phone_share > 0 || xgstats::remPeriod () > 0)
+      if (bgNodes.GetN () > 0 || phone_share > 0 || phones_per_car > 0 || xgstats::remPeriod () > 0)
         {
           // prijimac na serveri (inak by server posielal ICMP port unreachable)
           Ptr<Socket> sink = Socket::CreateSocket (server, UdpSocketFactory::GetTypeId ());
@@ -1457,13 +1695,31 @@ main (int argc, char *argv[])
       // xgregorm: --phone-share - telefony pasazierov / infotainment v aute: uplink ON/OFF cez LTE zariadenie auta
       // (realne je to iny UE v tej istej bunke; tu na UE auta, aby sa neprekrocil limit UE bunky ~320); spusti sa
       // pri vstupe auta do mapy (setupNewNode)
-      if (phone_share > 0)
+      if (phone_share > 0 || phones_per_car > 0)
         {
           Ptr<UniformRandomVariable> phr = CreateObject<UniformRandomVariable> ();
           phr->SetStream (3210);
           xgphone::sock.assign (obuNodes.GetN (), nullptr);
+          xgphone::cnt.assign (obuNodes.GetN (), 1);
           for (uint32_t u = 0; u < obuNodes.GetN (); ++u)
-            if (phr->GetValue () < phone_share)
+            {
+              if (phones_per_car > 0)
+                {
+                  // pocet telefonov ~ Poisson (priemer --phones-per-car), inverzna transformacia
+                  double v = phr->GetValue (), p = std::exp (-phones_per_car), c = p;
+                  uint32_t k = 0;
+                  while (v > c && k < 50)
+                    {
+                      k++;
+                      p *= phones_per_car / k;
+                      c += p;
+                    }
+                  xgphone::cnt[u] = k;
+                  if (k == 0)
+                    continue;
+                }
+              else if (!(phr->GetValue () < phone_share))
+                continue;
               {
                 Ptr<Socket> so = Socket::CreateSocket (obuNodes.Get (u), UdpSocketFactory::GetTypeId ());
                 so->Bind ();
@@ -1471,6 +1727,7 @@ main (int argc, char *argv[])
                 xgphone::sock[u] = so;
                 xgphone::n++;
               }
+            }
           xgphone::kbps = phone_kbps;
           xgphone::start = CreateObject<UniformRandomVariable> ();
           xgphone::start->SetStream (3211);
@@ -1504,7 +1761,7 @@ main (int argc, char *argv[])
         }
       // xgregorm: pri telefonoch v aute idu CAM (UDP 9 na server) vlastnym V2X bearerom (QCI 79, 3GPP TS 23.203) -
       // inak by cakali v tej istej fronte RLC za datami telefonov
-      if (phone_share > 0)
+      if (phone_share > 0 || phones_per_car > 0)
         {
           Ptr<EpcTft> tft = Create<EpcTft> ();
           EpcTft::PacketFilter pf;
@@ -1665,6 +1922,26 @@ main (int argc, char *argv[])
             xgdcc::nrUsed (p->txPhy->GetDevice ()->GetNode ()->GetId (), std::ceil (rb / 10.0) * slots);
           }));
         }
+      // xgregorm: --dicart - oneskorenie v pristupovej vrstve NR (prvy PSSCH so spravou) a nominalna rychlost NR:
+      // RB x 12 podnosnych x 12 datovych symbolov v slote (14 bez AGC a ochranneho) x Qm x R (3GPP TS 38.214
+      // tab. 5.1.3.1-1, MCS) x slotov za s; PSCCH a DMRS sa zanedbavaju
+      if (dicart)
+        {
+          static const double qm[29] = {2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 4, 4, 4, 4, 4, 4, 4, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6};
+          static const double rr[29] = {120, 157, 193, 251, 308, 379, 449, 526, 602, 679, 340, 378, 434, 490, 553, 616, 658,
+                                        438, 466, 517, 567, 616, 666, 719, 772, 822, 873, 910, 948};
+          int m = std::min<int> (28, nr_mcs);
+          double rb = DynamicCast<NrUeNetDevice> (slDevs.Get (0))->GetPhy (0)->GetRbNum ();
+          xgdic::rate ()[1] = rb * 12 * 12 * qm[m] * rr[m] / 1024 * 1000.0 * (1 << nr_numerology);
+          bandSl.GetBwpAt (0, 0)->m_channel->TraceConnectWithoutContext ("TxSigParams", MakeCallback (+[] (Ptr<SpectrumSignalParameters> p) {
+            auto d = DynamicCast<NrSpectrumSignalParametersSlDataFrame> (p);
+            if (!d || !d->packetBurst)
+              return;
+            for (auto &pk : d->packetBurst->GetPackets ())
+              xgdic::onTx (pk);
+          }));
+          std::cout << "XGREGORM-DICRATE,W:" << xgdic::rate ()[0] << ",N:" << xgdic::rate ()[1] << ",RB:" << rb << std::endl;
+        }
       if (xgcoex::on)
         {
           for (uint32_t n = 0; n < slDevs.GetN (); ++n)
@@ -1678,6 +1955,21 @@ main (int argc, char *argv[])
                     << xgcoex::ovl (xgcoex::fW - xgcoex::bwW / 2, xgcoex::fW + xgcoex::bwW / 2, xgcoex::fN - xgcoex::bwN / 2,
                                     xgcoex::fN + xgcoex::bwN / 2) / 1e6
                     << ",ACLR_DB:" << coex_aclr << ",CCA_ED_DBM:-65" << std::endl;
+        }
+      // xgregorm: --office-wifi-oob - Wi-Fi 6E kancelarii ako cudzie signaly v pasme ITS (potrebuje --coex)
+      if (!xgenv::em.empty ())
+        {
+          if (!xgcoex::on)
+            NS_FATAL_ERROR ("--office-wifi-oob needs --coex 1");
+          xgenv::oobDbmMhz = office_wifi_oob;
+          xgenv::duty = office_wifi_duty;
+          xgenv::gap = CreateObject<ExponentialRandomVariable> ();
+          xgenv::gap->SetAttribute ("Mean", DoubleValue (1e-3 * (1 - office_wifi_duty) / std::max (1e-3, office_wifi_duty)));
+          xgenv::gap->SetStream (3402);
+          Ptr<UniformRandomVariable> st = CreateObject<UniformRandomVariable> ();
+          st->SetStream (3403);
+          for (size_t e = 0; e < xgenv::em.size (); e++)
+            Simulator::Schedule (Seconds (1 + st->GetValue ()), &xgenv::frame, e);
         }
 
       int64_t stream = 1000;
@@ -1825,6 +2117,11 @@ main (int argc, char *argv[])
   clientHelper.SetAttribute ("XgKhD2", DoubleValue (kh_d2));
   clientHelper.SetAttribute ("XgKhLthr", DoubleValue (kh_lthr));
   clientHelper.SetAttribute ("XgKhSthr", DoubleValue (kh_sthr));
+  clientHelper.SetAttribute ("XgDicart", BooleanValue (dicart));
+  clientHelper.SetAttribute ("XgLatRel", BooleanValue (lat_rel));
+  clientHelper.SetAttribute ("XgPredX", BooleanValue (pred_x));
+  clientHelper.SetAttribute ("XgPredXDev", DoubleValue (pred_x_dev));
+  clientHelper.SetAttribute ("XgDicGamma", DoubleValue (dic_gamma));
   clientHelper.SetAttribute ("XgGeoRat", DoubleValue (geo_rat));
   clientHelper.SetAttribute ("XgOracle", BooleanValue (oracle));
   clientHelper.SetAttribute ("XgBandit", BooleanValue (bandit));
@@ -1846,8 +2143,9 @@ main (int argc, char *argv[])
       xgload::active.insert (includedNode->GetId ());
       // xgregorm: --phone-share - telefony v aute zacnu vysielat 0.5-1.5 s po vstupe auta do mapy
       if (pool < xgphone::sock.size () && xgphone::sock[pool] && xgphone::started.insert (pool).second)
-        Simulator::Schedule (Seconds (0.5 + xgphone::start->GetValue ()), &xglbg::burst, xgphone::sock[pool], 0.0,
-                             xgphone::kbps, includedNode->GetId ());
+        for (uint32_t ph = 0; ph < xgphone::cnt[pool]; ph++) // kazdy telefon vlastne ON/OFF
+          Simulator::Schedule (Seconds (0.5 + xgphone::start->GetValue ()), &xglbg::burst, xgphone::sock[pool], 0.0,
+                               xgphone::kbps, includedNode->GetId ());
       // xgregorm: --equip - priame technologie auta; auto bez V2X nema klienta (neposiela CAM)
       int eq = xgeq::mask[pool];
       xgstats::equip ()[std::stoul (vehicleID.substr (3))] = eq;
@@ -1924,7 +2222,16 @@ main (int argc, char *argv[])
 
   std::cout << "XGREGORM-RELAY,CAM:" << g_relay_n << std::endl;
   if (xgphone::n)
-    std::cout << "XGREGORM-PHONE,VEH:" << xgphone::n << ",PKT:" << xglbg::phoneN << ",BYTES:" << xglbg::phoneN * xglbg::pkt << std::endl;
+    std::cout << "XGREGORM-PHONE,VEH:" << xgphone::n << ",PHONES:" << [] {
+                   uint32_t t = 0;
+                   for (uint32_t i = 0; i < xgphone::sock.size (); i++)
+                     t += xgphone::sock[i] ? xgphone::cnt[i] : 0;
+                   return t;
+                 }() << ",PKT:" << xglbg::phoneN << ",BYTES:" << xglbg::phoneN * xglbg::pkt << std::endl;
+  if (xgdic::on ())
+    std::cout << "XGREGORM-DIC,ADW_MS:" << (xgdic::adN ()[0] ? 1000 * xgdic::adSum ()[0] / xgdic::adN ()[0] : -1) << ",NW:"
+              << xgdic::adN ()[0] << ",ADN_MS:" << (xgdic::adN ()[1] ? 1000 * xgdic::adSum ()[1] / xgdic::adN ()[1] : -1)
+              << ",NN:" << xgdic::adN ()[1] << std::endl;
   if (xgdcc::wOn () || xgdcc::nrOn ())
     {
       const auto &c = xgdcc::cnt ();
@@ -2026,6 +2333,10 @@ main (int argc, char *argv[])
     std::cout << "XGREGORM-COEX,TO_NR:" << xgcoex::toNr << ",TO_NR_DBM:" << (xgcoex::toNr ? xgcoex::sumNrDbm / xgcoex::toNr : 0)
               << ",TO_W:" << xgcoex::toW << ",TO_W_DBM:" << (xgcoex::toW ? xgcoex::sumWDbm / xgcoex::toW : 0)
               << ",CCA:" << xgcoex::ccaHits << ",CBR_W:" << xgcoex::cbrW << ",CBR_NR:" << xgcoex::cbrN << std::endl;
+  if (!xgenv::em.empty ())
+    std::cout << "XGREGORM-WIFI6E,OFFICES:" << xgenv::em.size () << ",OOB_DBM_MHZ:" << xgenv::oobDbmMhz << ",FRAMES:" << xgenv::frames
+              << ",HITS_W:" << xgenv::hitsW << ",HITS_NR:" << xgenv::hitsN << ",MAX_W_DBM:" << xgenv::maxW << ",MAX_NR_DBM:" << xgenv::maxN
+              << std::endl;
   if (xgstats::featLog ())
     xgstats::featLog ()->flush ();
   if (xgdcc::offload () > 0)

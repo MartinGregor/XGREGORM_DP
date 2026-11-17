@@ -180,6 +180,20 @@ private:
   uint64_t m_kh_dec[5] = {0, 0, 0, 0, 0}; //!< rozhodnutia: bez dat / D / D+P / P / P (namiesto Uu)
   void xgKhRx (unsigned long sender, int k, long gdt);
   int xgKhDecide (int direct, double now);
+  // xgregorm 2026-11-17: porovnavacia metoda DICART (Karoui, Mamadou, Chalhoub, IWCMC 2022; dizertacia Karoui 2021,
+  // kap. 4.3): TOPSIS nad volnou kapacitou (1 - CBR) * rychlost a oneskorenim v pristupovej vrstve, vid xgDicDecide
+  bool m_px = false; //!< xgregorm 2026-11-17: vylepsena predikcia (xgcore::pxGain)
+  double m_px_dev = 0.15;
+  uint64_t m_px_n[2] = {0, 0}; //!< rozhodnutia s mapou nepouzitou (nesuhlasi) / pouzitou
+  bool m_lat_rel = false; //!< xgregorm 2026-11-17: --lat-rel (xgcore::qosRelLat)
+  bool m_dic = false;
+  double m_dic_gamma = 3, m_dic_wbw = 0.4616, m_dic_wad = 0.5383;
+  struct DicSer { std::deque<std::pair<double, double>> v; double dlt = -1, tau = -1, last = -1, val = -1; };
+  DicSer m_dic_s[2][2]; //!< [technologia 0 = 802.11p, 1 = NR][kriterium 0 = CBR, 1 = AD]
+  size_t m_dic_adSeen[2] = {0, 0};
+  double m_dic_adLast[2] = {-1, -1};
+  uint64_t m_dic_dec[3] = {0, 0, 0}; //!< rozhodnutia: bez dat / 802.11p / NR
+  int xgDicDecide (int direct, int cur, double now);
   // xgregorm 2026-11-03: vstupy z prijatych sprav (len do --feat-log) a ucenie za jazdy (XgBandit)
   void xgMsgFeatures (double now, double h, xgstats::MsgFeat &f);
   double m_stop_since = -1, m_prev_v = 0;

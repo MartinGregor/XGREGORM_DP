@@ -22,6 +22,21 @@ protected:
 
     void sendCam();
     double headingDeg() const;
+    // xgregorm 2026-11-17: dve priame technologie a vyber (twoRat)
+    void handleMessage(cMessage* msg) override;
+    void decide();
+    bool predict(double fut[2], bool has[2], int cnt[2]);
+    void remFlush();
+    bool zoneDrop(int k);
+    bool twoRat = false;
+    std::string policy = "Q";
+    int mainK = 0, curK = 0;
+    int gOut2 = -1, gIn2 = -1, gCtl2 = -1;
+    simtime_t lastProbe = 0, nextDecide = 0, nextRem = 0;
+    bool probeDue = false;
+    long long sw = 0, pxN[2] = {0, 0};
+    struct RemRep { double x, y; int k; double e, ok; };
+    std::vector<RemRep> remBuf;
 
     bool isRsu = false;
     int camBytes = 160, certBytes = 242, digestBytes = 93;
