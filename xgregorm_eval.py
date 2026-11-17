@@ -45,7 +45,7 @@ def parse(path):
     r = re.search(r"CAMs per technology\s*: 802\.11p (\d+), LTE (\d+) \(([\d.]+)/s[^)]*\), NR (\d+); path switches (\d+), probes of 802\.11p (\d+),[^,]*due to load (\d+)(?:, due to quality (\d+), by prediction (\d+))?", s)
     if r:
         m.update(cam_w=int(r.group(1)), cam_l=int(r.group(2)), cam_n=int(r.group(4)), probes=int(r.group(6)),
-                 moves=int(r.group(8) or 0) + int(r.group(9) or 0))
+                 moves=int(r.group(8) or 0) + int(r.group(9) or 0), pathsw=int(r.group(5)))
     r = re.search(r"XGREGORM-SPAT[^\n]*", s)
     g("spat_w", r"SPATEM[^\n]*?802\.11p[^\d]*([\d.]+)")
     r = re.search(r"average speed\s*: ([\d.]+) m/s", s)
@@ -74,6 +74,7 @@ def parse(path):
     if m.get("veh") and simt and wu:
         mins = (simt - int(wu.group(1))) / 60
         m["moves_cm"] = (m.get("moves") or 0) / m["veh"] / mins  # presuny na auto za minutu
+        m["pathsw_cm"] = (m.get("pathsw") or 0) / m["veh"] / mins  # zmeny ciest CAM (aj LTE) na auto za minutu
         m["probes_cs"] = (m.get("probes") or 0) / m["veh"] / (mins * 60)  # skusky na auto za sekundu
         # odhad bajtov mapy na downlinku: na kazde hlasenie jedna odpoved s bunkami 3 bodov trasy (113 + 16 B/bunku)
         r = re.search(r"REMTX:(\d+)", s)

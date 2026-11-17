@@ -190,6 +190,19 @@ namespace ns3
             BooleanValue (false), MakeBooleanAccessor (&trafficManagerClient80211p::m_rsu_route), MakeBooleanChecker ())
         .AddAttribute ("XgDupNear", "Clean policy: copy of the CAM on the other technology closer than this to the next traffic light [m]; 0 = off",
             DoubleValue (0), MakeDoubleAccessor (&trafficManagerClient80211p::m_dup_near), MakeDoubleChecker<double> (0))
+        .AddAttribute ("XgKhalid", "Clean policy: comparison method from the literature (Khalid et al., Future Internet 2024): "
+            "decision tree over the statistics of the received CAMs (latency, 95th percentile distance, speed)",
+            BooleanValue (false), MakeBooleanAccessor (&trafficManagerClient80211p::m_kh), MakeBooleanChecker ())
+        .AddAttribute ("XgKhWin", "Khalid: sliding window [s]", DoubleValue (5),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_kh_win), MakeDoubleChecker<double> (0.1))
+        .AddAttribute ("XgKhD1", "Khalid: Dthr1, effective range of 802.11p [m]", DoubleValue (125),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_kh_d1), MakeDoubleChecker<double> (0))
+        .AddAttribute ("XgKhD2", "Khalid: Dthr2, effective range of NR-V2X [m]", DoubleValue (250),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_kh_d2), MakeDoubleChecker<double> (0))
+        .AddAttribute ("XgKhLthr", "Khalid: latency threshold Lthr [s]", DoubleValue (0.1),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_kh_lthr), MakeDoubleChecker<double> (0))
+        .AddAttribute ("XgKhSthr", "Khalid: speed threshold Sthr [km/h]", DoubleValue (100),
+            MakeDoubleAccessor (&trafficManagerClient80211p::m_kh_sthr), MakeDoubleChecker<double> (0))
         .AddAttribute ("XgBandit", "Learning while driving (with XgQosRat and XgClean): reliability of both technologies per "
             "situation learned from the CAMs the vehicle itself received, upper confidence bonus; probes only when the "
             "other technology has not been measured recently",
@@ -712,6 +725,9 @@ namespace ns3
         // napad 4: selektivna kopia pri krizovatke
         if (m_dup_near > 0 && other && need && m_next_dist < m_dup_near)
           clean |= other;
+        // porovnavacia metoda z literatury (XgKhalid): priame technologie urci rozhodovaci strom
+        if (m_kh && direct)
+          clean = xgKhDecide (direct, now);
         if (direct && need && m_next_dist >= m_cell_dist)
           clean |= avail & xghyb::LTE;
         if (m_probe_hz > 0 && other && now - m_probe_t >= 1.0 / m_probe_hz
@@ -1341,6 +1357,99 @@ namespace ns3
   }
 
   void
+  trafficManagerClient80211p::xgKhRx (unsigned long sender, int k, long gdt)
+  {
+    // xgregorm: Khalid a kol. 2024, kriteria 1-3 a 5: z kazdej prijatej CAM oneskorenie (cas vzniku z generationDeltaTime,
+    // hodiny GNSS), vzdialenost odosielatela (poloha v jeho CAM; v simulacii vzorka SUMO ~100 ms ako pri pravidle kvality)
+    // a jeho rychlost (v CAM). Kazda kopia zvlast podla technologie, ktorou prisla (0 = 802.11p, 1 = NR).
+    double now = Simulator::Now ().GetSeconds ();
+    long nowms = compute_timestampIts (m_real_time) % 65536;
+    double lat = ((nowms - gdt + 65536) % 65536) / 1000.0;
+    if (xgstats::clockErr () > 0)
+      lat += xgstats::clockOff (m_sid) - xgstats::clockOff (sender);
+    auto &vp = xgstats::vehPos ();
+    auto me = vp.find (m_sid), he = vp.find (sender);
+    if (me == vp.end () || he == vp.end ())
+      return;
+    double d = std::hypot (me->second.first - he->second.first, me->second.second - he->second.second);
+    double v = 0;
+    auto st = m_qst.find (sender);
+    if (st != m_qst.end ())
+      v = std::hypot (st->second.vx, st->second.vy);
+    else
+      {
+        auto &pv = m_kh_prev[sender];
+        if (pv[2] > 0 && now - pv[2] >= 0.05)
+          v = std::hypot (he->second.first - pv[0], he->second.second - pv[1]) / (now - pv[2]);
+        if (pv[2] <= 0 || now - pv[2] >= 0.05)
+          pv = {he->second.first, he->second.second, now, v};
+        v = pv[3];
+      }
+    m_kh_rx.push_back ({now, k, d, lat, v * 3.6});
+  }
+
+  int
+  trafficManagerClient80211p::xgKhDecide (int direct, double now)
+  {
+    // xgregorm: rozhodovaci strom Khalid a kol. (Future Internet 16(4):107, 2024, cast 5.3 a obr. 4-5), D = 802.11p,
+    // P = NR-V2X PC5, Uu = 5G (u nas LTE). Statistiky z CAM prijatych za poslednych XgKhWin s:
+    //  - prvych XgKhWin s (zahrievanie) a bez prijatych CAM: vsetky technologie,
+    //  - L_D <= Lthr a 95. percentil vzdialenosti CAM prijatych cez P (a Uu) < Dthr1 -> D (pri rychlosti >= Sthr D + P),
+    //    (clanok: kym su vsetci, ktorych pocujem cez technologie s vacsim dosahom, blizsie nez dosah D, staci D);
+    //    ak cez P nic neprislo, 95. percentil zo vsetkych prijatych CAM,
+    //  - inak L_P <= Lthr a 95. percentil < Dthr2 -> P (pri rychlosti >= Sthr P + Uu),
+    //  - inak Uu.
+    // Rozdiely oproti clanku (model a zhoda s ostatnymi politikami): CAM cez Uu u nas dostanu len RSU (server
+    // nevysiela spat susedom), vetva Uu preto vola P s najvacsim dosahom; LTE ako pri ostatnych politikach podla mapy
+    // (XgCellDist). Frekvencia CAM sa nemeni (spustanie CAM podla ETSI je vo vsetkych politikach rovnake).
+    if (m_kh_t0 < 0)
+      m_kh_t0 = now;
+    while (!m_kh_rx.empty () && now - m_kh_rx.front ().t > m_kh_win)
+      m_kh_rx.pop_front ();
+    int both = direct & (xghyb::WIFI | xghyb::NR);
+    int dD = direct & xghyb::WIFI, dP = direct & xghyb::NR;
+    auto count = [&] (int i) { m_kh_dec[i] += xgstats::measuring (); };
+    if (now - m_kh_t0 < m_kh_win || m_kh_rx.empty ())
+      {
+        count (0);
+        return both;
+      }
+    double lsum[2] = {0, 0};
+    int n[2] = {0, 0};
+    std::vector<double> d, vs;
+    for (const KhRec &r : m_kh_rx)
+      {
+        lsum[r.k] += r.lat;
+        n[r.k]++;
+        vs.push_back (r.v);
+      }
+    for (const KhRec &r : m_kh_rx)
+      if (r.k == 1 || n[1] == 0)
+        d.push_back (r.d);
+    auto p95 = [] (std::vector<double> &x) {
+      size_t i = std::min (x.size () - 1, (size_t) std::ceil (0.95 * x.size ()) - 1);
+      std::nth_element (x.begin (), x.begin () + i, x.end ());
+      return x[i];
+    };
+    double d95 = p95 (d), v95 = p95 (vs);
+    double vme = m_client->TraCIAPI::vehicle.getSpeed (m_id) * 3.6;
+    bool fast = vme >= m_kh_sthr || v95 >= m_kh_sthr;
+    bool okD = n[0] > 0 && lsum[0] / n[0] <= m_kh_lthr, okP = n[1] > 0 && lsum[1] / n[1] <= m_kh_lthr;
+    if (dD && okD && d95 < m_kh_d1)
+      {
+        count (fast && dP ? 2 : 1);
+        return fast ? (dD | dP) : dD;
+      }
+    if (dP && okP && d95 < m_kh_d2)
+      {
+        count (3);
+        return dP;
+      }
+    count (4);
+    return dP ? dP : dD;
+  }
+
+  void
   trafficManagerClient80211p::xgQosFinish (unsigned long sender, QSt &st, const QRec &r, int miss)
   {
     // pocet chybajucich CAM (miss) urcilo jadro; stav suseda (posledne poradove cislo) po navrate posunie jadro
@@ -1481,6 +1590,8 @@ namespace ns3
           if (m_xg_qos)
             std::cout << ",QOSSW:" << m_qos_sw << ",PREDSW:" << m_pred_sw << ",QW:" << m_qt_exp[0] << "/" << m_qt_rx[0] << "/" << m_qt_ok[0]
                       << ",QN:" << m_qt_exp[1] << "/" << m_qt_rx[1] << "/" << m_qt_ok[1];
+          if (m_kh)
+            std::cout << ",KH:" << m_kh_dec[0] << "/" << m_kh_dec[1] << "/" << m_kh_dec[2] << "/" << m_kh_dec[3] << "/" << m_kh_dec[4];
           std::cout << std::endl;
         }
       std::cout << "XGREGORM-GAP," << m_id << ",MIN:" << (m_gap_min < 1e8 ? m_gap_min * 1000 : -1)
@@ -1517,6 +1628,8 @@ namespace ns3
     if (sender < 1000000 && m_xg_qos && m_rx_mark >= 0)
       xgQosRx (sender, InetSocketAddress::IsMatchingType (from) ? 1 : 0, m_rx_mark,
                asn1cpp::getField (cam->cam.generationDeltaTime, long));
+    if (sender < 1000000 && m_kh)
+      xgKhRx (sender, InetSocketAddress::IsMatchingType (from) ? 1 : 0, asn1cpp::getField (cam->cam.generationDeltaTime, long));
     if (sender < 1000000)
       xgstats::onVehCamRx (m_sid, sender, asn1cpp::getField (cam->cam.generationDeltaTime, long),
                            InetSocketAddress::IsMatchingType (from) ? 2 : 0); // UDP = NR-V2X

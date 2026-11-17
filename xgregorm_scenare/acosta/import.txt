@@ -1,0 +1,4 @@
+net=acosta_buslanes.net.xml
+additional=acosta_vtypes.add.xml,acosta_bus_stops.add.xml,acosta_tls.add.xml
+t0=1800.0
+window=50.0

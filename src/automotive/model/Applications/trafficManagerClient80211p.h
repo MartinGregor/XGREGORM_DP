@@ -169,6 +169,17 @@ private:
   bool m_dcc_off_v = false;
   bool m_nb_equip = false, m_rsu_route = false;
   double m_dup_near = 0, m_geo_rat = 0;
+  // xgregorm 2026-11-17: porovnavacia metoda z literatury (Khalid a kol., Future Internet 16(4):107, 2024):
+  // rozhodovaci strom nad statistikami prijatych CAM za posledne XgKhWin s (oneskorenie, 95. percentil vzdialenosti
+  // odosielatelov, rychlost), vid xgKhDecide
+  bool m_kh = false;
+  double m_kh_win = 5, m_kh_d1 = 125, m_kh_d2 = 250, m_kh_lthr = 0.1, m_kh_sthr = 100, m_kh_t0 = -1;
+  struct KhRec { double t; int k; double d, lat, v; };
+  std::deque<KhRec> m_kh_rx;
+  std::map<unsigned long, std::array<double, 4>> m_kh_prev; //!< posledna poloha (x, y, cas) a rychlost odosielatela
+  uint64_t m_kh_dec[5] = {0, 0, 0, 0, 0}; //!< rozhodnutia: bez dat / D / D+P / P / P (namiesto Uu)
+  void xgKhRx (unsigned long sender, int k, long gdt);
+  int xgKhDecide (int direct, double now);
   // xgregorm 2026-11-03: vstupy z prijatych sprav (len do --feat-log) a ucenie za jazdy (XgBandit)
   void xgMsgFeatures (double now, double h, xgstats::MsgFeat &f);
   double m_stop_since = -1, m_prev_v = 0;

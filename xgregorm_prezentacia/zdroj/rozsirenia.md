@@ -13,23 +13,23 @@ Táto časť odpovedá na pripomienky k obhajobe a opisuje, čo som po nej dopln
 3. **Hodiny majú obe autá z GPS (GNSS).** Auto potrebuje satelitnú navigáciu aj tak, lebo bez polohy nemá čo poslať v správe o polohe. Prijímač GNSS dáva čas presný na zlomok mikrosekundy, teda asi 100 000-krát presnejšie, než treba na hranicu 100 ms. Priame 5G (NR-V2X) sa podľa času z GNSS dokonca synchronizuje, inak by sa autá netrafili do svojich časových políčok.
 4. **Bez signálu GNSS** (tunel, garáž) hodiny chvíľu bežia samé. Bežný kryštál sa odchýli o milióntiny, teda asi o 1 ms za 15 minút. Neskôr sa dajú dorovnať aj cez mobilnú sieť, presnosť je potom asi 10 ms.
 
-**V simulácii** majú všetky autá presne rovnaký čas. Preto som pridal voľbu `--clock-err`: každé auto dostane hodiny posunuté o náhodnú odchýlku. Behy so 140 autami, 3 náhody, porovnané s presnými hodinami:
+**V simulácii** majú všetky autá presne rovnaký čas. Preto som pridal voľbu `--clock-err`: každé auto dostane hodiny posunuté o náhodnú odchýlku. Behy so 140 autami, 5 náhod (201–205), porovnané s presnými hodinami:
 
 | hodiny áut | doručené správy o polohe | rozdiel oproti presným hodinám (95 % interval) | presuny na auto za minútu |
 |---|---|---|---|
-| presné (ako GNSS) | 90,77 % | – | 1,72 |
-| bez limitu 100 ms (ráta sa každá doručená správa) | 90,70 % | −0,07 bodu (−0,68 až +0,54) | 1,05 |
-| chyba každého auta ±10 ms | 90,91 % | +0,14 bodu (−1,06 až +1,35) | 1,36 |
-| chyba každého auta ±50 ms | 90,67 % | −0,10 bodu (−0,93 až +0,73) | 1,19 |
+| presné (ako GNSS) | 90,79 % | – | 1,77 |
+| bez limitu 100 ms (ráta sa každá doručená správa) | 90,58 % | −0,21 bodu (−0,54 až +0,12) | 0,99 |
+| chyba každého auta ±10 ms | 90,85 % | +0,06 bodu (−0,40 až +0,51) | 1,42 |
+| chyba každého auta ±50 ms | 90,51 % | −0,28 bodu (−0,74 až +0,18) | 1,12 |
 
 **Čo z toho vyplýva:**
 
-- **Výsledok sa nezmenil.** Rozdiely sú do 0,14 bodu a všetky intervaly obsahujú nulu. Senzorové správy vyšli pri nepresných hodinách dokonca o 0,4 až 0,8 bodu lepšie a autá prepínali menej často.
-- **Prečo to tak je:** s presnými hodinami príde po 100 ms len 0,09 % prijatých správ cez 802.11p a 3,9 % cez 5G, ostatné prídu skôr alebo vôbec. Limit 100 ms teda rozhoduje len o malom zlomku správ.
-- **Pri chybe 50 ms** autá omylom označia za oneskorených asi 16 % správ cez 802.11p a 15 % cez 5G. Odhad kvality klesne z 87 na 73 % a z 88 na 77 %. Klesne však u oboch sietí podobne a auto porovnáva siete medzi sebou, takže vyberie rovnako.
+- **Výsledok sa nezmenil.** Rozdiely sú do 0,28 bodu a všetky intervaly obsahujú nulu. Senzorové správy vyšli pri nepresných hodinách o 0,2 až 0,7 bodu lepšie (preukázané len pri ±10 ms, +0,72 bodu) a autá prepínali preukázateľne menej často.
+- **Prečo to tak je:** s presnými hodinami príde po 100 ms len 0,08 % prijatých správ cez 802.11p a 3,8 % cez 5G, ostatné prídu skôr alebo vôbec. Limit 100 ms teda rozhoduje len o malom zlomku správ.
+- **Pri chybe 50 ms** autá omylom označia za oneskorených asi 17 % správ cez 802.11p a 13 % cez 5G. Odhad kvality klesne z 88 na 72 % a z 88 na 79 %. Klesne však u oboch sietí podobne a auto porovnáva siete medzi sebou, takže vyberie rovnako.
 - **Pre prax:** výber podľa kvality potrebuje čas najviac na desiatky milisekúnd presne a ten auto má z GNSS s obrovskou rezervou. Keby hodiny nemalo, dá sa limit 100 ms vypustiť a merať len straty podľa poradových čísel, výsledok bude rovnaký.
 
-Obmedzenia: 3 náhody, mesto bez zón. Chyba hodín je stála pre každé auto; postupne narastajúcu odchýlku hodín som nesimuloval.
+Obmedzenia: 5 náhod, mesto bez zón. Chyba hodín je stála pre každé auto; postupne narastajúcu odchýlku hodín som nesimuloval.
 
 ## 2. Prečo píšem 802.11p, a nie Wi-Fi
 
@@ -135,3 +135,33 @@ S realistickým kanálom sa oba simulátory zhodujú do 1 bodu. Do 100 m vyšlo 
 - Odhad kvality 802.11p, ktorý autá počítajú spoločným jadrom algoritmu, vyšiel v ns-3 99,41 % pri skutočnosti 99,39 % a v OMNeT++ 99,48 % pri skutočnosti 99,41 %. Ten istý kód teda v oboch simulátoroch meria rovnako.
 
 **Čo v OMNeT++ ešte chýba:** priame 5G a mobilná sieť (dali by sa doplniť modulom Simu5G), senzorové správy a pravidlá proti preplneniu (DCC). Preto sa v OMNeT++ zatiaľ dá overiť len časť s 802.11p a samotný výber medzi sieťami ešte nie. Celý postup inštalácie a spustenia je v `xgregorm_omnet/README.md`.
+
+
+## 5. Porovnanie s metódami z literatúry
+
+Doteraz som výber podľa kvality porovnával len s pevnými voľbami (jedna sieť, náhodne 50/50, všetko naraz). Preto som do simulácie doplnil dve metódy z publikovaných prác. Obe používajú len to, čo auto reálne vie, a bežia na tých istých náhodách 201–205 ako výber podľa kvality.
+
+**Metóda A: Khalid a kol. (2024).** Článok *Optimizing Hybrid V2X Communication: An Intelligent Technology Selection Algorithm Using 5G, C-V2X PC5 and DSRC*, časopis Future Internet 16(4), 107, univerzita v Gente a imec. Vyberá medzi rovnakými tromi technológiami ako ja: 802.11p (v článku DSRC), priame 5G (PC5) a mobilná sieť (Uu). Rozhoduje rozhodovacím stromom podľa správ o polohe prijatých za posledných 5 sekúnd:
+
+1. Prvých 5 sekúnd a keď auto nič neprijalo, posiela všetkými sieťami.
+2. Ak je priemerné oneskorenie cez 802.11p pod limitom a 95 % áut, ktoré počuje cez priame 5G, je bližšie ako dosah 802.11p (125 m), stačí 802.11p.
+3. Inak, ak je oneskorenie cez 5G pod limitom a autá sú bližšie ako dosah 5G (250 m), použije priame 5G.
+4. Inak mobilnú sieť.
+5. Pri rýchlosti nad 100 km/h pridá druhú sieť.
+
+Prahy 125 m a 250 m sú z článku. Overil som, že sedia aj u mňa: v plnej záťaži doručí 802.11p polovicu správ asi do 125–150 m. Limit oneskorenia som nastavil na 100 ms, rovnako ako pri výbere podľa kvality (článok používa 20 ms pre svoju aplikáciu a uvádza, že sa má nastaviť podľa aplikácie). Dve odchýlky od článku: správy o polohe cez mobilnú sieť u mňa dostane len cestná jednotka, nie susedné autá, preto krok 4 použije priame 5G (sieť s najväčším dosahom). A frekvenciu správ nemením, aby všetky spôsoby posielali rovnako veľa.
+
+**Metóda B: podľa vyťaženia kanála (Mir a kol. 2015).** Článok *QoS-Aware Radio Access Technology (RAT) Selection in Hybrid Vehicular Networks*, workshop Nets4Cars 2015, Springer LNCS. Auto posiela cez 802.11p a na druhú sieť prejde, keď je kanál 802.11p preplnený. V článku sa preplnenie meria dĺžkou frontu, ja používam obsadenosť kanála podľa normy ETSI (prah 30 %), ktorú už mám v simulácii.
+
+@@LIT@@
+
+
+## 6. Akademický scenár: Bologna Acosta
+
+Okrem vlastného mesta som výber podľa kvality overil na publikovanom scenári. **Bologna Acosta** (Bieker a kol., 2015, projekt iTETRIS) je oficiálny scenár, ktorý je súčasťou programu SUMO: skutočná štvrť v Bologni (asi 1,8 × 1,4 km) s hodinou premávky (8 622 áut a 157 jázd autobusov s 35 zastávkami, spolu 8 779 vozidiel) a skutočnými programami semaforov. Používajú ho aj iné práce o sieťach vozidiel.
+
+Scenár som prevzal bez zmeny mapy, trás, typov vozidiel ani semaforov. Celú hodinu však ns-3 nezvládne, lebo pre každé vozidlo vytvorí uzol so všetkými rádiami. Preto som ho v SUMO prehral do 30. minúty, keď je premávka ustálená, a ns-3 začne od toho okamihu: autá sú na svojich miestach, so zvyškom trasy, a pribúdajú podľa pôvodného plánu. Kontrola v samotnom SUMO: v sieti je 547 áut oproti 555 v pôvodnom scenári, rýchlosť a počet stojacich áut sa zhodujú do pár percent. Scenár nemá budovy, preto som ich doplnil všade mimo ciest a 4 m chodníka (štvrť je súvisle zastavaná). Cestné jednotky stoja na 16 križovatkách so semaforom, mobilnú sieť tvorí 9 buniek. Ostatné nastavenia sú rovnaké ako v meste: podpis, senzorové správy, rušenie medzi 802.11p a 5G a pravidlá proti preplneniu.
+
+Spolu je to 883 vozidiel a v sieti naraz asi 550 áut. Jeden beh trvá niekoľko hodín, preto sú tu len 3 náhody.
+
+@@ACOSTA@@

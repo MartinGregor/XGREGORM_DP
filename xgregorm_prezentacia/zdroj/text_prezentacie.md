@@ -82,5 +82,5 @@ Obmedzenia: je to simulácia jednej mapy a zóny sú umelý pokus, nie model sku
 
 Túto snímku ukážem, ak padne otázka na čas. Každá správa o polohe nesie podľa normy ETSI čas svojho vzniku v milisekundách. Príjemca ho odčíta od svojich hodín a dostane oneskorenie. Obe autá majú čas zo satelitnej navigácie, ktorú potrebujú aj tak na polohu, a ten je presný na mikrosekundu. To je stotisíckrát presnejšie, než treba na hranicu 100 ms. Priame 5G sa podľa tohto času dokonca samo synchronizuje.
 
-Overil som aj horší prípad. V simulácii som každému autu posunul hodiny o náhodnú chybu 10 alebo 50 milisekúnd a v ďalšom pokuse som limit 100 ms úplne vypustil. Doručenie ostalo rovnaké, okolo 90,7 až 90,9 %, a rozdiely sú v rámci náhody. Dôvod: aj s presnými hodinami prichádza neskoro len malý zlomok správ. A keď sú hodiny zlé, odhad kvality sa pokazí u oboch sietí rovnako, takže auto ich porovná rovnako.
+Overil som aj horší prípad. V simulácii som každému autu posunul hodiny o náhodnú chybu 10 alebo 50 milisekúnd a v ďalšom pokuse som limit 100 ms úplne vypustil. Doručenie ostalo rovnaké, okolo 90,5 až 90,9 % (5 náhod), a rozdiely sú v rámci náhody. Dôvod: aj s presnými hodinami prichádza neskoro len malý zlomok správ. A keď sú hodiny zlé, odhad kvality sa pokazí u oboch sietí rovnako, takže auto ich porovná rovnako.
 

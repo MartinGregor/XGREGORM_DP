@@ -38,6 +38,9 @@ ap.add_argument("--cc-grid", type=int, default=3,
 ap.add_argument("--map", default="default", choices=["default", "city-center"],
                 help="default = 3x3 town (5 traffic lights, 1 lane) + bypass; city-center = 9 traffic lights, "
                      "3 lanes per direction, irregular blocks 170-285 m, ring road around")
+ap.add_argument("--import-dir", default="",
+                help="use a published SUMO scenario prepared by xgregorm_import_scenario.py (map, vehicles, TLS programs, "
+                     "RSU, buildings) instead of the generated one; implies --tls-radius -1 (published TLS programs)")
 ap.add_argument("--name", default=None,
                 help="scenario name -> src/automotive/examples/xgregorm_<name>/ (default: mesto / city_center)")
 # map
@@ -147,6 +150,11 @@ ap.add_argument("--dcc-offload", type=float, default=0, help="clean: CAM/CPM ove
 ap.add_argument("--nb-equip", type=int, default=0, choices=[0, 1], help="clean: technology by the equipment of the neighbours")
 ap.add_argument("--rsu-equip", default="", help="equipment of the RSUs in turn, repeated, e.g. W,N,WN")
 ap.add_argument("--rsu-route", type=int, default=0, choices=[0, 1], help="clean: on an approach the technology of the next RSU")
+ap.add_argument("--kh", type=int, default=0, help="clean: comparison method from the literature, Khalid et al. 2024 (decision tree "
+                "over received CAM statistics: latency, 95th percentile distance, speed)")
+ap.add_argument("--kh-d1", type=float, default=125, help="Khalid: Dthr1 = effective range of 802.11p [m]")
+ap.add_argument("--kh-d2", type=float, default=250, help="Khalid: Dthr2 = effective range of NR-V2X [m]")
+ap.add_argument("--kh-lthr", type=float, default=0.1, help="Khalid: latency threshold [s]")
 ap.add_argument("--dup-near", type=float, default=0, help="clean: CAM copy within this distance of the next traffic light [m]")
 ap.add_argument("--oracle", type=int, default=0, help="reference: vehicles know the --zones exactly (with --qos-rat; look-ahead --pred-horizon)")
 ap.add_argument("--geo-rat", type=float, default=0, help="clean: CAM over NR within this distance of the next traffic light [m]")
@@ -699,6 +707,29 @@ with open(cfg_f, "w") as f:
 </configuration>
 """)
 
+# xgregorm: --import-dir = publikovany scenar (xgregorm_import_scenario.py): vygenerovane subory sa prepisu jeho
+# mapou, vozidlami, RSU a budovami; semafory idu podla programov scenara (RSU ich neriadi, --tls-radius -1)
+if a.import_dir:
+    _imp = dict(l.strip().split("=", 1) for l in open(os.path.join(a.import_dir, "import.txt")) if "=" in l)
+    shutil.copy(os.path.join(a.import_dir, _imp["net"]), net_f)
+    shutil.copy(os.path.join(a.import_dir, "routes.rou.xml"), rou_f)
+    shutil.copy(os.path.join(a.import_dir, "stations.xml"), st_f)
+    shutil.copy(os.path.join(a.import_dir, "buildings.txt"), bud_f)
+    shutil.copy(os.path.join(a.import_dir, "buildings.poly.xml"), os.path.join(out, f"{P}buildings.poly.xml"))
+    _add = [f for f in _imp["additional"].split(",") if f]
+    for _f in _add:
+        shutil.copy(os.path.join(a.import_dir, _f), os.path.join(out, _f))
+    _add += ["stations.xml"] + ([f"{P}buildings.poly.xml"] if a.channel == "urban" else [])
+    _c = open(cfg_f).read()
+    _c = re.sub(r'\n\s*<additional-files value="[^"]*"/>', "", _c)
+    _c = _c.replace(f'<route-files value="{P}cars.rou.xml"/>',
+                    f'<route-files value="{P}cars.rou.xml"/>\n        <additional-files value="{",".join(_add)}"/>')
+    open(cfg_f, "w").write(_c)
+    a.tls_radius = -1
+    a.vehicles = sum(1 for l in open(rou_f) if '<vehicle ' in l)
+    a.rsu = sum(1 for l in open(st_f) if 'poi_' in l)
+    print(f"Imported scenario {a.import_dir}: {sum(1 for l in open(rou_f) if '<vehicle ' in l)} vehicles, "
+          f"{sum(1 for l in open(st_f) if 'poi_' in l)} RSU, {sum(1 for _ in open(bud_f))} buildings, TLS programs as published")
 print(f"Scenario: {out}/")
 if a.map == "default":
     print(f"  map          : city {a.grid}x{a.grid} ({MAXC:.0f}x{MAXC:.0f} m, spacing {a.step:.0f} m), "
@@ -852,6 +883,7 @@ HYB = (f"{TM} --tls-radius={a.tls_radius}"
        + (f" --zones={a.zones}" if a.zones else "")
        + (f" --dcc-offload={a.dcc_offload}" if a.dcc_offload else "") + (" --nb-equip=true" if a.nb_equip else "")
        + (f" --rsu-equip={a.rsu_equip}" if a.rsu_equip else "") + (" --rsu-route=true" if a.rsu_route else "")
+       + (f" --kh=true --kh-d1={a.kh_d1} --kh-d2={a.kh_d2} --kh-lthr={a.kh_lthr}" if a.kh else "")
        + (f" --dup-near={a.dup_near}" if a.dup_near else "") + (f" --geo-rat={a.geo_rat}" if a.geo_rat else "")
        + (f" --cpm-rat={a.cpm_rat}" if a.cpm_rat else "")
        + (f" --feat-log={a.feat_log}" if a.feat_log else "") + (f" --pred-model={a.pred_model}" if a.pred_model else "")

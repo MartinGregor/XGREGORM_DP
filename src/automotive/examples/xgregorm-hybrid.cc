@@ -720,6 +720,8 @@ main (int argc, char *argv[])
   double probe_hz = 0, cell_dist = 150;
   std::string feat_log, pred_model;
   double dcc_offload_ms = 0, dup_near = 0, geo_rat = 0;
+  bool kh = false; // xgregorm: metoda z literatury (Khalid a kol. 2024)
+  double kh_win = 5, kh_d1 = 125, kh_d2 = 250, kh_lthr = 0.1, kh_sthr = 100;
   bool oracle = false, bandit = false, bandit_probe = false;
   std::string pred_gbm;
   bool nb_equip = false, rsu_route = false;
@@ -856,6 +858,12 @@ main (int argc, char *argv[])
   cmd.AddValue ("nb-equip","Clean policy: choose the technology by the equipment of the neighbours",nb_equip);
   cmd.AddValue ("rsu-equip","Equipment of the RSUs in turn, repeated, e.g. W,N,WN (empty = all both)",rsu_equip);
   cmd.AddValue ("rsu-route","Clean policy: on an approach use the technology of the next RSU",rsu_route);
+  cmd.AddValue ("kh","Clean policy: comparison method from the literature (Khalid et al. 2024), decision tree over received CAM statistics",kh);
+  cmd.AddValue ("kh-win","Khalid: sliding window [s]",kh_win);
+  cmd.AddValue ("kh-d1","Khalid: Dthr1, effective range of 802.11p [m]",kh_d1);
+  cmd.AddValue ("kh-d2","Khalid: Dthr2, effective range of NR-V2X [m]",kh_d2);
+  cmd.AddValue ("kh-lthr","Khalid: latency threshold [s]",kh_lthr);
+  cmd.AddValue ("kh-sthr","Khalid: speed threshold [km/h]",kh_sthr);
   cmd.AddValue ("dup-near","Clean policy: CAM copy on the other technology within this distance of the next traffic light [m]",dup_near);
   cmd.AddValue ("oracle","Reference: vehicles know the --zones exactly (with --qos-rat; look-ahead = --pred-horizon s)",oracle);
   cmd.AddValue ("geo-rat","Clean policy: CAM over NR within this distance of the next traffic light [m]",geo_rat);
@@ -1811,6 +1819,12 @@ main (int argc, char *argv[])
   clientHelper.SetAttribute ("XgNbEquip", BooleanValue (nb_equip));
   clientHelper.SetAttribute ("XgRsuRoute", BooleanValue (rsu_route));
   clientHelper.SetAttribute ("XgDupNear", DoubleValue (dup_near));
+  clientHelper.SetAttribute ("XgKhalid", BooleanValue (kh));
+  clientHelper.SetAttribute ("XgKhWin", DoubleValue (kh_win));
+  clientHelper.SetAttribute ("XgKhD1", DoubleValue (kh_d1));
+  clientHelper.SetAttribute ("XgKhD2", DoubleValue (kh_d2));
+  clientHelper.SetAttribute ("XgKhLthr", DoubleValue (kh_lthr));
+  clientHelper.SetAttribute ("XgKhSthr", DoubleValue (kh_sthr));
   clientHelper.SetAttribute ("XgGeoRat", DoubleValue (geo_rat));
   clientHelper.SetAttribute ("XgOracle", BooleanValue (oracle));
   clientHelper.SetAttribute ("XgBandit", BooleanValue (bandit));

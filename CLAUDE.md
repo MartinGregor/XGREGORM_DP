@@ -73,6 +73,8 @@ prepnutia medzi RSU) oproti pôvodným aplikáciám autorov.
 | `trafficManagerServer80211p.cc` | **2026-11-17: `TlsRadius < 0`** (`--tls-radius -1`) = RSU neriadi žiadny semafor (pevný program SUMO), aby rádio neovplyvnilo pohyb áut pri porovnaní s OMNeT++ | `xgregorm_kod_zaloha/` |
 | `xgregorm-qos-core.h` (nový, `model/Applications/`), `trafficManagerClient80211p.cc/.h`, `src/automotive/CMakeLists.txt` | **2026-11-17: jadro pravidla kvality nezávislé od simulátora** (C++17 bez ns-3): záznam CAM a uzavretie po 200 ms, chýbajúce poradové čísla, očakávané / načas, zabúdanie, rozhodnutie (`qosDecide`). Klient ns-3 ho volá (bit po bite zhodné, overené `--qos-rat`), používa ho aj `xgregorm_omnet/src/XgCamApp.cc` | `xgregorm_kod_zaloha/pred_qos_core_2026-11-17_*` |
 | `src/automotive/model/GeoNet/geonet.cc` (kód autorov) | **2026-11-17: oprava úniku pamäte autorov** – pri každom prijatom SHB pakete sa do záznamu odosielateľa v tabuľke polôh pridávali hodnoty CBR (`cbr_extension.CBR_R0_Hop/R1_Hop`), mazala ich však len kontrola globálneho CBR modulu DCC autorov (`attachGlobalCBRCheck`, len pri `m_dcc != nullptr`). Bez neho zoznamy rástli s každým príjmom: 140 áut ~3 GB za 120 s, 1000 áut ~0.5 GB na sekundu simulácie. Teraz sa ukladajú len pri `m_dcc != nullptr`; výsledky bit po bite rovnaké (nikto iný ich nečíta). Treba nahlásiť autorom | `xgregorm_kod_zaloha/geonet.cc` |
+| `trafficManagerClient80211p.cc/.h`, `xgregorm-hybrid.cc`, `xgregorm_gen_scenario.py` | **2026-11-17: porovnávacia metóda z literatúry `--kh 1`** (atribúty `XgKhalid`, `XgKhWin` 5 s, `XgKhD1` 125 m, `XgKhD2` 250 m, `XgKhLthr` 0.1 s, `XgKhSthr` 100 km/h; Khalid a kol., Future Internet 16(4):107, 2024): rozhodovací strom nad prijatými CAM za 5 s (priemerné oneskorenie po technológiách, 95. percentil vzdialenosti odosielateľov cez PC5, rýchlosť); prvých 5 s a bez prijatých CAM obe priame technológie. Odchýlky od článku: vetva „len Uu“ = NR (CAM cez LTE u nás dostanú len RSU), frekvencia CAM sa nemení. Výpis `KH:` v `XGREGORM-HYB`. Bez voľby bit po bite zhodné (`EXP:2129,RX:2129`, `N:2966,BYTES:323086`) | `xgregorm_kod_zaloha/pred_khalid_2026-11-17_*` |
+| `xgregorm_import_scenario.py` (nový), `xgregorm_gen_scenario.py` | **2026-11-17: publikované scenáre SUMO** (`--import-dir`): import prehrá scenár do `--t0` a autá v sieti začnú v čase 0 na svojom mieste (pruh, poloha, zvyšok trasy a zastávok autobusov; najprv predné auto na úseku, `departSpeed="max"`), ID `veh<n>`, geo-referencia, RSU na križovatkách so semaforom, budovy mimo vozovky a 4 m chodníka; semafory podľa programov scenára (`--tls-radius -1`). Bologna Acosta (iTETRIS): `xgregorm_scenare/acosta/` | – (môj kód) |
 | `xgregorm_omnet/` (nový projekt OMNeT++ 6.0.3 + Veins 5.2) | **2026-11-17: ten istý scenár v OMNeT++** – `XgCamApp` (CAM podľa ETSI, meranie v rovnakom formáte ako ns-3, jadro kvality), `export_scenario.py`, `xgregorm_compare.py` (oba simulátory jedným príkazom). Popis a výsledky v `xgregorm_omnet/README.md` | – |
 
 **Pravidlo riadenia semaforov:** 802.11p = každá RSU riadi len semafor svojej križovatky (ako
@@ -238,6 +240,9 @@ python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --run hybrid -
 python3 xgregorm_gen_scenario.py --map city-center --vehicles 280 --run hybrid --channel urban --security 1 --spat 1 --cpm-share 1.0 --load-rat 1 --lte-bg-ue 5   # výber technológie podľa záťaže + iní používatelia LTE
 python3 xgregorm_gen_scenario.py --map city-center --cc-grid 5 --vehicles 1000 --enb 9 --enb-isd 400 --nr-max-loss 120 --nr-cache-ttl 1 --nr-fading 0 --run hybrid ...   # 1000 áut: ~7-8 min na 1 s simulácie, ~3 GB (s --nr-fading 1 ~10-15 min, ~11 GB)
 python3 xgregorm_omnet/xgregorm_compare.py --vehicles 140 --sim-time 60 --warmup 20   # ten istý scenár v ns-3 aj OMNeT++/Veins (len 802.11p), výsledky vedľa seba
+python3 xgregorm_import_scenario.py --src /usr/local/share/sumo/tools/sumolib/scenario/scenarios/RealWorld/acosta --net acosta_buslanes.net.xml --routes acosta.rou.xml --add acosta_busses.add.xml --other acosta_vtypes.add.xml,acosta_bus_stops.add.xml,acosta_tls.add.xml --t0 1800 --window 50 --out xgregorm_scenare/acosta   # publikovaný scenár Bologna Acosta
+python3 xgregorm_gen_scenario.py --import-dir xgregorm_scenare/acosta --name acosta --sim-time 60 --warmup 20 --run hybrid --channel urban --enb 9 --enb-isd 500 ...   # hybrid na ňom (pozri xgregorm_logs/acosta.json)
+python3 xgregorm_gen_scenario.py ... --clean 1 --init-main 2 --kh 1                   # metóda z literatúry Khalid a kol. 2024
 ./ns3 build                                                 # len po zmene C++ kódu
 ```
 
@@ -1249,6 +1254,20 @@ python3 xgregorm_omnet/xgregorm_compare.py --vehicles 140 --sim-time 60 --warmup
 
   **Záver:** zjednodušenia zvýšia absolútne PRR asi o 1 b. (NR bez fadingu je lepšie), poradie a veľkosť rozdielu politík pri PRR
   zachovajú. Pri CPM sa malá nevýhoda Q oproti MIX stratí.
+- **2026-11-17** – **Citlivosť výberu podľa kvality na presnosť hodín (`clk`)**, 140 áut, mesto bez zón, základ ako idea1,
+  seedy 201-205 (Q z idea1), `xgregorm_clk_eval.py`, výstup `xgregorm_logs/clk/clk_eval.txt`. QNODL = bez limitu 100 ms
+  (`--lat-budget` veľký), QC10 / QC50 = `--clock-err 0.01 / 0.05`.
+
+  | | PRR | CPM spolu | presuny na auto za min | neskoro 802.11p / NR | odhad kvality 802.11p / NR |
+  |---|---|---|---|---|---|
+  | Q | 0.9079 | 0.8431 | 1.77 | 0.08 / 3.84 % | 0.875 / 0.879 |
+  | QNODL | 0.9058 | 0.8453 | 0.99 | 0 / 0 % | 0.872 / 0.909 |
+  | QC10 | 0.9085 | 0.8503 | 1.42 | 2.0 / 3.2 % | 0.859 / 0.883 |
+  | QC50 | 0.9051 | 0.8465 | 1.12 | 17.0 / 13.0 % | 0.725 / 0.787 |
+
+  Párovo, n = 5, PRR: QNODL − Q −0.0021 (−0.0054, +0.0012), QC10 − Q +0.0006 (−0.0040, +0.0051), QC50 − Q −0.0028
+  (−0.0074, +0.0018); CPM QC10 − Q +0.0072 (+0.0055, +0.0090), ostatné nepreukázané; presuny vo všetkých preukázateľne menej.
+  **Záver:** presný čas nie je podmienkou výberu podľa kvality; chyba hodín zníži odhad kvality oboch sietí podobne.
 - Pozn.: v sekcii „Tok komunikácie“ je prehľad, čo ide cez ns-3 (CAM, kábel RSU-RSU) a čo cez
   TraCI (RSU -> semafor, mapa).
 
